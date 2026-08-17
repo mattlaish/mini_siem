@@ -1,0 +1,838 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta name="csrf-token" content="{{ csrf_token() }}">
+<script src="{{ url_for('static', filename='csrf.js') }}"></script>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>mini-SIEM Dashboard</title>
+<style>
+  :root {
+    --ink: #16202b; --ink-soft: #4a5a6a; --line: #d7dee5;
+    --panel: #ffffff; --canvas: #eef1f4;
+    --accent: #1f5eff; --accent-soft: #e8eefc;
+    --ok: #1a7f5a; --ok-soft: #e5f5ee;
+    --warn: #b5350c; --warn-soft: #fbe9e2;
+    --mono: 'SFMono-Regular', Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body { font-family: var(--sans); margin: 0; background: var(--canvas); color: var(--ink); }
+  header { background: var(--ink); color: #fff; padding: 18px 28px; display: flex; align-items: baseline; gap: 20px; flex-wrap: wrap; }
+  header h1 { margin: 0; font-size: 18px; }
+  header nav { flex: 1; }
+  header .sub { font-family: var(--mono); font-size: 11px; color: #9fb3c8; width: 100%; margin-top: 4px; }
+  header nav a { color: #9fb3c8; font-size: 13px; text-decoration: none; margin-right: 14px; }
+  header nav a:hover, header nav a.active { color: #fff; }
+  .wrap { max-width: 1200px; margin: 24px auto; padding: 0 20px; }
+  .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 20px; }
+  .stat-card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; }
+  .stat-card .num { font-size: 22px; font-weight: 700; }
+  .stat-card .label { font-family: var(--mono); font-size: 10.5px; text-transform: uppercase; color: var(--ink-soft); margin-top: 4px; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 18px; margin-bottom: 20px; }
+  .panel h2 { margin: 0 0 12px; font-size: 14px; }
+  .toolbar { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
+  .toolbar input, .toolbar select {
+    padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; font-size: 13px; font-family: var(--sans);
+  }
+  .toolbar input[type=text] { flex: 1; min-width: 200px; font-family: var(--mono); }
+  table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  thead th { text-align: left; font-family: var(--mono); font-size: 10px; text-transform: uppercase; color: var(--ink-soft); padding: 6px 8px; border-bottom: 1px solid var(--line); }
+  tbody td { padding: 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  tbody tr:hover { background: var(--accent-soft); }
+  .msg-cell { font-family: var(--mono); font-size: 12px; }
+  .badge { font-family: var(--mono); font-size: 10px; padding: 2px 7px; border-radius: 20px; border: 1px solid var(--line); white-space: nowrap; }
+  .sev-critical, .sev-alert, .sev-emergency { background: var(--warn-soft); color: var(--warn); border-color: var(--warn); }
+  .sev-warning, .sev-error { background: #fbf1dc; color: #9a6b00; border-color: #9a6b00; }
+  .sev-informational, .sev-notice, .sev-debug { background: var(--ok-soft); color: var(--ok); border-color: var(--ok); }
+  .table-scroll { max-height: 480px; overflow-y: auto; }
+  .muted { color: var(--ink-soft); font-size: 12px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>mini-SIEM</h1>
+  <nav>
+    <a href="/" class="active">Live logs &amp; alerts</a>
+    <a href="/correlate">Correlate</a>
+    <a href="/threatintel">Threat Intel</a>
+    <a href="/health">Health</a>
+    <a href="/audit">Audit</a>
+    <a href="/setup">Setup</a>
+    <a href="/ai">AI Analyst</a>
+    <a href="/help">Help</a>
+    <a href="/logout">Log out</a>
+  </nav>
+  <div class="sub" id="listenerLine">syslog listener</div>
+</header>
+
+<div class="wrap">
+
+  <div class="panel" style="display:flex;align-items:center;gap:10px;padding:12px 18px;">
+    <button id="refreshNowBtn" style="padding:8px 14px;border:none;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;background:var(--accent);color:#fff;">Refresh now</button>
+    <button id="autoToggleBtn" style="padding:8px 14px;border:1px solid var(--ok);border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;background:var(--ok-soft);color:var(--ok);">Auto-refresh: ON</button>
+    <span class="muted" id="lastUpdated" style="color:var(--ink-soft);font-size:12px;"></span>
+  </div>
+
+  <div class="stats" id="stats">
+    <div class="stat-card"><div class="num" id="statLogs">–</div><div class="label">Total events</div></div>
+    <div class="stat-card" id="cardAlerts" style="cursor:pointer;" title="Click to jump to the Alerts list. The breakdown counts alerts at warning severity and above.">
+      <div class="num" id="statAlerts">–</div><div class="label" id="statAlertsLabel">Total alerts</div></div>
+    <div class="stat-card" title="Critical/error alerts in the last 24 hours. The number in parentheses is how many are still untriaged.">
+      <div class="num" id="statAttention">–</div><div class="label">Needs attention (24h)</div></div>
+    <div class="stat-card" id="cardSilent" title="Sources that logged in the past 2 weeks but have sent nothing for 3 days — a dead agent, or logging silenced. Hover for the list.">
+      <div class="num" id="statSilent">–</div><div class="label">Silent sources (3d)</div></div>
+    <div class="stat-card" title="Events matching your threat-intel indicators in the last 24 hours.">
+      <div class="num" id="statIoc">–</div><div class="label">IOC matches (24h)</div></div>
+  </div>
+
+  <div class="panel">
+    <h2 id="alertsSection" style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;">Alerts
+      <label style="font-size:12px;font-weight:400;color:var(--ink-soft);cursor:pointer;">
+        <input type="checkbox" id="groupToggle" checked style="vertical-align:middle;"> Group similar
+      </label>
+      <span id="aiQueueBar" style="font-size:12px;font-weight:400;color:var(--ink-soft);display:none;">
+        <span id="aiQueueText"></span>
+        <button id="aiRetryBtn" style="margin-left:8px;padding:3px 10px;font-size:11px;border:1px solid var(--accent);background:#fff;color:var(--accent);border-radius:6px;cursor:pointer;font-weight:600;">Retry all</button>
+        <button id="aiClearBtn" style="margin-left:4px;padding:3px 10px;font-size:11px;border:1px solid var(--warn);background:#fff;color:var(--warn);border-radius:6px;cursor:pointer;font-weight:600;">Clear queue</button>
+      </span>
+    </h2>
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>Time</th><th>Rule</th><th>Severity</th><th>Source</th><th>Description</th><th>AI</th></tr></thead>
+        <tbody id="alertsBody"><tr><td colspan="6" class="muted">Loading…</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>Log search</h2>
+    <div class="toolbar">
+      <input type="text" id="qBox" placeholder="Search message… (use !term to exclude, comma-separate)" title="Examples:&#10;  error           contains 'error'&#10;  !tasklist       excludes 'tasklist'&#10;  error, !debug   contains 'error' and not 'debug'&#10;  !tasklist, !conhost   excludes both">
+      <input list="srcList" type="text" id="ipBox" placeholder="Source…">
+      <datalist id="srcList"></datalist>
+      <input list="hostList" type="text" id="hostBox" placeholder="Host…">
+      <datalist id="hostList"></datalist>
+      <input list="destList" type="text" id="destBox" placeholder="Destination…" title="Searches the Destination column, plus any configured destination aliases (Setup -> Search field aliases). Supports !term exclusion and comma-separated terms.">
+      <datalist id="destList"></datalist>
+      <select id="sevBox" title="Filter by severity. 'exactly' matches one level; 'and above' shows that level and anything more severe; 'exclude' hides that level.">
+        <option value="">All severities</option>
+        <optgroup label="Exactly">
+          <option value="emergency">emergency</option><option value="alert">alert</option>
+          <option value="critical">critical</option><option value="error">error</option>
+          <option value="warning">warning</option><option value="notice">notice</option>
+          <option value="informational">informational</option><option value="debug">debug</option>
+        </optgroup>
+        <optgroup label="And above (this level + more severe)">
+          <option value="&gt;=error">error and above</option>
+          <option value="&gt;=warning">warning and above</option>
+          <option value="&gt;=notice">notice and above</option>
+        </optgroup>
+        <optgroup label="Exclude">
+          <option value="!=informational">not informational</option>
+          <option value="!=debug">not debug</option>
+        </optgroup>
+      </select>
+      <input type="text" id="fieldFilterBox" placeholder="field=value (e.g. action=accept)" title="Filter by any extracted field. Type field=value and press Enter — e.g. action=accept, user=matt. Works on any field, no need to add a column first." style="border-color:var(--accent);min-width:210px;">
+    </div>
+    <div id="fieldChips" style="display:none;gap:6px;flex-wrap:wrap;align-items:center;margin-top:-4px;margin-bottom:8px;padding:4px;border-radius:6px;transition:background .1s,border-color .1s;border:1px dashed transparent;"></div>
+    <div id="xfilterBar" class="toolbar" style="display:none;"></div>
+    <div class="toolbar">
+      <label class="muted" style="align-self:center;">From</label>
+      <input type="datetime-local" id="fromBox" title="Only events at or after this time">
+      <label class="muted" style="align-self:center;">To</label>
+      <input type="datetime-local" id="toBox" title="Only events at or before this time">
+      <button id="refreshBtn">Apply / Refresh</button>
+      <button id="clearBtn" style="background:#fff;color:var(--ink-soft);border:1px solid var(--line);">Clear</button>
+      <select id="exportFmt" title="Export format">
+        <option value="csv">CSV</option>
+        <option value="json">JSON</option>
+      </select>
+      <button id="exportBtn" style="background:#fff;color:var(--accent);border:1px solid var(--accent);">Export filtered</button>
+    </div>
+    <div id="drillBanner" style="display:none;align-items:center;gap:10px;margin-bottom:10px;padding:8px 12px;border:1px solid var(--accent);background:var(--accent-soft);border-radius:6px;font-size:12.5px;">
+      <span id="drillText"></span>
+      <button id="drillClear" style="padding:3px 10px;font-size:11px;border:1px solid var(--accent);background:#fff;color:var(--accent);border-radius:6px;cursor:pointer;font-weight:600;">Show all logs</button>
+    </div>
+    <div class="table-scroll">
+      <table>
+        <thead><tr id="logsHead"><th>Time</th><th>Log source</th><th>Net source</th><th>Severity</th><th>Host</th><th>Destination</th><th>App</th><th>Message</th></tr></thead>
+        <tbody id="logsBody"><tr><td colspan="6" class="muted">Loading…</td></tr></tbody>
+      </table>
+    </div>
+    <details style="margin-top:12px;">
+      <summary style="font-size:12.5px;font-weight:600;cursor:pointer;">Normalization — field extraction settings</summary>
+      <p class="muted" style="font-size:12px;margin:8px 0;">Click any log row above to extract fields from its message. <span class="mono">key=value</span> and <span class="mono">key: value</span> pairs are extracted automatically. Add custom regex patterns below (one per line, Python syntax) using <strong>named groups</strong> to pull fields from messages that don't use key=value, e.g. <span class="mono">(?P&lt;user&gt;\S+) logged in from (?P&lt;ip&gt;[\d.]+)</span></p>
+      <textarea id="normPatterns" style="width:100%;min-height:70px;font-family:var(--mono);font-size:12px;border:1px solid var(--line);border-radius:6px;padding:8px;" placeholder="Failed password for (?P&lt;user&gt;\S+) from (?P&lt;src&gt;[\d.]+)"></textarea>
+      <p class="muted" style="font-size:12px;margin:12px 0 6px;"><strong>Extracted columns:</strong> field names (comma-separated) to show as sortable, filterable columns to the right of Message — from key=value pairs or your patterns' named groups, e.g. <span class="mono">user, action, srcport</span></p>
+      <input type="text" id="normColumns" class="mono" style="width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:6px;font-size:13px;" placeholder="user, action">
+      <div style="margin-top:8px;"><button id="savePatternsBtn">Save patterns &amp; columns</button> <button id="reindexBtn" style="background:#fff;color:var(--accent);border:1px solid var(--accent);">Re-index existing logs</button><span class="muted" id="patternsStatus" style="margin-left:10px;"></span></div>
+      <p class="muted" style="font-size:11.5px;margin:6px 0 0;">Fields are extracted and indexed when each log <em>arrives</em>. After adding or changing patterns, run <strong>Re-index existing logs</strong> once so older logs get the new fields too.</p>
+    </details>
+  </div>
+
+</div>
+
+<script>
+async function loadStats() {
+  const r = await fetch('/api/stats');
+  const d = await r.json();
+  document.getElementById('statLogs').textContent = d.total_logs;
+  document.getElementById('statAlerts').textContent = d.total_alerts;
+  // header: reflect the configured syslog listen port(s)
+  const lp = d.listen_ports || [514];
+  const el = document.getElementById('listenerLine');
+  if (el) el.textContent = 'syslog listener on port' + (lp.length > 1 ? 's ' : ' ') + lp.join(', ');
+  // Total alerts: show actionable (warning+) breakdown, color if any exist
+  const ab = d.alerts_breakdown || {actionable:0, critical:0, error:0, warning:0};
+  const alLabel = document.getElementById('statAlertsLabel');
+  const alNum = document.getElementById('statAlerts');
+  if (ab.actionable > 0) {
+    alLabel.innerHTML = `Total alerts <span style="color:var(--ink-soft);font-weight:400;">· ${ab.actionable} actionable</span>`;
+    alNum.style.color = ab.critical > 0 ? 'var(--err)' : (ab.error > 0 ? 'var(--err)' : 'var(--warn)');
+    document.getElementById('cardAlerts').title =
+      `Click to jump to the Alerts list.\n\nActionable (warning and above): ${ab.actionable}\n`
+      + `  critical: ${ab.critical}\n  error: ${ab.error}\n  warning: ${ab.warning}`;
+  } else {
+    alLabel.textContent = 'Total alerts';
+    alNum.style.color = '';
+  }
+
+  // Needs attention: high-severity alerts in 24h, untriaged count in parens
+  const na = d.needs_attention || {high_24h:0, untriaged:0};
+  const naEl = document.getElementById('statAttention');
+  naEl.textContent = na.untriaged ? `${na.high_24h} (${na.untriaged})` : String(na.high_24h);
+  naEl.style.color = na.high_24h > 0 ? 'var(--warn)' : 'var(--ok)';
+
+  // Silent sources — logged in the past 2 weeks, nothing for 3 days
+  const ss = d.silent_sources || {count:0, sources:[], silence_days:3, baseline_days:14};
+  const ssEl = document.getElementById('statSilent');
+  ssEl.textContent = ss.count;
+  ssEl.style.color = ss.count > 0 ? 'var(--warn)' : 'var(--ok)';
+  document.getElementById('cardSilent').title = ss.count
+    ? `Logged in the past ${ss.baseline_days} days but silent for ${ss.silence_days}+ days:\n`
+      + ss.sources.join('\n') + (ss.count > 10 ? `\n…and ${ss.count-10} more` : '')
+    : `Every source that logged in the past ${ss.baseline_days} days has reported within the last ${ss.silence_days} days.`;
+
+  // IOC matches (24h)
+  const ioc = d.ioc_hits_24h || 0;
+  const iocEl = document.getElementById('statIoc');
+  iocEl.textContent = ioc;
+  iocEl.style.color = ioc > 0 ? 'var(--warn)' : 'var(--ok)';
+}
+
+async function loadAiQueue() {
+  try {
+    const q = await (await fetch('/api/ai/queue/stats')).json();
+    const bar = document.getElementById('aiQueueBar');
+    if ((q.queued + q.failed) > 0) {
+      bar.style.display = 'inline';
+      document.getElementById('aiQueueText').textContent =
+        `AI triage: ${q.queued} queued` + (q.failed ? `, ${q.failed} failed` : '');
+    } else { bar.style.display = 'none'; }
+  } catch(e){}
+}
+document.getElementById('aiRetryBtn').addEventListener('click', async () => {
+  const d = await (await fetch('/api/ai/queue/retry', {method:'POST'})).json();
+  document.getElementById('aiQueueText').textContent = `Reset ${d.reset} alerts for re-triage…`;
+  setTimeout(() => { loadAiQueue(); loadAlerts(); }, 1200);
+});
+document.getElementById('aiClearBtn').addEventListener('click', async () => {
+  if (!confirm('Mark all queued/failed alerts as skipped? They stay in the list but will not be sent to the AI.')) return;
+  const d = await (await fetch('/api/ai/queue/clear', {method:'POST'})).json();
+  loadAiQueue(); loadAlerts();
+});
+
+function _aiBadge(st) {
+  st = st || 'pending';
+  if (st === 'done') return `<span class="badge" style="color:var(--ok);border-color:var(--ok);background:var(--ok-soft);">✓ analysis</span>`;
+  if (st === 'pending') return `<span class="badge" style="color:var(--amber);border-color:var(--amber);background:var(--amber-soft);">queued</span>`;
+  if (st === 'skipped') return `<span class="muted" style="font-size:11px;">skipped</span>`;
+  if (st === 'error') return `<span class="badge" style="color:var(--warn);border-color:var(--warn);background:var(--warn-soft);">error</span>`;
+  return `<span class="muted" style="font-size:11px;">${st}</span>`;
+}
+
+function _groupAiBadge(g) {
+  // one badge summarizing the whole group's triage state
+  if (g.ai_done && g.ai_done === g.count)
+    return `<button class="ai-view" data-id="${g.representative.id}" style="cursor:pointer;border:1px solid var(--ok);background:var(--ok-soft);color:var(--ok);border-radius:20px;font-size:10px;font-family:var(--mono);padding:2px 8px;">✓ analysis</button>`;
+  const bits = [];
+  if (g.ai_done) bits.push(`${g.ai_done}✓`);
+  if (g.ai_pending) bits.push(`${g.ai_pending} queued`);
+  if (g.ai_error) bits.push(`${g.ai_error} err`);
+  if (g.ai_skipped) bits.push(`${g.ai_skipped} skip`);
+  const done = g.ai_done ? `<button class="ai-view" data-id="${g.representative.id}" style="cursor:pointer;border:none;background:none;color:var(--accent);font-size:10px;text-decoration:underline;padding:0;">view</button> ` : '';
+  return `${done}<span class="muted" style="font-size:10px;">${bits.join(', ')}</span>`;
+}
+
+async function loadAlerts() {
+  const grouped = document.getElementById('groupToggle').checked;
+  const r = await fetch('/api/alerts?limit=200' + (grouped ? '&group=1' : ''));
+  const data = await r.json();
+  const body = document.getElementById('alertsBody');
+  window._alertCache = {};
+
+  if (grouped && data.grouped) {
+    const groups = data.groups || [];
+    groups.forEach(g => g.members.forEach(m => window._alertCache[m.id] = m));
+    if (!groups.length) { body.innerHTML = '<tr><td colspan="6" class="muted">No alerts yet.</td></tr>'; return; }
+    body.innerHTML = groups.map((g, gi) => {
+      const rep = g.representative;
+      const multi = g.count > 1;
+      const countBadge = multi
+        ? `<span class="grp-toggle" data-gi="${gi}" title="Click to expand ${g.count} alerts" style="cursor:pointer;display:inline-block;min-width:26px;text-align:center;background:var(--accent);color:#fff;border-radius:20px;font-size:10px;font-weight:700;padding:1px 7px;margin-right:6px;">▸${g.count}</span>`
+        : '';
+      const timespan = multi
+        ? `${new Date(g.latest).toLocaleString()} <span class="muted" style="font-size:11px;">(${g.count} over ${_span(g.earliest, g.latest)})</span>`
+        : new Date(g.latest).toLocaleString();
+      const head = `
+        <tr class="alert-row grp-head" data-gi="${gi}" data-logids="${rep.log_ids||''}" title="${multi?'Click ▸ to expand. ':''}Double-click to open related logs">
+          <td class="msg-cell">${countBadge}${timespan}</td>
+          <td>${g.rule_name}</td>
+          <td><span class="badge sev-${g.severity}">${g.severity}</span></td>
+          <td class="msg-cell">${g.source_ip || '—'}</td>
+          <td>${g.description}</td>
+          <td>${multi ? _groupAiBadge(g) : _aiBadge(rep.ai_status)}</td>
+        </tr>`;
+      const children = multi ? g.members.map(m => `
+        <tr class="alert-row grp-child grp-child-${gi}" data-logids="${m.log_ids||''}" style="display:none;background:var(--canvas);" title="Double-click to open related logs">
+          <td class="msg-cell" style="padding-left:34px;">${new Date(m.created_at).toLocaleString()}</td>
+          <td class="muted">${m.rule_name}</td>
+          <td><span class="badge sev-${m.severity}">${m.severity}</span></td>
+          <td class="msg-cell">${m.source_ip || '—'}</td>
+          <td>${m.description}</td>
+          <td>${m.ai_status === 'done' ? `<button class="ai-view" data-id="${m.id}" style="cursor:pointer;border:1px solid var(--ok);background:var(--ok-soft);color:var(--ok);border-radius:20px;font-size:10px;font-family:var(--mono);padding:2px 8px;">✓</button>` : _aiBadge(m.ai_status)}</td>
+        </tr>`).join('') : '';
+      return head + children;
+    }).join('');
+    // expand/collapse
+    document.querySelectorAll('.grp-toggle').forEach(el => el.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const gi = el.dataset.gi;
+      const kids = document.querySelectorAll('.grp-child-' + gi);
+      const open = el.textContent.startsWith('▾');
+      el.textContent = (open ? '▸' : '▾') + el.textContent.slice(1);
+      kids.forEach(k => k.style.display = open ? 'none' : 'table-row');
+    }));
+  } else {
+    const rows = Array.isArray(data) ? data : [];
+    rows.forEach(a => window._alertCache[a.id] = a);
+    if (!rows.length) { body.innerHTML = '<tr><td colspan="6" class="muted">No alerts yet.</td></tr>'; return; }
+    body.innerHTML = rows.map(a => `
+      <tr class="alert-row" data-logids="${a.log_ids||''}" title="Double-click to open the related logs in log search">
+        <td class="msg-cell">${new Date(a.created_at).toLocaleString()}</td>
+        <td>${a.rule_name}</td>
+        <td><span class="badge sev-${a.severity}">${a.severity}</span></td>
+        <td class="msg-cell">${a.source_ip || '—'}</td>
+        <td>${a.description}</td>
+        <td>${a.ai_status === 'done' ? `<button class="ai-view" data-id="${a.id}" style="cursor:pointer;border:1px solid var(--ok);background:var(--ok-soft);color:var(--ok);border-radius:20px;font-size:10px;font-family:var(--mono);padding:2px 8px;">✓ analysis</button>` : _aiBadge(a.ai_status)}</td>
+      </tr>`).join('');
+  }
+
+  document.querySelectorAll('.ai-view').forEach(b => b.addEventListener('click', (e) => {
+    e.stopPropagation();
+    openAiModal(b.dataset.id);
+  }));
+  document.querySelectorAll('.alert-row').forEach(tr => tr.addEventListener('dblclick', () => {
+    const ids = tr.dataset.logids;
+    if (ids) window.location = '/?ids=' + ids;
+  }));
+}
+
+function _span(a, b) {
+  const ms = new Date(b) - new Date(a);
+  const m = Math.round(ms / 60000);
+  if (m < 60) return m + 'm';
+  const h = Math.round(m / 60);
+  if (h < 48) return h + 'h';
+  return Math.round(h / 24) + 'd';
+}
+
+// ---- AI analysis popup ----
+function openAiModal(id) {
+  const a = (window._alertCache || {})[id];
+  if (!a) return;
+  document.getElementById('aiModalTitle').textContent = a.rule_name;
+  document.getElementById('aiModalMeta').innerHTML =
+    `<span class="badge sev-${a.severity}">${a.severity}</span>
+     &nbsp;·&nbsp; source: <span style="font-family:var(--mono);">${a.source_ip || '—'}</span>
+     &nbsp;·&nbsp; ${new Date(a.created_at).toLocaleString()}
+     ${a.ai_triaged_at ? '&nbsp;·&nbsp; analyzed ' + new Date(a.ai_triaged_at).toLocaleString() : ''}`;
+  document.getElementById('aiModalBody').textContent = a.ai_analysis || '(no analysis text)';
+  const logsBtn = document.getElementById('aiModalLogs');
+  if (a.log_ids) { logsBtn.style.display = 'inline-block'; logsBtn.onclick = () => window.location = '/?ids=' + a.log_ids; }
+  else logsBtn.style.display = 'none';
+  document.getElementById('aiModalOverlay').style.display = 'flex';
+  document.body.style.overflow = 'hidden';
+}
+function closeAiModal() {
+  document.getElementById('aiModalOverlay').style.display = 'none';
+  document.body.style.overflow = '';
+}
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeAiModal(); });
+
+let urlIds = new URLSearchParams(window.location.search).get('ids');
+
+function updateDrillBanner() {
+  const b = document.getElementById('drillBanner');
+  if (!b) return;
+  if (urlIds) {
+    const n = urlIds.split(',').filter(Boolean).length;
+    document.getElementById('drillText').textContent =
+      `Showing ${n} log${n === 1 ? '' : 's'} related to an alert. Filters below search within all logs.`;
+    b.style.display = 'flex';
+  } else {
+    b.style.display = 'none';
+  }
+}
+
+let xCols = [];            // extracted column names
+let xSort = '';            // 'x_<name>' or ''
+let xDir = 'asc';
+let baseSort = '';         // base column key (received_at, source_ip, …) or ''
+let baseDir = 'desc';
+let fieldChips = [];       // inline field=value filters, e.g. [{field:'action', value:'accept'}]
+let fieldChipOp = 'and';   // 'and' | 'or' — how multiple chips combine (only matters with 2+)
+
+function renderFieldChips() {
+  const bar = document.getElementById('fieldChips');
+  bar.style.display = 'flex';
+  if (!fieldChips.length) {
+    bar.innerHTML = '<span class="muted" style="font-size:11px;font-style:italic;">drag a field here, or click a field\'s + in an expanded row, to filter by it</span>';
+    return;
+  }
+  const opToggle = fieldChips.length > 1
+    ? `<span style="display:inline-flex;border:1px solid var(--line);border-radius:6px;overflow:hidden;font-size:11px;">`
+      + `<span class="chip-op" data-op="and" style="padding:3px 8px;cursor:pointer;background:${fieldChipOp==='and'?'var(--accent)':'transparent'};color:${fieldChipOp==='and'?'#fff':'var(--ink-soft)'};" title="Match ALL chips">AND</span>`
+      + `<span class="chip-op" data-op="or" style="padding:3px 8px;cursor:pointer;background:${fieldChipOp==='or'?'var(--accent)':'transparent'};color:${fieldChipOp==='or'?'#fff':'var(--ink-soft)'};" title="Match ANY chip">OR</span>`
+      + `</span>`
+    : '';
+  bar.innerHTML = '<span class="muted" style="font-size:11px;align-self:center;">field filters:</span>' + opToggle
+    + fieldChips.map((c, i) =>
+        `<span style="display:inline-flex;align-items:center;gap:6px;background:var(--accent-soft);color:var(--accent);font-size:12px;font-family:var(--mono);padding:3px 8px;border-radius:6px;">`
+        + `${c.field}=${c.value}`
+        + `<span class="chip-del" data-i="${i}" style="cursor:pointer;font-weight:700;" title="Remove">×</span></span>`).join('');
+  bar.querySelectorAll('.chip-del').forEach(el => el.addEventListener('click', () => {
+    fieldChips.splice(parseInt(el.dataset.i), 1);
+    renderFieldChips();
+    loadLogs();
+  }));
+  bar.querySelectorAll('.chip-op').forEach(el => el.addEventListener('click', () => {
+    fieldChipOp = el.dataset.op;
+    renderFieldChips();
+    loadLogs();
+  }));
+}
+
+// drag-and-drop: dragging a field's "+" from the expand panel onto the chips
+// bar adds it as a filter condition, same as clicking it.
+(function initChipsDropZone(){
+  const bar = document.getElementById('fieldChips');
+  bar.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    bar.style.display = 'flex';
+    bar.style.borderColor = 'var(--accent)';
+    bar.style.background = 'var(--accent-soft)';
+  });
+  bar.addEventListener('dragleave', () => {
+    bar.style.borderColor = 'transparent';
+    bar.style.background = '';
+  });
+  bar.addEventListener('drop', (e) => {
+    e.preventDefault();
+    bar.style.borderColor = 'transparent';
+    bar.style.background = '';
+    const raw = e.dataTransfer.getData('text/plain');
+    if (raw) addFieldChip(raw);
+  });
+})();
+
+function addFieldChip(raw) {
+  raw = String(raw || '').trim();
+  const m = raw.match(/^([A-Za-z][A-Za-z0-9_.\-]{0,40})\s*=\s*(.+)$/);
+  if (!m) { return false; }
+  const field = m[1].toLowerCase(), value = m[2].trim();
+  if (!fieldChips.some(c => c.field === field && c.value === value)) {
+    fieldChips.push({field, value});
+    renderFieldChips();
+    loadLogs();
+  }
+  return true;
+}
+
+async function saveXColumns() {
+  try {
+    await fetch('/api/norm-columns', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({columns: xCols})});
+    const box = document.getElementById('normColumns');
+    if (box) box.value = xCols.join(', ');
+  } catch(e) {}
+}
+
+async function addXColumn(name, value) {
+  name = String(name || '').trim();
+  if (!name) return;
+  const alreadyCol = xCols.includes(name);
+  if (!alreadyCol) {
+    if (xCols.length >= 8) { alert('Maximum of 8 extracted columns. Remove one first.'); return; }
+    xCols.push(name);
+    await saveXColumns();
+  }
+  // if a value was clicked, filter to it (as a removable chip) — clicking
+  // `action` on a row showing action=accept adds the column AND filters to accept
+  if (value !== undefined && value !== null && String(value).length) {
+    const field = name.toLowerCase(), val = String(value).trim();
+    if (!fieldChips.some(c => c.field === field && c.value === val)) {
+      fieldChips.push({field, value: val});
+      renderFieldChips();
+    }
+  } else if (alreadyCol) {
+    flashColumn(name);
+  }
+  renderXColumns();
+  loadLogs();
+}
+
+async function removeXColumn(name) {
+  const i = xCols.indexOf(name);
+  if (i === -1) return;
+  xCols.splice(i, 1);
+  if (xSort === 'x_' + name) { xSort = ''; xDir = 'asc'; }
+  await saveXColumns();
+  renderXColumns();
+  loadLogs();
+}
+
+function flashColumn(name) {
+  const el = document.querySelector(`.xcol-head[data-col="${name}"]`);
+  if (!el) return;
+  const orig = el.style.background;
+  el.style.background = 'var(--amber-soft)';
+  setTimeout(() => { el.style.background = orig; }, 700);
+}
+
+function renderXColumns() {
+  // base columns are now sortable too (sort key = real column name)
+  const baseCols = [
+    {label:'Time', key:'received_at'}, {label:'Log source', key:'peer_ip'},
+    {label:'Net source', key:'source_ip'},
+    {label:'Severity', key:'severity'}, {label:'Host', key:'hostname'},
+    {label:'Destination', key:'destination'},
+    {label:'App', key:'app_name'}, {label:'Message', key:null}
+  ];
+  // sort indicator: solid up/down triangle on the active column, dim neutral
+  // marker on the others so you can see they're clickable.
+  const sortMark = (active, dir) => {
+    if (active) {
+      const tri = dir === 'asc' ? '▲' : '▼';
+      return `<span class="sort-ind active" style="margin-left:5px;color:var(--accent);font-size:10px;">${tri}</span>`;
+    }
+    return '';
+  };
+  const head = document.getElementById('logsHead');
+  head.innerHTML = baseCols.map(bc => {
+    if (!bc.key) return `<th>${bc.label}</th>`;  // Message not sortable
+    const active = baseSort === bc.key;
+    return `<th class="base-head" data-key="${bc.key}" style="cursor:pointer;white-space:nowrap;" title="Click to sort by ${bc.label}">${bc.label}${sortMark(active, baseDir)}</th>`;
+  }).join('')
+    + xCols.map(c => {
+        const active = xSort === 'x_' + c;
+        return `<th style="white-space:nowrap;">`
+          + `<span class="xcol-head" data-col="${c}" style="cursor:pointer;color:var(--accent);" title="Click to sort by ${c}">${c}</span>`
+          + sortMark(active, xDir)
+          + `<span class="xcol-del" data-col="${c}" title="Remove ${c} column" style="cursor:pointer;color:var(--ink-soft);margin-left:6px;font-weight:400;">×</span>`
+          + `</th>`;
+      }).join('');
+  head.querySelectorAll('.base-head').forEach(el => el.addEventListener('click', () => {
+    const key = el.dataset.key;
+    if (baseSort === key) { baseDir = baseDir === 'asc' ? 'desc' : 'asc'; }
+    else { baseSort = key; baseDir = key === 'received_at' ? 'desc' : 'asc'; }
+    xSort = '';  // base sort and extracted sort are mutually exclusive
+    loadLogs();
+  }));
+  head.querySelectorAll('.xcol-head').forEach(el => el.addEventListener('click', () => {
+    const col = 'x_' + el.dataset.col;
+    if (xSort === col) { xDir = xDir === 'asc' ? 'desc' : 'asc'; }
+    else { xSort = col; xDir = 'asc'; }
+    baseSort = '';  // switching to extracted sort clears base sort
+    loadLogs();
+  }));
+  head.querySelectorAll('.xcol-del').forEach(el => el.addEventListener('click', (e) => {
+    e.stopPropagation();
+    removeXColumn(el.dataset.col);
+  }));
+  // per-column filter boxes
+  const bar = document.getElementById('xfilterBar');
+  if (!xCols.length) { bar.style.display = 'none'; bar.innerHTML = ''; return; }
+  bar.style.display = 'flex';
+  bar.innerHTML = xCols.map(c =>
+    `<input type="text" class="xcol-filter" data-col="${c}" placeholder="filter ${c}…" style="max-width:160px;">`).join('')
+    + '<span class="muted" style="align-self:center;font-size:11.5px;">indexed — searches all events (re-index after changing patterns to cover older logs)</span>';
+  bar.querySelectorAll('.xcol-filter').forEach(inp => inp.addEventListener('change', loadLogs));
+}
+
+function currentFilterParams() {
+  const params = new URLSearchParams();
+  // extracted columns + inline field-filter chips both need their fields extracted
+  const chipFields = fieldChips.map(c => c.field);
+  const allFields = [...new Set([...xCols, ...chipFields])];
+  if (allFields.length) params.set('fields', allFields.join(','));
+  // per-column filter boxes
+  document.querySelectorAll('.xcol-filter').forEach(inp => {
+    if (inp.value.trim()) params.set('f_' + inp.dataset.col, inp.value.trim());
+  });
+  // inline field=value chips (same f_<field> mechanism)
+  fieldChips.forEach(c => params.set('f_' + c.field, c.value));
+  if (fieldChips.length > 1 && fieldChipOp === 'or') params.set('fc_op', 'or');
+  // sort: extracted-field sort and base-column sort are mutually exclusive
+  if (xSort) { params.set('sort', xSort); params.set('dir', xDir); }
+  else if (baseSort) { params.set('sort', baseSort); params.set('dir', baseDir); }
+  const q = document.getElementById('qBox').value.trim();
+  const ip = document.getElementById('ipBox').value.trim();
+  const host = document.getElementById('hostBox').value.trim();
+  const dest = document.getElementById('destBox').value.trim();
+  const sev = document.getElementById('sevBox').value;
+  const from = document.getElementById('fromBox').value;
+  const to = document.getElementById('toBox').value;
+  const anyFilter = q || ip || host || dest || sev || from || to || fieldChips.length;
+  if (urlIds && !anyFilter) params.set('ids', urlIds);  // drill-down until user filters
+  if (q) params.set('q', q);
+  if (ip) params.set('source_ip', ip);
+  if (host) params.set('hostname', host);
+  if (dest) params.set('destination', dest);
+  if (sev) params.set('severity', sev);
+  if (from) params.set('from', new Date(from).toISOString());
+  if (to) params.set('to', new Date(to).toISOString());
+  return params;
+}
+
+async function loadFacets() {
+  try {
+    const f = await (await fetch('/api/logs/facets')).json();
+    document.getElementById('srcList').innerHTML = (f.sources || []).map(s => `<option value="${s}">`).join('');
+    document.getElementById('hostList').innerHTML = (f.hosts || []).map(h => `<option value="${h}">`).join('');
+    document.getElementById('destList').innerHTML = (f.destinations || []).map(d => `<option value="${d}">`).join('');
+  } catch (e) { /* non-fatal */ }
+}
+
+async function loadLogs() {
+  renderXColumns();  // redraw header so the active-sort triangle reflects current sort
+  const params = currentFilterParams();
+  params.set('limit', 200);
+  const r = await fetch('/api/logs?' + params.toString());
+  const rows = await r.json();
+  const body = document.getElementById('logsBody');
+  const ncols = 8 + xCols.length;
+  if (!rows.length) { body.innerHTML = `<tr><td colspan="${ncols}" class="muted">No matching events.</td></tr>`; return; }
+  const xcells = l => xCols.map(c =>
+    `<td class="mono" style="font-size:12px;">${String((l.extracted||{})[c] ?? '').replace(/</g,'&lt;') || '—'}</td>`).join('');
+  body.innerHTML = rows.map(l => `
+    <tr class="log-row" data-id="${l.id}" title="Click to extract fields from this message">
+      <td class="msg-cell">${new Date(l.received_at).toLocaleString()}</td>
+      <td class="msg-cell">${l.peer_ip || l.source_ip || '—'}</td>
+      <td class="msg-cell">${l.endpoint_ip ? l.endpoint_ip + ' <span style="color:var(--ink-soft);font-size:10px;">(endpoint)</span>' : (l.source_ip || '—')}</td>
+      <td>${l.severity ? `<span class="badge sev-${l.severity}">${l.severity}</span>` : '—'}</td>
+      <td>${l.hostname || '—'}</td>
+      <td class="msg-cell">${l.destination || '—'}</td>
+      <td>${l.app_name || '—'}</td>
+      <td class="msg-cell">${(l.message || '').replace(/</g, '&lt;')}</td>
+      ${xcells(l)}
+    </tr>
+    <tr id="norm-row-${l.id}" style="display:none;"><td colspan="${ncols}" style="background:var(--canvas);">
+      <div id="norm-body-${l.id}" style="font-size:12px;padding:8px 4px;border-left:3px solid var(--accent);">extracting…</div>
+    </td></tr>`).join('');
+  document.querySelectorAll('.log-row').forEach(tr => tr.addEventListener('click', async () => {
+    const id = tr.dataset.id;
+    const row = document.getElementById('norm-row-' + id);
+    if (row.style.display !== 'none') { row.style.display = 'none'; return; }
+    row.style.display = 'table-row';
+    try {
+      const r = await fetch('/api/log-fields/' + id);
+      const d = await r.json();
+      const entries = Object.entries(d.fields || {});
+      const body = document.getElementById('norm-body-' + id);
+      if (!entries.length) {
+        body.innerHTML = '<span class="muted">No fields stored for this event.</span>';
+        return;
+      }
+      body.innerHTML = '<div class="muted" style="margin-bottom:6px;font-size:11.5px;">Click a field name to add it as a column. Drag (or click +) to add it as a filter condition.</div>'
+        + '<table style="font-size:12px;border-collapse:collapse;">' + entries.map(([k,v]) => {
+            const active = xCols.includes(k);
+            const vEsc = String(v).replace(/"/g,'&quot;');
+            return `<tr>`
+              + `<td style="padding:2px 4px 2px 4px;"><span class="fieldfilter" draggable="true" data-field="${k}" data-value="${vEsc}" title="Drag into the filter bar, or click, to filter by ${k}=${vEsc}" `
+              + `style="cursor:grab;color:var(--ink-soft);font-weight:700;padding:0 4px;user-select:none;">+</span></td>`
+              + `<td style="padding:2px 14px 2px 0;"><span class="fieldpick" data-field="${k}" data-value="${vEsc}" title="${active ? 'Already a column' : 'Add as column'}" `
+              + `style="font-family:var(--mono);color:${active ? 'var(--ink-soft)' : 'var(--accent)'};cursor:pointer;text-decoration:${active ? 'none' : 'underline dotted'};">`
+              + `${k}${active ? ' ✓' : ''}</span></td>`
+              + `<td style="font-family:var(--mono);padding:2px 4px;">${String(v).replace(/</g,'&lt;')}</td></tr>`;
+          }).join('') + '</table>';
+      body.querySelectorAll('.fieldpick').forEach(el => el.addEventListener('click', (e) => {
+        e.stopPropagation();
+        addXColumn(el.dataset.field, el.dataset.value);
+      }));
+      body.querySelectorAll('.fieldfilter').forEach(el => {
+        el.addEventListener('click', (e) => {
+          e.stopPropagation();
+          addFieldChip(`${el.dataset.field}=${el.dataset.value}`);
+        });
+        el.addEventListener('dragstart', (e) => {
+          e.dataTransfer.setData('text/plain', `${el.dataset.field}=${el.dataset.value}`);
+          e.dataTransfer.effectAllowed = 'copy';
+        });
+      });
+    } catch(e) { document.getElementById('norm-body-' + id).textContent = 'extraction failed'; }
+  }));
+}
+
+document.getElementById('refreshBtn').addEventListener('click', loadLogs);
+['qBox','ipBox','hostBox','destBox','sevBox','fromBox','toBox'].forEach(id =>
+  document.getElementById(id).addEventListener('change', loadLogs));
+// inline field=value box: Enter adds a chip
+document.getElementById('fieldFilterBox').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') {
+    const box = e.target;
+    if (addFieldChip(box.value)) { box.value = ''; box.style.borderColor = 'var(--accent)'; }
+    else if (box.value.trim()) { box.style.borderColor = 'var(--warn)'; }
+  }
+});
+document.getElementById('clearBtn').addEventListener('click', () => {
+  ['qBox','ipBox','hostBox','destBox','fromBox','toBox','fieldFilterBox'].forEach(id => document.getElementById(id).value = '');
+  document.getElementById('sevBox').value = '';
+  urlIds = null;
+  if (window.location.search) history.replaceState({}, '', window.location.pathname);
+  updateDrillBanner();
+  document.querySelectorAll('.xcol-filter').forEach(inp => inp.value = '');
+  fieldChips = []; renderFieldChips();
+  xSort = ''; xDir = 'asc'; baseSort = ''; baseDir = 'desc';
+  renderXColumns();
+  loadLogs();
+});
+document.getElementById('exportBtn').addEventListener('click', () => {
+  const params = currentFilterParams();
+  params.set('format', document.getElementById('exportFmt').value);
+  window.location = '/api/logs/export?' + params.toString();
+});
+document.getElementById('groupToggle').addEventListener('change', loadAlerts);
+document.getElementById('drillClear').addEventListener('click', () => document.getElementById('clearBtn').click());
+updateDrillBanner();
+loadFacets();
+(async () => {
+  try {
+    const d = await (await fetch('/api/norm-patterns')).json();
+    document.getElementById('normPatterns').value = (d.patterns||[]).join('\n');
+    const c = await (await fetch('/api/norm-columns')).json();
+    xCols = c.columns || [];
+    document.getElementById('normColumns').value = xCols.join(', ');
+    renderXColumns();
+    if (xCols.length) loadLogs();
+  } catch(e){}
+})();
+document.getElementById('reindexBtn').addEventListener('click', async () => {
+  const st = document.getElementById('patternsStatus');
+  const r = await fetch('/api/norm-reindex', {method:'POST'});
+  const d = await r.json();
+  if (d.error) { st.textContent = d.error; st.style.color='var(--warn)'; return; }
+  st.style.color = 'var(--ink-soft)';
+  const poll = setInterval(async () => {
+    const sdat = await (await fetch('/api/norm-reindex/status')).json();
+    if (sdat.running) {
+      st.textContent = `Re-indexing… ${sdat.done_logs.toLocaleString()} logs done`;
+    } else {
+      clearInterval(poll);
+      st.textContent = sdat.last_result || 'Re-index complete.';
+      st.style.color = 'var(--ok)';
+      loadLogs();
+    }
+  }, 800);
+});
+document.getElementById('savePatternsBtn').addEventListener('click', async () => {
+  const pats = document.getElementById('normPatterns').value.split('\n').map(p=>p.trim()).filter(Boolean);
+  const st = document.getElementById('patternsStatus');
+  const r = await fetch('/api/norm-patterns', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({patterns:pats})});
+  const d = await r.json();
+  if (d.error) { st.textContent = d.error; st.style.color = 'var(--warn)'; return; }
+  const r2 = await fetch('/api/norm-columns', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({columns: document.getElementById('normColumns').value})});
+  const d2 = await r2.json();
+  if (d2.error) { st.textContent = d2.error; st.style.color = 'var(--warn)'; return; }
+  xCols = d2.columns || [];
+  xSort = ''; renderXColumns();
+  st.textContent = `Saved ${d.count} pattern(s), ${xCols.length} column(s).`;
+  st.style.color = 'var(--ok)';
+  loadLogs();
+});
+
+let autoRefresh = true;
+// When true, the fetches happening are a background auto-refresh (timer),
+// not user interaction — so they send X-Background-Poll and don't reset the
+// server-side idle-session clock. Manual actions leave this false.
+let _bgPoll = false;
+const _origFetch = window.fetch;
+window.fetch = function(url, opts) {
+  if (_bgPoll) {
+    opts = opts || {};
+    opts.headers = Object.assign({}, opts.headers, {'X-Background-Poll': '1'});
+  }
+  return _origFetch(url, opts);
+};
+
+function refreshAll(background) {
+  _bgPoll = !!background;
+  try {
+    loadStats(); loadAlerts(); loadLogs(); loadAiQueue();
+    document.getElementById('lastUpdated').textContent = 'Last updated: ' + new Date().toLocaleTimeString();
+  } finally {
+    // reset after the synchronous dispatch; the fetches captured the flag
+    setTimeout(() => { _bgPoll = false; }, 0);
+  }
+}
+
+document.getElementById('refreshNowBtn').addEventListener('click', () => refreshAll(false));
+
+// Total alerts card -> scroll to the Alerts list
+document.getElementById('cardAlerts').addEventListener('click', () => {
+  const el = document.getElementById('alertsSection');
+  if (el) el.scrollIntoView({behavior:'smooth', block:'start'});
+});
+
+document.getElementById('autoToggleBtn').addEventListener('click', () => {
+  autoRefresh = !autoRefresh;
+  const b = document.getElementById('autoToggleBtn');
+  if (autoRefresh) {
+    b.textContent = 'Auto-refresh: ON';
+    b.style.background = 'var(--ok-soft)'; b.style.color = 'var(--ok)'; b.style.borderColor = 'var(--ok)';
+    refreshAll(false);
+  } else {
+    b.textContent = 'Auto-refresh: OFF';
+    b.style.background = 'var(--canvas)'; b.style.color = 'var(--ink-soft)'; b.style.borderColor = 'var(--line)';
+  }
+});
+
+renderFieldChips();
+refreshAll(false);
+setInterval(() => { if (autoRefresh) refreshAll(true); }, 5000);
+</script>
+
+
+<!-- AI analysis popup -->
+<div id="aiModalOverlay" onclick="if(event.target===this)closeAiModal()" style="display:none;position:fixed;inset:0;background:rgba(22,32,43,.55);z-index:1000;align-items:center;justify-content:center;padding:24px;">
+  <div style="background:var(--panel);border-radius:12px;max-width:720px;width:100%;max-height:85vh;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,.3);">
+    <div style="padding:18px 22px;border-bottom:1px solid var(--line);display:flex;align-items:flex-start;justify-content:space-between;gap:12px;">
+      <div>
+        <div style="font-family:var(--mono);font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--ink-soft);margin-bottom:4px;">AI analysis</div>
+        <div id="aiModalTitle" style="font-size:16px;font-weight:700;"></div>
+        <div id="aiModalMeta" style="font-size:12px;color:var(--ink-soft);margin-top:6px;"></div>
+      </div>
+      <button onclick="closeAiModal()" style="background:none;border:none;font-size:22px;line-height:1;cursor:pointer;color:var(--ink-soft);padding:2px 6px;" title="Close (Esc)">×</button>
+    </div>
+    <div id="aiModalBody" style="padding:18px 22px;overflow-y:auto;max-height:60vh;min-height:120px;white-space:pre-wrap;font-size:13px;line-height:1.6;"></div>
+    <div style="padding:12px 22px;border-top:1px solid var(--line);display:flex;gap:10px;justify-content:flex-end;">
+      <button id="aiModalLogs" style="padding:8px 14px;border:1px solid var(--accent);background:#fff;color:var(--accent);border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;">View related logs</button>
+      <button onclick="closeAiModal()" style="padding:8px 14px;border:none;background:var(--accent);color:#fff;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;">Close</button>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>

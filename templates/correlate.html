@@ -1,0 +1,420 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta name="csrf-token" content="{{ csrf_token() }}">
+<script src="{{ url_for('static', filename='csrf.js') }}"></script>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>mini-SIEM — Correlate</title>
+<style>
+  :root {
+    --ink: #16202b; --ink-soft: #4a5a6a; --line: #d7dee5;
+    --panel: #ffffff; --canvas: #eef1f4;
+    --accent: #1f5eff; --accent-dark: #143fb0; --accent-soft: #e8eefc;
+    --ok: #1a7f5a; --ok-soft: #e5f5ee;
+    --warn: #b5350c; --warn-soft: #fbe9e2;
+    --amber: #9a6b00; --amber-soft: #fbf1dc;
+    --mono: 'SFMono-Regular', Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body { font-family: var(--sans); margin: 0; background: var(--canvas); color: var(--ink); }
+  header { background: var(--ink); color: #fff; padding: 18px 28px; display: flex; align-items: baseline; gap: 20px; }
+  header h1 { margin: 0; font-size: 18px; }
+  header nav a { color: #9fb3c8; font-size: 13px; text-decoration: none; margin-right: 14px; }
+  header nav a:hover, header nav a.active { color: #fff; }
+  .wrap { max-width: 1200px; margin: 24px auto; padding: 0 20px; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 18px; margin-bottom: 20px; }
+  .panel h2 { margin: 0 0 4px; font-size: 15px; }
+  .panel .sub { color: var(--ink-soft); font-size: 12.5px; margin: 0 0 14px; }
+
+  .pb-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 12px; }
+  .pb-card { border: 1px solid var(--line); border-radius: 8px; padding: 14px; display: flex; flex-direction: column; gap: 8px; }
+  .pb-card .pb-head { display: flex; justify-content: space-between; gap: 8px; align-items: flex-start; }
+  .pb-card h3 { margin: 0; font-size: 13.5px; }
+  .pb-card .cat { font-family: var(--mono); font-size: 10px; text-transform: uppercase; color: var(--ink-soft); }
+  .pb-card p { margin: 0; font-size: 12.5px; color: var(--ink-soft); line-height: 1.45; flex: 1; }
+  .pb-run-row { display: flex; gap: 8px; align-items: center; }
+  .pb-run-row select { padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; font-size: 12px; }
+  .badge { font-family: var(--mono); font-size: 10px; padding: 2px 7px; border-radius: 20px; border: 1px solid var(--line); white-space: nowrap; }
+  .sev-critical { background: var(--warn-soft); color: var(--warn); border-color: var(--warn); }
+  .sev-warning { background: var(--amber-soft); color: var(--amber); border-color: var(--amber); }
+  .sev-informational { background: var(--ok-soft); color: var(--ok); border-color: var(--ok); }
+
+  button { padding: 8px 14px; border: none; border-radius: 6px; font-size: 13px; font-weight: 600; cursor: pointer; background: var(--accent); color: #fff; }
+  button:hover { background: var(--accent-dark); }
+  button.secondary { background: #fff; color: var(--accent); border: 1px solid var(--accent); }
+  button.secondary:hover { background: var(--accent-soft); }
+  button:disabled { opacity: 0.6; cursor: default; }
+
+  .form-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+  .form-grid .full { grid-column: 1 / -1; }
+  .fld label { display: block; font-size: 12px; font-weight: 600; margin-bottom: 4px; }
+  .fld label .hint { font-weight: 400; color: var(--ink-soft); }
+  .fld input, .fld select { width: 100%; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; font-size: 13px; }
+  .fld input.mono { font-family: var(--mono); font-size: 12.5px; }
+  .hidden { display: none !important; }
+
+  #resultsPanel h2 span { font-weight: 400; color: var(--ink-soft); font-size: 12.5px; }
+  .response-steps { background: var(--accent-soft); border: 1px solid var(--accent); border-radius: 8px; padding: 12px 16px 12px 32px; margin: 10px 0 16px; font-size: 13px; }
+  .response-steps li { margin-bottom: 5px; }
+  table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  thead th { text-align: left; font-family: var(--mono); font-size: 10px; text-transform: uppercase; color: var(--ink-soft); padding: 6px 8px; border-bottom: 1px solid var(--line); }
+  tbody td { padding: 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  .mono-cell { font-family: var(--mono); font-size: 12px; }
+  .sample { font-family: var(--mono); font-size: 11px; color: var(--ink-soft); margin-top: 4px; white-space: pre-wrap; word-break: break-word; }
+  .muted { color: var(--ink-soft); font-size: 12.5px; }
+  .status-line { font-size: 12.5px; margin-top: 8px; }
+  .status-line.err { color: var(--warn); }
+  .empty { padding: 30px; text-align: center; color: var(--ink-soft); font-size: 13px; }
+  details summary { cursor: pointer; font-size: 11.5px; color: var(--accent); }
+  @media (max-width: 720px) { .form-grid { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>mini-SIEM</h1>
+  <nav>
+    <a href="/">Live logs &amp; alerts</a>
+    <a href="/correlate" class="active">Correlate</a>
+    <a href="/threatintel">Threat Intel</a>
+    <a href="/health">Health</a>
+    <a href="/audit">Audit</a>
+    <a href="/setup">Setup</a>
+    <a href="/ai">AI Analyst</a>
+    <a href="/help">Help</a>
+    <a href="/logout">Log out</a>
+  </nav>
+</header>
+
+<div class="wrap">
+
+  <div class="panel">
+    <h2>Playbook reports</h2>
+    <p class="sub">Run every playbook over a window and save the results as a report — on demand here, or automatically on a schedule. Scheduled reports run inside the SIEM process (no cron needed) as long as it's running.</p>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;">
+      <div><label style="font-size:12px;font-weight:600;display:block;margin-bottom:4px;">Window</label>
+        <select id="repDays"><option value="1">Last 24 hours</option><option value="7" selected>Last 7 days</option><option value="30">Last 30 days</option><option value="90">Last 90 days</option></select></div>
+      <button id="runReportBtn">Run report now</button>
+      <div><label style="font-size:12px;font-weight:600;display:block;margin-bottom:4px;">Schedule</label>
+        <select id="repSched"><option value="off">Off</option><option value="weekly">Weekly (7-day window)</option><option value="monthly">Monthly (30-day window)</option></select></div>
+      <button class="secondary" id="saveSchedBtn">Save schedule</button>
+      <span class="muted" id="repStatus"></span>
+    </div>
+    <div class="table-scroll" style="max-height:220px;margin-top:14px;">
+      <table>
+        <thead><tr><th>#</th><th>Created</th><th>Trigger</th><th>Window</th><th>Summary</th><th></th></tr></thead>
+        <tbody id="reportsBody"><tr><td colspan="6" class="muted">Loading…</td></tr></tbody>
+      </table>
+    </div>
+    <div id="reportView" style="display:none;margin-top:14px;border-top:1px solid var(--line);padding-top:14px;"></div>
+  </div>
+
+
+  <div class="panel">
+    <h2>Playbooks</h2>
+    <p class="sub">Pre-built correlations for common investigation scenarios. Pick a lookback window and run — results and suggested response steps appear below.</p>
+    <div class="pb-grid" id="pbGrid"><div class="muted">Loading playbooks…</div></div>
+  </div>
+
+  <div class="panel">
+    <h2>Ad-hoc correlation</h2>
+    <p class="sub">Build your own correlation query against stored events. Patterns are regular expressions matched against the message text (case-insensitive).</p>
+    <div class="form-grid">
+      <div class="fld">
+        <label>Correlation type</label>
+        <select id="fType">
+          <option value="threshold">Threshold — N+ matching events from same key</option>
+          <option value="sequence">Sequence — pattern A then pattern B from same key</option>
+          <option value="fanout">Fan-out — one key touching many distinct values</option>
+          <option value="first_seen">First seen — keys new vs. a baseline period</option>
+        </select>
+      </div>
+      <div class="fld">
+        <label>Group by <span class="hint">(the correlation key)</span></label>
+        <select id="fGroupBy">
+          <option value="source_ip">source_ip</option>
+          <option value="hostname">hostname</option>
+          <option value="app_name">app_name</option>
+          <option value="user">user (extracted from message)</option>
+        </select>
+      </div>
+      <div class="fld">
+        <label>Lookback window</label>
+        <select id="fWindow">
+          <option value="15">Last 15 minutes</option>
+          <option value="60" selected>Last hour</option>
+          <option value="360">Last 6 hours</option>
+          <option value="1440">Last 24 hours</option>
+          <option value="10080">Last 7 days</option>
+        </select>
+      </div>
+
+      <div class="fld full">
+        <label>Pattern <span class="hint">(regex over message text)</span></label>
+        <input type="text" id="fPattern" class="mono" placeholder="e.g. failed password|4625">
+      </div>
+
+      <div class="fld" id="rowThreshold">
+        <label>Threshold <span class="hint">(min count / distinct values)</span></label>
+        <input type="number" id="fThreshold" value="5" min="1">
+      </div>
+
+      <div class="fld hidden" id="rowPatternB">
+        <label>Pattern B <span class="hint">(the "then" event)</span></label>
+        <input type="text" id="fPatternB" class="mono" placeholder="e.g. accepted password|4624">
+      </div>
+      <div class="fld hidden" id="rowGap">
+        <label>Max gap seconds <span class="hint">(A→B)</span></label>
+        <input type="number" id="fGap" value="600" min="1">
+      </div>
+      <div class="fld hidden" id="rowMinA">
+        <label>Min A count before B</label>
+        <input type="number" id="fMinA" value="5" min="1">
+      </div>
+
+      <div class="fld hidden" id="rowDistinct">
+        <label>Distinct field <span class="hint">(what fans out)</span></label>
+        <select id="fDistinct">
+          <option value="hostname">hostname</option>
+          <option value="source_ip">source_ip</option>
+          <option value="app_name">app_name</option>
+          <option value="user">user</option>
+        </select>
+      </div>
+
+      <div class="fld hidden" id="rowBaseline">
+        <label>Baseline period <span class="hint">(before the window)</span></label>
+        <select id="fBaseline">
+          <option value="1440">1 day</option>
+          <option value="10080" selected>7 days</option>
+          <option value="43200">30 days</option>
+        </select>
+      </div>
+
+      <div class="fld full">
+        <button id="runAdhoc">Run correlation</button>
+        <span class="status-line" id="adhocStatus"></span>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel" id="resultsPanel">
+    <h2>Results <span id="resultsMeta"></span></h2>
+    <div id="resultsBody"><div class="empty">Run a playbook or an ad-hoc correlation to see results here.</div></div>
+  </div>
+
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+
+async function loadPlaybooks() {
+  const r = await fetch('/api/playbooks');
+  const pbs = await r.json();
+  $('pbGrid').innerHTML = pbs.map(pb => `
+    <div class="pb-card">
+      <div class="pb-head">
+        <div>
+          <div class="cat">${esc(pb.category)}</div>
+          <h3>${esc(pb.name)}</h3>
+        </div>
+        <span class="badge sev-${pb.severity}">${pb.severity}</span>
+      </div>
+      <p>${esc(pb.description)}</p>
+      <div class="pb-run-row">
+        <select id="win_${pb.id}">
+          <option value="60">1h</option>
+          <option value="360">6h</option>
+          <option value="1440" ${pb.params.window_minutes >= 1440 ? 'selected' : ''}>24h</option>
+          <option value="10080">7d</option>
+        </select>
+        <button class="secondary" onclick="runPlaybook('${pb.id}')">Run</button>
+      </div>
+    </div>`).join('');
+}
+
+async function runPlaybook(id) {
+  setResults('<div class="empty">Running playbook…</div>', '');
+  const win = $('win_' + id).value;
+  const r = await fetch('/api/playbooks/run', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id, window_minutes: parseInt(win) })
+  });
+  const data = await r.json();
+  if (data.error) { setResults(`<div class="empty">Error: ${esc(data.error)}</div>`, ''); return; }
+  renderResults(data, data.playbook);
+  $('resultsPanel').scrollIntoView({ behavior: 'smooth' });
+}
+
+function syncFormVisibility() {
+  const t = $('fType').value;
+  $('rowPatternB').classList.toggle('hidden', t !== 'sequence');
+  $('rowGap').classList.toggle('hidden', t !== 'sequence');
+  $('rowMinA').classList.toggle('hidden', t !== 'sequence');
+  $('rowDistinct').classList.toggle('hidden', t !== 'fanout');
+  $('rowBaseline').classList.toggle('hidden', t !== 'first_seen');
+  $('rowThreshold').classList.toggle('hidden', t === 'sequence' || t === 'first_seen');
+}
+$('fType').addEventListener('change', syncFormVisibility);
+syncFormVisibility();
+
+$('runAdhoc').addEventListener('click', async () => {
+  const t = $('fType').value;
+  const params = {
+    type: t,
+    group_by: $('fGroupBy').value,
+    window_minutes: parseInt($('fWindow').value),
+    pattern: $('fPattern').value || '.',
+  };
+  if (t === 'threshold' || t === 'fanout') params.threshold = parseInt($('fThreshold').value) || 1;
+  if (t === 'sequence') {
+    if (!$('fPatternB').value) { $('adhocStatus').textContent = 'Pattern B is required for sequence.'; $('adhocStatus').className = 'status-line err'; return; }
+    params.pattern_b = $('fPatternB').value;
+    params.max_gap_seconds = parseInt($('fGap').value) || 600;
+    params.min_a_count = parseInt($('fMinA').value) || 1;
+  }
+  if (t === 'fanout') params.distinct_field = $('fDistinct').value;
+  if (t === 'first_seen') params.baseline_minutes = parseInt($('fBaseline').value);
+
+  $('adhocStatus').textContent = 'Running…'; $('adhocStatus').className = 'status-line';
+  $('runAdhoc').disabled = true;
+  try {
+    const r = await fetch('/api/correlate', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(params)
+    });
+    const data = await r.json();
+    if (data.error) { $('adhocStatus').textContent = 'Error: ' + data.error; $('adhocStatus').className = 'status-line err'; return; }
+    $('adhocStatus').textContent = '';
+    renderResults(data, null);
+    $('resultsPanel').scrollIntoView({ behavior: 'smooth' });
+  } finally {
+    $('runAdhoc').disabled = false;
+  }
+});
+
+function esc(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;'); }
+
+function setResults(html, meta) {
+  $('resultsBody').innerHTML = html;
+  $('resultsMeta').textContent = meta || '';
+}
+
+function renderResults(data, playbook) {
+  let html = '';
+  if (playbook) {
+    html += `<p class="muted"><strong>${esc(playbook.name)}</strong> — ${esc(playbook.description)}</p>`;
+  }
+
+  if (!data.groups || data.groups.length === 0) {
+    html += '<div class="empty">No matches in this window. That\'s a fine outcome — it means this pattern wasn\'t observed.</div>';
+    setResults(html, `type: ${data.type} · 0 hits`);
+    return;
+  }
+
+  if (playbook && playbook.response_steps) {
+    html += `<div class="response-steps"><strong>Response steps:</strong><ol>` +
+      playbook.response_steps.map(s => `<li>${esc(s)}</li>`).join('') + `</ol></div>`;
+  }
+
+  const t = data.type;
+  if (t === 'threshold' || t === 'first_seen') {
+    html += tableWrap(['Key', 'Count', 'First', 'Last', 'Evidence'],
+      data.groups.map(g => row([
+        mono(g.key), g.count, mono(short(g.first)), mono(short(g.last)), evidence(g)
+      ])));
+  } else if (t === 'sequence') {
+    html += tableWrap(['Key', 'A events', 'B (success) at', 'Span (s)', 'Evidence'],
+      data.groups.map(g => row([
+        mono(g.key), g.a_count, mono(short(g.b_time)), g.gap_seconds, evidence(g)
+      ])));
+  } else if (t === 'fanout') {
+    html += tableWrap(['Key', 'Distinct values', 'Values (sample)', 'Events', 'Evidence'],
+      data.groups.map(g => row([
+        mono(g.key), g.distinct_count, mono(g.distinct_values.join(', ')), g.count, evidence(g)
+      ])));
+  }
+
+  setResults(html, `type: ${data.type} · ${data.group_count} matching group(s)`);
+}
+
+function short(iso) { return iso ? String(iso).replace('T', ' ').slice(0, 19) : '—'; }
+function mono(v) { return `<span class="mono-cell">${esc(v)}</span>`; }
+function row(cells) { return `<tr>${cells.map(c => `<td>${c}</td>`).join('')}</tr>`; }
+function tableWrap(headers, rows) {
+  return `<table><thead><tr>${headers.map(h => `<th>${h}</th>`).join('')}</tr></thead><tbody>${rows.join('')}</tbody></table>`;
+}
+function evidence(g) {
+  const samples = (g.sample || []).map(s => `<div class="sample">#${s.id} ${esc(short(s.received_at))} — ${esc(s.message)}</div>`).join('');
+  const link = `/?ids=${(g.log_ids || []).slice(0, 200).join(',')}`;
+  return `<details><summary>${(g.log_ids || []).length} event(s) — view samples</summary>${samples}
+    <div style="margin-top:6px"><a href="${link}" target="_blank" style="font-size:11.5px">Open all in log view →</a></div></details>`;
+}
+
+loadPlaybooks();
+
+// ---- Playbook reports ----
+async function loadReports(){
+  const rows = await (await fetch('/api/reports')).json();
+  const b = document.getElementById('reportsBody');
+  if(!rows.length){ b.innerHTML='<tr><td colspan="6" class="muted">No reports yet — run one above.</td></tr>'; return; }
+  b.innerHTML = rows.map(r => `
+    <tr>
+      <td>#${r.id}</td>
+      <td>${new Date(r.created_at).toLocaleString()}</td>
+      <td>${esc(r.trigger)}</td>
+      <td>${r.window_days}d</td>
+      <td>${r.findings>0? '<strong style="color:var(--warn)">'+esc(r.summary)+'</strong>' : esc(r.summary)}</td>
+      <td style="white-space:nowrap;text-align:right;">
+        <button class="secondary small" onclick="viewReport(${r.id})">View</button>
+        <a class="secondary small" style="text-decoration:none;display:inline-block;padding:4px 10px;border:1px solid var(--accent);color:var(--accent);border-radius:6px;font-size:11.5px;font-weight:600;" href="/api/reports/${r.id}" download="siem-report-${r.id}.json">JSON</a>
+        <button class="danger small" onclick="delReport(${r.id})">Delete</button></td>
+    </tr>`).join('');
+}
+async function viewReport(id){
+  const d = await (await fetch('/api/reports/'+id)).json();
+  const v = document.getElementById('reportView');
+  const hits = (d.results||[]).filter(r=>r.group_count>0);
+  const clean = (d.results||[]).filter(r=>!r.group_count && !r.error);
+  v.style.display='block';
+  v.innerHTML = '<h3 style="font-size:14px;margin:0 0 8px;">Report #'+d.id+' — '+esc(d.summary)+'</h3>'
+    + (hits.length ? hits.map(r =>
+        '<div style="border:1px solid var(--warn);border-radius:8px;padding:12px;margin-bottom:10px;background:var(--warn-soft);">'
+        + '<strong>'+esc(r.name)+'</strong> <span class="muted">('+esc(r.category)+' · '+r.group_count+' group(s))</span>'
+        + '<div style="font-size:12px;margin-top:6px;">'+ (r.groups||[]).slice(0,5).map(g=>'<div class="mono">'+esc(g.key||'')+' — '+ (g.count||g.first_count||'') +' event(s)</div>').join('') +'</div>'
+        + (r.response_steps && r.response_steps.length ? '<details style="margin-top:6px;"><summary style="font-size:12px;cursor:pointer;">Response steps</summary><ol style="font-size:12px;margin:6px 0 0;">'+r.response_steps.map(s=>'<li>'+esc(s)+'</li>').join('')+'</ol></details>' : '')
+        + '</div>').join('') : '<p class="muted">No findings in this window.</p>')
+    + '<p class="muted" style="font-size:11.5px;">'+clean.length+' playbook(s) came back clean.</p>';
+  v.scrollIntoView({behavior:'smooth'});
+}
+async function delReport(id){
+  if(!confirm('Delete report #'+id+'?')) return;
+  await fetch('/api/reports/'+id, {method:'DELETE'}); loadReports();
+}
+document.getElementById('runReportBtn').addEventListener('click', async () => {
+  const st = document.getElementById('repStatus');
+  st.textContent = 'Running all playbooks…';
+  const r = await fetch('/api/reports/run', {method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({window_days: parseInt(document.getElementById('repDays').value)})});
+  const d = await r.json();
+  st.textContent = d.summary || d.error || 'done';
+  loadReports(); if(d.id) viewReport(d.id);
+});
+document.getElementById('saveSchedBtn').addEventListener('click', async () => {
+  const r = await fetch('/api/reports/schedule', {method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({schedule: document.getElementById('repSched').value})});
+  const d = await r.json();
+  document.getElementById('repStatus').textContent = d.error || ('Schedule: '+d.schedule);
+});
+(async () => {
+  const d = await (await fetch('/api/reports/schedule')).json();
+  document.getElementById('repSched').value = d.schedule || 'off';
+})();
+loadReports();
+</script>
+
+</body>
+</html>

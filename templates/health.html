@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta name="csrf-token" content="{{ csrf_token() }}">
+<script src="{{ url_for('static', filename='csrf.js') }}"></script>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>mini-SIEM — Health</title>
+<style>
+  :root {
+    --ink:#16202b; --ink-soft:#4a5a6a; --line:#d7dee5; --panel:#fff; --canvas:#eef1f4;
+    --accent:#1f5eff; --ok:#1a7f5a; --ok-soft:#e5f5ee; --warn:#b5350c; --warn-soft:#fbe9e2;
+    --amber:#9a6b00; --amber-soft:#fbf1dc;
+    --mono:'SFMono-Regular',Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;
+  }
+  * { box-sizing:border-box; }
+  body { font-family:var(--sans); margin:0; background:var(--canvas); color:var(--ink); }
+  header { background:var(--ink); color:#fff; padding:18px 28px; display:flex; align-items:baseline; gap:20px; flex-wrap:wrap; }
+  header h1 { margin:0; font-size:18px; }
+  header nav a { color:#9fb3c8; font-size:13px; text-decoration:none; margin-right:14px; }
+  header nav a:hover, header nav a.active { color:#fff; }
+  .wrap { max-width:1100px; margin:24px auto; padding:0 20px; }
+  .bar { display:flex; align-items:center; gap:10px; margin-bottom:14px; }
+  .bar button { padding:8px 14px; border:none; border-radius:6px; font-size:13px; font-weight:600; cursor:pointer; background:var(--accent); color:#fff; }
+  .bar .muted { color:var(--ink-soft); font-size:12px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(250px,1fr)); gap:14px; margin-bottom:20px; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:16px; }
+  .card h3 { margin:0 0 10px; font-size:12px; font-family:var(--mono); text-transform:uppercase; letter-spacing:.06em; color:var(--ink-soft); }
+  .metric { font-size:26px; font-weight:700; line-height:1.1; }
+  .metric .unit { font-size:14px; font-weight:500; color:var(--ink-soft); }
+  .sub { font-size:12px; color:var(--ink-soft); margin-top:4px; }
+  .track { height:8px; background:var(--canvas); border-radius:6px; margin-top:10px; overflow:hidden; border:1px solid var(--line); }
+  .fill { height:100%; border-radius:6px; transition:width .4s; }
+  .fill.ok { background:var(--ok); } .fill.amber { background:var(--amber); } .fill.warn { background:var(--warn); }
+  .kv { display:flex; justify-content:space-between; font-size:13px; padding:4px 0; border-bottom:1px solid var(--line); }
+  .kv:last-child { border-bottom:none; }
+  .kv .v { font-family:var(--mono); }
+  .pill { display:inline-block; font-family:var(--mono); font-size:10px; padding:2px 8px; border-radius:20px; border:1px solid var(--line); }
+  .pill.ok { background:var(--ok-soft); color:var(--ok); border-color:var(--ok); }
+  .pill.warn { background:var(--warn-soft); color:var(--warn); border-color:var(--warn); }
+  .section-title { font-size:13px; font-weight:700; margin:6px 0 12px; color:var(--ink-soft); text-transform:uppercase; letter-spacing:.05em; }
+  .note { font-size:11.5px; color:var(--ink-soft); }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>mini-SIEM</h1>
+  <nav>
+    <a href="/">Live logs &amp; alerts</a>
+    <a href="/correlate">Correlate</a>
+    <a href="/threatintel">Threat Intel</a>
+    <a href="/health" class="active">Health</a>
+    <a href="/audit">Audit</a>
+    <a href="/setup">Setup</a>
+    <a href="/ai">AI Analyst</a>
+    <a href="/help">Help</a>
+    <a href="/logout">Log out</a>
+  </nav>
+</header>
+
+<div class="wrap">
+  <div class="bar">
+    <button id="refreshNow">Refresh now</button>
+    <button id="autoToggle" style="background:var(--ok-soft);color:var(--ok);border:1px solid var(--ok);">Auto: ON</button>
+    <span class="muted" id="updated"></span>
+  </div>
+
+  <div class="section-title">System</div>
+  <div class="grid" id="sysGrid"></div>
+
+  <div class="section-title">SIEM data plane</div>
+  <div class="grid" id="siemGrid"></div>
+
+  <div class="section-title">Database integrity</div>
+  <div class="grid" id="dbGrid">
+    <div class="card">
+      <h3>Integrity</h3>
+      <div class="metric" id="dbIntegrity">—</div>
+      <div class="sub" id="dbIntegrityDetail">Click check to verify the database structure.</div>
+      <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;">
+        <button id="dbCheckBtn" style="padding:6px 12px;border:none;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;background:var(--accent);color:#fff;">Check now</button>
+        <button id="dbBackupBtn" style="padding:6px 12px;border:1px solid var(--accent);border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;background:#fff;color:var(--accent);">Backup now</button>
+      </div>
+      <div class="sub" id="dbBackupResult" style="margin-top:8px;"></div>
+    </div>
+    <div class="card" id="dbFileCard">
+      <h3>Database file</h3>
+      <div id="dbFileInfo" class="sub">—</div>
+      <div class="note" style="margin-top:8px;">Automated backups + integrity checks: schedule <span style="font-family:var(--mono);">db-maintenance.sh</span> in cron (see README).</div>
+    </div>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+let auto = true;
+
+function bytes(n){ if(n==null) return '—'; const u=['B','KB','MB','GB','TB']; let i=0; n=+n; while(n>=1024&&i<u.length-1){n/=1024;i++;} return n.toFixed(i?1:0)+' '+u[i]; }
+function bps(n){ return n==null?'—':bytes(n)+'/s'; }
+function cls(p,a,w){ return p>=w?'warn':p>=a?'amber':'ok'; }
+
+function gauge(title, pct, big, sub, a, w){
+  const c = cls(pct,a,w);
+  return `<div class="card"><h3>${title}</h3>
+    <div class="metric">${big}</div>
+    <div class="sub">${sub||''}</div>
+    <div class="track"><div class="fill ${c}" style="width:${Math.min(100,Math.max(0,pct))}%"></div></div></div>`;
+}
+function kvCard(title, rows){
+  return `<div class="card"><h3>${title}</h3>${rows.map(r=>`<div class="kv"><span>${r[0]}</span><span class="v">${r[1]}</span></div>`).join('')}</div>`;
+}
+
+async function load(){
+  let d;
+  try { d = await (await fetch('/api/health')).json(); }
+  catch(e){ return; }
+
+  // ---- system ----
+  const sys = [];
+  if(d.cpu && d.cpu.available){
+    sys.push(gauge('CPU', d.cpu.percent, d.cpu.percent+'<span class="unit">%</span>',
+      'iowait '+d.cpu.iowait_percent+'%', 60, 85));
+  }
+  if(d.memory && d.memory.available){
+    sys.push(gauge('Memory', d.memory.percent, d.memory.percent+'<span class="unit">%</span>',
+      bytes(d.memory.used)+' / '+bytes(d.memory.total), 75, 90));
+  }
+  if(d.disk && d.disk.available){
+    sys.push(gauge('Disk ('+d.disk.path+')', d.disk.percent, d.disk.percent+'<span class="unit">%</span>',
+      bytes(d.disk.used)+' / '+bytes(d.disk.total)+' — '+bytes(d.disk.free)+' free', 80, 90));
+  }
+  if(d.load && d.load.available){
+    const pct = d.load.cores? (d.load.one/d.load.cores*100):0;
+    sys.push(gauge('Load average', pct, d.load.one+'<span class="unit"> (1m)</span>',
+      d.load.five+' (5m) · '+d.load.fifteen+' (15m) · '+d.load.cores+' cores', 70, 100));
+  }
+  if(d.io){
+    if(d.io.available && !d.io.warming_up){
+      sys.push(kvCard('Disk / Net I/O', [
+        ['Disk read', bps(d.io.disk_read_bps)],
+        ['Disk write', bps(d.io.disk_write_bps)],
+        ['Net recv', bps(d.io.net_recv_bps)],
+        ['Net sent', bps(d.io.net_sent_bps)],
+      ]));
+    } else {
+      sys.push(`<div class="card"><h3>Disk / Net I/O</h3><div class="note">${d.io.reason||'warming up…'}</div></div>`);
+    }
+  }
+  if(d.udp && d.udp.available){
+    const drops = d.udp.drops||0;
+    sys.push(`<div class="card"><h3>UDP receive</h3>
+      <div class="metric">${drops} <span class="unit">drops</span> ${drops>0?'<span class="pill warn">check</span>':'<span class="pill ok">clean</span>'}</div>
+      <div class="sub">datagrams in: ${d.udp.in_datagrams.toLocaleString()} · buffer errors: ${d.udp.rcvbuf_errors}</div>
+      <div class="note" style="margin-top:6px">Rising drops = packets lost before storage (listener can't keep up).</div></div>`);
+  }
+  $('sysGrid').innerHTML = sys.join('') || '<div class="card"><div class="note">No system metrics available on this host.</div></div>';
+
+  // ---- siem ----
+  const s = d.siem || {};
+  const siem = [];
+  siem.push(`<div class="card"><h3>Ingest rate</h3>
+    <div class="metric">${s.events_per_sec_1m ?? '—'} <span class="unit">ev/s</span></div>
+    <div class="sub">${(s.events_last_min ?? 0).toLocaleString()} in last min · ${(s.events_last_hour ?? 0).toLocaleString()} in last hour</div></div>`);
+  siem.push(kvCard('Stored', [
+    ['Total events', (s.total_logs ?? 0).toLocaleString()],
+    ['Total alerts', (s.total_alerts ?? 0).toLocaleString()],
+    ['Backend', s.backend || '—'],
+    ['Database size', bytes(s.db_size_bytes)],
+  ]));
+  $('siemGrid').innerHTML = siem.join('');
+
+  $('updated').textContent = 'Updated ' + new Date().toLocaleTimeString();
+}
+
+$('refreshNow').addEventListener('click', load);$('autoToggle').addEventListener('click', () => {
+  auto = !auto; const b=$('autoToggle');
+  b.textContent = 'Auto: ' + (auto?'ON':'OFF');
+  b.style.background = auto?'var(--ok-soft)':'var(--canvas)';
+  b.style.color = auto?'var(--ok)':'var(--ink-soft)';
+  b.style.borderColor = auto?'var(--ok)':'var(--line)';
+  if(auto) load();
+});
+function fmtBytes(n){ if(n==null) return '—'; const u=['B','KB','MB','GB','TB']; let i=0; n=+n; while(n>=1024&&i<u.length-1){n/=1024;i++;} return n.toFixed(i?1:0)+' '+u[i]; }
+
+async function loadDbFile(){
+  try {
+    const d = await (await fetch('/api/db/integrity')).json();
+    const f = d.file || {};
+    if (f.backend === 'postgres') {
+      document.getElementById('dbFileInfo').innerHTML = 'Backend: <strong>PostgreSQL</strong> — integrity managed by the server.';
+      document.getElementById('dbIntegrity').textContent = 'n/a';
+      document.getElementById('dbIntegrityDetail').textContent = d.detail || '';
+      return;
+    }
+    document.getElementById('dbFileInfo').innerHTML =
+      `<div class="kv"><span>Path</span><span class="v" style="font-size:11px;">${f.path||'—'}</span></div>`
+      + `<div class="kv"><span>Size</span><span class="v">${fmtBytes(f.size_bytes)}</span></div>`
+      + `<div class="kv"><span>WAL</span><span class="v">${fmtBytes(f.wal_bytes)}</span></div>`;
+  } catch(e){}
+}
+function paintIntegrity(d){
+  const el = document.getElementById('dbIntegrity');
+  const det = document.getElementById('dbIntegrityDetail');
+  if (d.ok){ el.innerHTML = '<span class="pill ok">healthy</span>'; det.textContent = (d.quick?'quick':'full')+' check passed'; }
+  else { el.innerHTML = '<span class="pill warn">problem</span>'; det.textContent = d.detail || 'integrity check failed'; }
+}
+document.getElementById('dbCheckBtn').addEventListener('click', async () => {
+  document.getElementById('dbIntegrityDetail').textContent = 'Running full integrity check…';
+  const d = await (await fetch('/api/db/integrity?full=1')).json();
+  paintIntegrity(d); loadDbFile();
+});
+document.getElementById('dbBackupBtn').addEventListener('click', async () => {
+  const out = document.getElementById('dbBackupResult');
+  out.textContent = 'Backing up…';
+  const d = await (await fetch('/api/db/backup', {method:'POST'})).json();
+  if (d.error) { out.innerHTML = '<span style="color:var(--warn)">'+d.error+'</span>'; return; }
+  out.innerHTML = `Backup ok: ${fmtBytes(d.size_bytes)} → <span style="font-family:var(--mono);font-size:11px;">${d.path}</span>`
+    + (d.verified ? ' <span class="pill ok">verified</span>' : ' <span class="pill warn">verify: '+d.verify_detail+'</span>');
+});
+
+// initial quick check (non-blocking)
+(async () => { try { paintIntegrity(await (await fetch('/api/db/integrity')).json()); } catch(e){} })();
+loadDbFile();
+setInterval(loadDbFile, 30000);
+
+load();
+setInterval(()=>{ if(auto) load(); }, 4000);
+</script>
+
+</body>
+</html>

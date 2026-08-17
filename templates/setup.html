@@ -1,0 +1,1153 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta name="csrf-token" content="{{ csrf_token() }}">
+<script src="{{ url_for('static', filename='csrf.js') }}"></script>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>mini-SIEM — Setup</title>
+<style>
+  :root {
+    --ink: #16202b; --ink-soft: #4a5a6a; --line: #d7dee5;
+    --panel: #ffffff; --canvas: #eef1f4;
+    --accent: #1f5eff; --accent-dark: #143fb0; --accent-soft: #e8eefc;
+    --ok: #1a7f5a; --ok-soft: #e5f5ee;
+    --warn: #b5350c; --warn-soft: #fbe9e2;
+    --amber: #9a6b00; --amber-soft: #fbf1dc;
+    --mono: 'SFMono-Regular', Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body { font-family: var(--sans); margin: 0; background: var(--canvas); color: var(--ink); }
+  header { background: var(--ink); color: #fff; padding: 18px 28px; display: flex; align-items: baseline; gap: 20px; }
+  header h1 { margin: 0; font-size: 18px; }
+  header nav a { color: #9fb3c8; font-size: 13px; text-decoration: none; margin-right: 14px; }
+  header nav a:hover, header nav a.active { color: #fff; }
+  .wrap { max-width: 1100px; margin: 24px auto; padding: 0 20px; }
+  /* Setup left-submenu layout */
+  .setup-layout { display: flex; gap: 20px; align-items: flex-start; }
+  .setup-nav { flex: 0 0 200px; position: sticky; top: 24px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 8px; }
+  .setup-nav a { display: block; padding: 8px 12px; font-size: 13px; color: var(--ink-soft); text-decoration: none; border-radius: 6px; cursor: pointer; }
+  .setup-nav a:hover { background: var(--canvas); }
+  .setup-nav a.active { background: var(--accent); color: #fff; font-weight: 600; }
+  .setup-content { flex: 1; min-width: 0; }
+  .setup-content .panel[data-section] { display: none; }
+  .setup-content .panel[data-section].shown { display: block; }
+  @media (max-width: 760px) { .setup-layout { flex-direction: column; } .setup-nav { position: static; width: 100%; flex-basis: auto; } }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 18px; margin-bottom: 20px; }
+  .panel h2 { margin: 0 0 4px; font-size: 15px; }
+  .panel .sub { color: var(--ink-soft); font-size: 12.5px; margin: 0 0 14px; line-height: 1.5; }
+
+  .form-grid { display: grid; grid-template-columns: 2fr 2fr 1fr 1fr; gap: 12px; }
+  .form-grid .full { grid-column: 1 / -1; }
+  .form-grid .half { grid-column: span 2; }
+  .fld label { display: block; font-size: 12px; font-weight: 600; margin-bottom: 4px; }
+  .fld label .hint { font-weight: 400; color: var(--ink-soft); }
+  .fld input, .fld select { width: 100%; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; font-size: 13px; }
+  .fld input.mono { font-family: var(--mono); font-size: 12.5px; }
+
+  button { padding: 8px 14px; border: none; border-radius: 6px; font-size: 13px; font-weight: 600; cursor: pointer; background: var(--accent); color: #fff; }
+  button:hover { background: var(--accent-dark); }
+  button.secondary { background: #fff; color: var(--accent); border: 1px solid var(--accent); }
+  button.secondary:hover { background: var(--accent-soft); }
+  button.danger { background: #fff; color: var(--warn); border: 1px solid var(--warn); }
+  button.danger:hover { background: var(--warn-soft); }
+  button.small { padding: 5px 10px; font-size: 12px; }
+  button:disabled { opacity: 0.6; cursor: default; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  thead th { text-align: left; font-family: var(--mono); font-size: 10px; text-transform: uppercase; color: var(--ink-soft); padding: 6px 8px; border-bottom: 1px solid var(--line); }
+  tbody td { padding: 10px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  .mono-cell { font-family: var(--mono); font-size: 12px; }
+  .badge { font-family: var(--mono); font-size: 10px; padding: 2px 7px; border-radius: 20px; border: 1px solid var(--line); white-space: nowrap; }
+  .b-on { background: var(--ok-soft); color: var(--ok); border-color: var(--ok); }
+  .b-off { background: var(--canvas); color: var(--ink-soft); }
+  .b-err { background: var(--warn-soft); color: var(--warn); border-color: var(--warn); }
+  .muted { color: var(--ink-soft); font-size: 12px; }
+  .status-line { font-size: 12.5px; margin-left: 10px; }
+  .status-line.err { color: var(--warn); }
+  .status-line.ok { color: var(--ok); }
+  .warn-note { background: var(--amber-soft); border: 1px solid var(--amber); color: var(--amber); border-radius: 8px; padding: 10px 14px; font-size: 12.5px; margin-bottom: 14px; line-height: 1.5; }
+  .row-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+  .err-text { color: var(--warn); font-family: var(--mono); font-size: 11px; word-break: break-word; }
+  @media (max-width: 720px) { .form-grid { grid-template-columns: 1fr 1fr; } .form-grid .half { grid-column: 1 / -1; } }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>mini-SIEM</h1>
+  <nav>
+    <a href="/">Live logs &amp; alerts</a>
+    <a href="/correlate">Correlate</a>
+    <a href="/threatintel">Threat Intel</a>
+    <a href="/health">Health</a>
+    <a href="/audit">Audit</a>
+    <a href="/setup" class="active">Setup</a>
+    <a href="/ai">AI Analyst</a>
+    <a href="/help">Help</a>
+    <a href="/logout">Log out</a>
+  </nav>
+</header>
+
+<div class="wrap">
+ <div class="setup-layout">
+  <nav class="setup-nav" id="setupNav">
+    <a data-target="sec-listen" class="active">Listen ports</a>
+    <a data-target="sec-selfmon">Monitor this host</a>
+    <a data-target="sec-pollers">API poller connectors</a>
+    <a data-target="sec-mapping">Source field mapping</a>
+    <a data-target="sec-aliases">Search field aliases</a>
+    <a data-target="sec-receiver">API log receiver</a>
+    <a data-target="sec-ticket">Ticket connector</a>
+    <a data-target="sec-users">Users &amp; access</a>
+    <a data-target="sec-forwarding">Syslog forwarding</a>
+  </nav>
+  <div class="setup-content" id="setupContent">
+
+  <div class="panel" data-section="sec-listen">
+    <h2>Syslog listen ports</h2>
+    <p class="sub">Which UDP/TCP port(s) the syslog listener binds. <strong>514</strong> is standard; add others (comma-separated) for devices that send elsewhere, e.g. <span class="mono">10514</span>. Every port runs the same pipeline. <strong>The listener reads this at startup — changes here take effect only after you restart the listener process.</strong></p>
+
+    <div id="portsRestartBanner" style="display:none;background:var(--warn-soft);border:1px solid var(--warn);border-radius:8px;padding:12px;margin-bottom:12px;">
+      <div style="font-weight:600;margin-bottom:4px;">Restart required</div>
+      <div style="font-size:13px;color:var(--ink-soft);">Listen ports saved as <strong id="portsSavedVal"></strong>. Restart the listener process for this to take effect. It's a separate process from this dashboard, so restarting it won't interrupt the console. For example:</div>
+      <pre class="mono" style="background:var(--canvas);padding:8px;border-radius:6px;margin-top:8px;">sudo pkill -f listener.py
+sudo python3 listener.py --db siem.db &amp;</pre>
+    </div>
+
+    <div class="fld-row">
+      <div class="fld"><label>Listen port(s) <span class="hint">(comma-separated)</span></label>
+        <input type="text" id="listenPorts" class="mono" placeholder="514,10514"></div>
+      <div class="fld" style="align-self:end;"><button id="savePortsBtn">Save ports</button></div>
+    </div>
+    <span class="status-line" id="portsStatus"></span>
+  </div>
+
+  <div class="panel" data-section="sec-selfmon">
+    <h2>Monitor this host</h2>
+    <p class="sub">Send the SIEM server's <strong>own</strong> logs into mini-SIEM, so it watches
+      itself — logins, sudo, SSH, account changes, and the Linux audit trail. A SIEM that can't
+      see its own host is blind to attacks against itself. Pick the sources below and paste the
+      generated config on this server. <a href="/help#selfmon">Learn more</a></p>
+
+    <div class="fld-row" style="align-items:flex-start;gap:24px;">
+      <div class="fld" style="flex:0 0 auto;">
+        <label>Send to</label>
+        <div style="display:flex;gap:8px;">
+          <input type="text" id="selfmonHost" class="mono" style="width:130px;" placeholder="127.0.0.1" value="127.0.0.1"
+                 title="Where the local log shipper sends. 127.0.0.1 keeps it on-box (recommended when the listener runs on this same server).">
+          <input type="text" id="selfmonPort" class="mono" style="width:70px;" placeholder="514"
+                 title="The listener's port — prefilled from your Listen ports setting.">
+          <select id="selfmonProto" title="UDP is the syslog default. TCP is more reliable for high-value audit records.">
+            <option value="udp">UDP</option>
+            <option value="tcp">TCP</option>
+          </select>
+        </div>
+      </div>
+    </div>
+
+    <label style="display:block;margin:14px 0 6px;font-weight:600;font-size:13px;">Which logs to send</label>
+    <div style="display:flex;flex-direction:column;gap:8px;max-width:640px;">
+      <label class="selfmon-src" style="display:flex;gap:10px;align-items:flex-start;">
+        <input type="checkbox" id="src_audit" checked>
+        <span><strong>Linux audit trail (auditd)</strong> <span class="hint">— the compliance audit log: logins, sudo, file-access watches, account &amp; policy changes. Requires <span class="mono">auditd</span> + the syslog bridge (shown below).</span></span>
+      </label>
+      <label class="selfmon-src" style="display:flex;gap:10px;align-items:flex-start;">
+        <input type="checkbox" id="src_auth" checked>
+        <span><strong>Authentication (auth.log)</strong> <span class="hint">— logins, sudo, su, sshd. The everyday "who logged in" events.</span></span>
+      </label>
+      <label class="selfmon-src" style="display:flex;gap:10px;align-items:flex-start;">
+        <input type="checkbox" id="src_kernel">
+        <span><strong>Kernel &amp; system</strong> <span class="hint">— kernel messages, daemons, cron.</span></span>
+      </label>
+      <label class="selfmon-src" style="display:flex;gap:10px;align-items:flex-start;">
+        <input type="checkbox" id="src_all">
+        <span><strong>Everything (all facilities)</strong> <span class="hint">— forwards the entire local syslog stream. Highest volume; overrides the choices above.</span></span>
+      </label>
+    </div>
+
+    <h3 style="margin:20px 0 6px;font-size:13.5px;">1 · rsyslog forwarding config</h3>
+    <p class="sub" style="margin-top:0;">Save as <span class="mono">/etc/rsyslog.d/60-minisiem.conf</span> on this server, then
+      <span class="mono">sudo systemctl restart rsyslog</span>.</p>
+    <pre class="mono" id="selfmonRsyslog" style="background:var(--canvas);padding:12px;border-radius:6px;font-size:12px;white-space:pre-wrap;overflow-x:auto;"></pre>
+
+    <div id="selfmonAuditBlock">
+      <h3 style="margin:20px 0 6px;font-size:13.5px;">2 · Bridge auditd → syslog</h3>
+      <p class="sub" style="margin-top:0;">auditd doesn't go through rsyslog by default. Enable its syslog plugin so audit
+        records reach the config above:</p>
+      <pre class="mono" style="background:var(--canvas);padding:12px;border-radius:6px;font-size:12px;white-space:pre-wrap;">sudo apt-get install -y auditd audispd-plugins   # if not already installed
+# enable the syslog plugin:
+sudo sed -i 's/^active = no/active = yes/' /etc/audit/plugins.d/syslog.conf 2>/dev/null \
+  || sudo sed -i 's/^active = no/active = yes/' /etc/audisp/plugins.d/syslog.conf
+sudo systemctl restart auditd</pre>
+      <p class="sub">Tip: to specifically watch a sensitive file or directory, add an audit rule, e.g.
+        <span class="mono">sudo auditctl -w /home/matt/siem123/mini_siem/siem.db -p wa -k siem_db</span>.</p>
+    </div>
+
+    <p class="sub" style="margin-top:16px;">Once running, this host's events appear in Log Search like any other source —
+      searchable, correlated, and forwardable. They'll show the SIEM server's own hostname.</p>
+  </div>
+
+  <div class="panel" data-section="sec-pollers">
+    <h2>API poller connectors</h2>
+    <p class="sub">Pull logs from a cloud service on a schedule. Pick the authentication scheme that matches the vendor's API — the form shows only the fields that scheme needs. mini-SIEM bookmarks a cursor so nothing is missed or duplicated.</p>
+
+    <div class="form-grid" style="grid-template-columns:1fr 1fr;">
+      <div class="fld"><label>Name</label><input type="text" id="pName" class="mono" placeholder="sophos-central"></div>
+      <div class="fld"><label>Auth scheme</label>
+        <select id="pScheme">
+          <option value="oauth2_client_credentials">OAuth2 client-credentials (generic)</option>
+          <option value="oauth2_sophos">OAuth2 + Sophos whoami (tenant discovery)</option>
+          <option value="api_key">API key in header (no token)</option>
+        </select>
+      </div>
+
+      <!-- OAuth2 fields -->
+      <div class="fld full sch-oauth"><label>Token URL <span class="hint">(OAuth2 token endpoint)</span></label><input type="text" id="pTokenUrl" class="mono" placeholder="https://id.sophos.com/api/v2/oauth2/token"></div>
+      <div class="fld sch-oauth"><label>Client ID</label><input type="text" id="pClientId" class="mono"></div>
+      <div class="fld sch-oauth"><label>Client secret</label><input type="password" id="pClientSecret" class="mono" placeholder="stored encrypted"></div>
+      <div class="fld sch-oauth"><label>Scope <span class="hint">(optional)</span></label><input type="text" id="pScope" class="mono" placeholder="token"></div>
+
+      <!-- Sophos-only fields -->
+      <div class="fld full sch-sophos"><label>Whoami URL <span class="hint">(tenant discovery)</span></label><input type="text" id="pWhoamiUrl" class="mono" placeholder="https://api.central.sophos.com/whoami/v1"></div>
+      <div class="fld sch-sophos"><label>Tenant header override <span class="hint">(optional; default X-Tenant-ID)</span></label><input type="text" id="pTenantHeader" class="mono" placeholder="X-Tenant-ID"></div>
+
+      <!-- API-key fields -->
+      <div class="fld sch-apikey"><label>API key</label><input type="password" id="pApiKey" class="mono" placeholder="stored encrypted"></div>
+      <div class="fld sch-apikey"><label>Key header name <span class="hint">(default X-API-Key)</span></label><input type="text" id="pApiKeyHeader" class="mono" placeholder="X-API-Key"></div>
+
+      <!-- common -->
+      <div class="fld full"><label>Events URL <span class="hint">(with the Sophos scheme a path like /siem/v1/events works)</span></label><input type="text" id="pEventsUrl" class="mono" placeholder="https://api-us.central.sophos.com/siem/v1/events"></div>
+      <div class="fld"><label>Poll interval <span class="hint">(seconds, min 15)</span></label><input type="number" id="pInterval" class="mono" value="60" min="15"></div>
+      <div class="fld"><label>Initial lookback <span class="hint">(seconds, first run)</span></label><input type="number" id="pLookback" class="mono" value="86400"></div>
+      <div class="fld"><label>Secret storage</label>
+        <select id="pSecretMode">
+          <option value="encrypted">Encrypted in mini-SIEM database</option>
+          <option value="vaultgate">VaultGate broker (not configured yet)</option>
+        </select>
+      </div>
+      <div class="fld"><label>Enabled</label>
+        <select id="pEnabled"><option value="1">Yes — poll on schedule</option><option value="0" selected>No — save but don't poll</option></select>
+      </div>
+      <div class="fld full"><button id="addPollerBtn">Add connector</button><span class="status-line" id="pollerStatus"></span></div>
+    </div>
+
+    <div style="margin-top:6px;font-size:12px;color:var(--ink-soft);" id="pSecretModeNote"></div>
+
+    <h3 style="font-size:13px;margin:18px 0 8px;">Configured connectors</h3>
+    <table class="tbl" id="pollersTable"><thead><tr>
+      <th>Name</th><th>Scheme</th><th>Events URL</th><th>Every</th><th>Status</th><th>Last poll</th><th></th>
+    </tr></thead><tbody></tbody></table>
+    <p class="sub" id="noPollers" style="display:none;">No connectors yet.</p>
+  </div>
+
+  <div class="panel" data-section="sec-mapping">
+    <h2>Source field mapping</h2>
+    <p class="sub">Map each JSON log source's keys into mini-SIEM's columns (host, message, severity, timestamp) without editing code. Each mapping is a <strong>profile</strong>; the parser applies the first matching profile to an incoming JSON event. Windows/NXLog and Sophos ship as editable defaults. Non-JSON syslog isn't affected.</p>
+
+    <h3 style="font-size:13px;margin:14px 0 8px;">Latest unidentified log</h3>
+    <div id="unidBox" class="sub" style="background:var(--canvas);border:1px solid var(--line);border-radius:6px;padding:10px;">Loading…</div>
+
+    <h3 style="font-size:13px;margin:18px 0 8px;">Profiles</h3>
+    <table class="tbl" id="profTable"><thead><tr>
+      <th>Priority</th><th>Name</th><th>Matches when</th><th>Host</th><th>Message</th><th>Severity</th><th>On</th><th></th>
+    </tr></thead><tbody></tbody></table>
+    <p class="sub" id="noProfiles" style="display:none;">No profiles yet.</p>
+
+    <h3 style="font-size:13px;margin:18px 0 8px;" id="profFormTitle">Add / edit a profile</h3>
+    <input type="hidden" id="profEditId" value="">
+    <div class="form-grid" style="grid-template-columns:1fr 1fr;">
+      <div class="fld"><label>Name</label><input type="text" id="profName" class="mono" placeholder="Palo Alto"></div>
+      <div class="fld"><label>Priority <span class="hint">(lower = checked first)</span></label><input type="number" id="profPriority" class="mono" value="100"></div>
+      <div class="fld"><label>Match type</label>
+        <select id="profMatchType">
+          <option value="key_present">A JSON key is present</option>
+          <option value="source_ip">Source equals</option>
+          <option value="app_contains">App name contains</option>
+        </select>
+      </div>
+      <div class="fld"><label>Match value <span class="hint">(the key / source / text to match)</span></label><input type="text" id="profMatchValue" class="mono" placeholder="customer_id"></div>
+      <div class="fld"><label>Host ← keys <span class="hint">(comma priority list)</span></label><input type="text" id="profMapHost" class="mono" placeholder="location,Hostname,host"></div>
+      <div class="fld"><label>Message ← keys</label><input type="text" id="profMapMessage" class="mono" placeholder="name,description,Message"></div>
+      <div class="fld"><label>App ← keys</label><input type="text" id="profMapApp" class="mono" placeholder="type,SourceName"></div>
+      <div class="fld"><label>Msg-ID ← keys</label><input type="text" id="profMapMsgid" class="mono" placeholder="type,EventID"></div>
+      <div class="fld"><label>Severity ← keys</label><input type="text" id="profMapSeverity" class="mono" placeholder="severity"></div>
+      <div class="fld"><label>Timestamp ← keys</label><input type="text" id="profMapTimestamp" class="mono" placeholder="when,created_at"></div>
+      <div class="fld"><label>Timestamp format <span class="hint">(optional strptime, e.g. %Y-%m-%dT%H:%M:%S.%fZ)</span></label><input type="text" id="profTsFormat" class="mono" placeholder="leave blank to auto-detect"></div>
+      <div class="fld"><label>Enabled</label><select id="profEnabled"><option value="1">Yes</option><option value="0">No</option></select></div>
+    </div>
+
+    <h3 style="font-size:13px;margin:14px 0 8px;">Test against a raw event</h3>
+    <p class="sub" style="margin-top:0;">Paste a raw JSON event (or load the unidentified one above), then preview how the profile above maps it — before saving.</p>
+    <textarea id="profTestRaw" class="mono" style="width:100%;min-height:90px;font-size:12px;" placeholder='{"customer_id":"...","location":"srv-1","name":"...","severity":"low"}'></textarea>
+    <div style="margin-top:8px;">
+      <button id="profPreviewBtn" style="background:#fff;border:1px solid var(--accent);color:var(--accent);">Preview mapping</button>
+      <button id="profSaveBtn">Save profile</button>
+      <button id="profClearBtn" style="background:var(--canvas);border:1px solid var(--line);color:var(--ink-soft);">Clear form</button>
+      <span class="status-line" id="profStatus"></span>
+    </div>
+    <div id="profPreviewOut" style="margin-top:10px;"></div>
+  </div>
+
+  <div class="panel" data-section="sec-aliases">
+    <h2>Search field aliases</h2>
+    <p class="sub">Define, per concept, which raw field names — beyond the obvious column —
+      also mean "source", "host", or "destination" for a log. This is what lets
+      <strong>Log Search</strong> and the <strong>Correlation</strong> playbooks find the same
+      machine across sources that use different field names for it (e.g. Fortigate's
+      <span class="mono">src=</span> vs. Sophos's <span class="mono">endpoint_ip</span>). Changes
+      apply to search and correlation <strong>immediately</strong>, including historical data —
+      nothing needs to be reindexed.</p>
+
+    <div class="form-grid" style="grid-template-columns:140px 1fr;align-items:start;row-gap:14px;">
+      <label style="padding-top:8px;font-weight:600;">Source</label>
+      <div>
+        <input type="text" id="aliasSource" class="mono" style="width:100%;"
+               placeholder="endpoint_ip, src, srcip, src_ip">
+        <p class="sub" style="margin:4px 0 0;font-size:11.5px;">Checked in addition to the
+          <span class="mono">Net source</span> column (<span class="mono">source_ip</span>).
+          Comma-separated raw field names, in priority order.</p>
+      </div>
+
+      <label style="padding-top:8px;font-weight:600;">Host</label>
+      <div>
+        <input type="text" id="aliasHost" class="mono" style="width:100%;"
+               placeholder="computer, machinename, endpoint_name, device, location">
+        <p class="sub" style="margin:4px 0 0;font-size:11.5px;">Checked in addition to the
+          <span class="mono">Host</span> column (<span class="mono">hostname</span>) — usually
+          already correct via Source field mapping above; this is the safety net for
+          un-profiled or future sources.</p>
+      </div>
+
+      <label style="padding-top:8px;font-weight:600;">Destination</label>
+      <div>
+        <input type="text" id="aliasDest" class="mono" style="width:100%;"
+               placeholder="dst, dest, target, dhost, destination_ip">
+        <p class="sub" style="margin:4px 0 0;font-size:11.5px;">Checked in addition to the
+          <span class="mono">Destination</span> column.</p>
+      </div>
+    </div>
+
+    <div style="margin-top:16px;display:flex;align-items:center;gap:10px;">
+      <button id="aliasSaveBtn">Save</button>
+      <button id="aliasResetBtn" style="background:var(--canvas);border:1px solid var(--line);color:var(--ink-soft);">Reset to defaults</button>
+      <span class="status-line" id="aliasStatus"></span>
+    </div>
+  </div>
+
+  <div class="panel" data-section="sec-receiver">
+    <h2>API log receiver</h2>
+    <p class="sub">Accept logs over HTTP from products that can only send via an API (not raw syslog). Senders authenticate with an API key and <span class="mono">POST</span> to <span class="mono">/api/ingest</span>. Received logs run through the same pipeline as syslog — rules, threat-intel, field extraction, and forwarding all apply. <strong>Keys are shown once at creation and stored only as a hash; if you lose a key, delete it and make a new one.</strong></p>
+
+    <div id="apiKeyNew" style="display:none;background:var(--ok-soft);border:1px solid var(--ok);border-radius:8px;padding:12px;margin-bottom:12px;">
+      <div style="font-size:12px;color:var(--ink-soft);margin-bottom:4px;">New API key for <strong id="apiKeyNewName"></strong> — copy it now, it won't be shown again:</div>
+      <div style="display:flex;gap:8px;align-items:center;">
+        <code id="apiKeyNewVal" class="mono" style="flex:1;background:var(--canvas);padding:8px;border-radius:6px;word-break:break-all;"></code>
+        <button class="secondary" id="apiKeyCopy">Copy</button>
+      </div>
+    </div>
+
+    <div class="fld-row">
+      <div class="fld"><label>Name (which product is this key for?)</label>
+        <input type="text" id="akName" placeholder="e.g. Imaging appliance"></div>
+      <div class="fld" style="align-self:end;"><button id="akCreateBtn">Generate key</button></div>
+    </div>
+
+    <table style="width:100%;border-collapse:collapse;margin-top:10px;font-size:13px;">
+      <thead><tr style="text-align:left;color:var(--ink-soft);">
+        <th style="padding:6px;">Name</th><th style="padding:6px;">Key</th>
+        <th style="padding:6px;">Status</th><th style="padding:6px;">Last used</th>
+        <th style="padding:6px;">Count</th><th style="padding:6px;"></th></tr></thead>
+      <tbody id="apiKeysBody"><tr><td colspan="6" class="muted" style="padding:8px;">No keys yet.</td></tr></tbody>
+    </table>
+
+    <details style="margin-top:12px;">
+      <summary style="cursor:pointer;font-size:13px;color:var(--accent);">How to send logs</summary>
+      <div style="font-size:12.5px;color:var(--ink-soft);margin-top:8px;">
+        <p style="margin:6px 0;"><strong>JSON</strong> (one object, a list, or <span class="mono">{"logs":[…]}</span>):</p>
+        <pre class="mono" style="background:var(--canvas);padding:10px;border-radius:6px;overflow-x:auto;">curl -X POST https://YOUR-SIEM/api/ingest \
+  -H "X-API-Key: YOUR_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"severity":"warning","host":"appliance1","app":"imaging","message":"disk 90% full","disk":"/data"}'</pre>
+        <p style="margin:6px 0;">Recognized keys: <span class="mono">message/msg</span>, <span class="mono">severity/level</span>, <span class="mono">hostname/host</span>, <span class="mono">app/app_name</span>. Any other scalar key (like <span class="mono">disk</span>) becomes a searchable field.</p>
+        <p style="margin:6px 0;"><strong>Raw syslog lines</strong> (<span class="mono">Content-Type: text/plain</span>, one per line) also work.</p>
+      </div>
+    </details>
+  </div>
+
+  <div class="panel" data-section="sec-ticket">
+    <h2>Ticket system connector</h2>
+    <p class="sub">Automatically create a ticket in your ticketing system (Jira, ServiceNow, Zammad, osTicket, or any REST endpoint) for every alert at or above a severity threshold — including <span class="mono">threat_intel_match</span> alerts from IOC hits. Scheduled playbook reports with findings also raise alerts through the same path. <strong>This makes outbound HTTP calls from the SIEM to your ticket API.</strong></p>
+    <div class="form-grid" style="grid-template-columns:1fr 3fr;">
+      <div class="fld"><label>Enabled</label>
+        <select id="tkEnabled"><option value="false">Off</option><option value="true">On</option></select></div>
+      <div class="fld"><label>Ticket API URL <span class="hint">(e.g. https://jira.example.com/rest/api/2/issue)</span></label>
+        <input type="text" id="tkUrl" class="mono" placeholder="https://your-ticket-system/api/tickets"></div>
+      <div class="fld"><label>Min severity</label>
+        <select id="tkSev"><option>critical</option><option>error</option><option selected>warning</option><option>notice</option></select></div>
+      <div class="fld"><label>Headers JSON <span class="hint">(auth token etc. — write-only, not echoed back)</span></label>
+        <input type="text" id="tkHeaders" class="mono" placeholder='{"Authorization": "Bearer YOUR-TOKEN"}'></div>
+      <div class="fld full"><label>Body template <span class="hint">(JSON sent per alert; placeholders: {{id}} {{rule_name}} {{severity}} {{source_ip}} {{description}} {{created_at}} {{log_ids}} {{ai_analysis}})</span></label>
+        <textarea id="tkTemplate" style="min-height:120px;"></textarea></div>
+      <div class="fld full">
+        <button id="tkSaveBtn">Save</button>
+        <button class="secondary" id="tkTestBtn">Send test ticket</button>
+        <span class="status-line" id="tkStatus"></span>
+      </div>
+    </div>
+  </div>
+
+
+  <div class="panel" data-section="sec-users">
+    <h2>Users &amp; access</h2>
+    <p class="sub">Local accounts that can sign in to this dashboard, and which login methods are enabled.</p>
+
+    <div id="authMethods" class="warn-note" style="background:var(--accent-soft);border-color:var(--accent);color:var(--ink);">Loading login methods…</div>
+
+    <div style="overflow-x:auto;">
+      <table style="width:100%;border-collapse:collapse;font-size:13px;">
+        <thead><tr>
+          <th style="text-align:left;padding:6px 8px;border-bottom:1px solid var(--line);font-family:var(--mono);font-size:10px;text-transform:uppercase;color:var(--ink-soft);">Username</th>
+          <th style="text-align:left;padding:6px 8px;border-bottom:1px solid var(--line);font-family:var(--mono);font-size:10px;text-transform:uppercase;color:var(--ink-soft);">Role</th>
+          <th style="text-align:left;padding:6px 8px;border-bottom:1px solid var(--line);font-family:var(--mono);font-size:10px;text-transform:uppercase;color:var(--ink-soft);">Source</th>
+          <th style="text-align:left;padding:6px 8px;border-bottom:1px solid var(--line);font-family:var(--mono);font-size:10px;text-transform:uppercase;color:var(--ink-soft);">Status</th>
+          <th style="padding:6px 8px;border-bottom:1px solid var(--line);"></th>
+        </tr></thead>
+        <tbody id="usersBody"><tr><td colspan="5" class="muted" style="padding:10px;">Loading…</td></tr></tbody>
+      </table>
+    </div>
+
+    <h3 style="font-size:13px;margin:18px 0 8px;">Add local user</h3>
+    <div class="form-grid" style="grid-template-columns:2fr 2fr 1fr;">
+      <div class="fld"><label>Username</label><input type="text" id="nuName" class="mono" placeholder="analyst"></div>
+      <div class="fld"><label>Password <span class="hint">(min 8 chars)</span></label><input type="password" id="nuPass" class="mono"></div>
+      <div class="fld"><label>Role</label>
+        <select id="nuRole"><option value="admin">admin</option><option value="analyst">analyst</option><option value="viewer">viewer</option></select>
+      </div>
+      <div class="fld full"><button id="addUserBtn">Add user</button><span class="status-line" id="userStatus"></span></div>
+    </div>
+
+    <h3 style="font-size:13px;margin:18px 0 8px;">Idle session timeout</h3>
+    <p class="sub" style="margin-top:0;">Automatically log a user out after this many minutes with no activity. Applies to all users. Set to <strong>0</strong> (or blank) to disable.</p>
+    <div class="form-grid" style="grid-template-columns:auto auto 1fr;align-items:end;">
+      <div class="fld"><label>Timeout <span class="hint">(minutes)</span></label>
+        <input type="number" id="idleTimeout" class="mono" min="0" step="1" placeholder="0" style="width:120px;"></div>
+      <div class="fld"><button id="saveIdleBtn">Save</button></div>
+      <span class="status-line" id="idleStatus" style="align-self:center;"></span>
+    </div>
+
+    <h3 style="font-size:13px;margin:18px 0 8px;">Change my password</h3>
+    <div class="form-grid" style="grid-template-columns:1fr 1fr 1fr;">
+      <div class="fld"><label>Current</label><input type="password" id="pwCur" class="mono"></div>
+      <div class="fld"><label>New <span class="hint">(min 8)</span></label><input type="password" id="pwNew" class="mono"></div>
+      <div class="fld"><label>Confirm</label><input type="password" id="pwConf" class="mono"></div>
+      <div class="fld full"><button id="pwBtn" class="secondary">Update password</button><span class="status-line" id="pwStatus"></span></div>
+    </div>
+  </div>
+
+  <div class="panel" data-section="sec-forwarding">
+    <h2>Syslog forwarding</h2>
+    <p class="sub">
+      Relay every received syslog message — the <strong>original raw text</strong>, exactly as it arrived —
+      to one or more downstream receivers, in addition to storing it here. Config changes take effect
+      within ~5 seconds without restarting the listener. Optional filters let a destination receive only
+      a subset (by minimum severity and/or a regex over the raw message).
+    </p>
+    <div class="warn-note">
+      Loop protection: destinations pointing at this listener's own address and port are automatically
+      skipped by the listener. Still, be careful not to create indirect loops
+      (A forwards to B, B forwards back to A) — each hop would re-receive and re-forward the same messages forever.
+    </div>
+
+    <div class="form-grid">
+      <div class="fld">
+        <label>Name</label>
+        <input type="text" id="fName" placeholder="e.g. Central SIEM">
+      </div>
+      <div class="fld">
+        <label>Destination host <span class="hint">(IP or hostname)</span></label>
+        <input type="text" id="fHost" class="mono" placeholder="10.0.0.50">
+      </div>
+      <div class="fld">
+        <label>Port</label>
+        <input type="number" id="fPort" value="514" min="1" max="65535">
+      </div>
+      <div class="fld">
+        <label>Protocol</label>
+        <select id="fProto">
+          <option value="udp">UDP</option>
+          <option value="tcp">TCP</option>
+        </select>
+      </div>
+      <div class="fld half">
+        <label>Minimum severity <span class="hint">(blank = forward everything)</span></label>
+        <select id="fMinSev">
+          <option value="">All severities</option>
+          <option value="debug">debug and above (everything parseable)</option>
+          <option value="informational">informational and above</option>
+          <option value="notice">notice and above</option>
+          <option value="warning">warning and above</option>
+          <option value="error">error and above</option>
+          <option value="critical">critical and above</option>
+          <option value="alert">alert and above</option>
+          <option value="emergency">emergency only</option>
+        </select>
+      </div>
+      <div class="fld half">
+        <label>Filter pattern <span class="hint">(optional regex over raw message)</span></label>
+        <input type="text" id="fPattern" class="mono" placeholder="e.g. sshd|firewall — blank forwards all">
+      </div>
+      <div class="fld half">
+        <label>Preserve origin <span class="hint">(the downstream collector otherwise sees this SIEM as the sender)</span></label>
+        <select id="fOrigin">
+          <option value="off">Off — relay the message untouched</option>
+          <option value="hostname">Fill hostname — only when the device sent none</option>
+          <option value="sd">Add [origin ip="…"] — always attributable</option>
+          <option value="both">Both</option>
+        </select>
+      </div>
+      <div class="fld half">
+        <label>TCP framing <span class="hint">(only applies to TCP destinations)</span></label>
+        <select id="fFraming">
+          <option value="newline">Newline-delimited (default)</option>
+          <option value="octet">Octet-counting (RFC 6587)</option>
+        </select>
+      </div>
+      <div class="fld full">
+        <button id="addBtn">Add forwarder</button>
+        <span class="status-line" id="addStatus"></span>
+      </div>
+    </div>
+
+    <h3 style="margin-top:24px;">Configured destinations</h3>
+    <p class="sub" style="margin-top:-4px;">Counters are flushed by the listener every ~10 seconds. "Test" sends one test message from the dashboard process.</p>
+    <div id="fwTableWrap"><div class="muted">Loading…</div></div>
+  </div>
+
+  </div><!-- /setup-content -->
+ </div><!-- /setup-layout -->
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+function esc(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;'); }
+
+// ---- Setup left-submenu: show one section at a time ----
+(function(){
+  const nav = document.getElementById('setupNav');
+  if (!nav) return;
+  let _aliasesLoaded = false;
+  let _selfmonLoaded = false;
+  function showSection(target){
+    document.querySelectorAll('.setup-content .panel[data-section]').forEach(p=>{
+      p.classList.toggle('shown', p.getAttribute('data-section')===target);
+    });
+    nav.querySelectorAll('a').forEach(a=>{
+      a.classList.toggle('active', a.getAttribute('data-target')===target);
+    });
+    if (history.replaceState) history.replaceState(null,'','#'+target);
+    if (target==='sec-aliases' && !_aliasesLoaded){ _aliasesLoaded=true; loadAliases(); }
+    if (target==='sec-selfmon' && !_selfmonLoaded){ _selfmonLoaded=true; initSelfmon(); }
+  }
+  nav.querySelectorAll('a').forEach(a=>{
+    a.addEventListener('click', e=>{ e.preventDefault(); showSection(a.getAttribute('data-target')); });
+  });
+  // open the section from the URL hash, or the first one
+  const initial = (location.hash || '').replace('#','');
+  const valid = Array.from(nav.querySelectorAll('a')).some(a=>a.getAttribute('data-target')===initial);
+  showSection(valid ? initial : 'sec-listen');
+})();
+
+const ALIAS_DEFAULTS = {
+  source: 'endpoint_ip, src, srcip, src_ip',
+  host: 'computer, machinename, endpoint_name, device, location',
+  destination: 'dst, dest, target, dhost, destination_ip',
+};
+
+function _selfmonRender() {
+  const host = ($('selfmonHost').value || '127.0.0.1').trim();
+  const port = ($('selfmonPort').value || '514').trim();
+  const proto = $('selfmonProto').value;      // udp|tcp
+  const at = proto === 'tcp' ? '@@' : '@';    // rsyslog: @ = UDP, @@ = TCP
+  const target = `${at}${host}:${port}`;
+  const all = $('src_all').checked;
+  const audit = $('src_audit').checked;
+  const auth = $('src_auth').checked;
+  const kernel = $('src_kernel').checked;
+
+  // audit bridge block only relevant when audit is selected
+  $('selfmonAuditBlock').style.display = (audit || all) ? '' : 'none';
+
+  let lines = [
+    '# mini-SIEM self-monitoring — forward this host\'s logs to the SIEM',
+    '# generated by Setup -> Monitor this host',
+    ''
+  ];
+  if (all) {
+    lines.push('*.*  ' + target);
+  } else {
+    const sels = [];
+    // auth.log facilities: authpriv + auth
+    if (auth) sels.push('authpriv,auth.*');
+    // kernel + general system
+    if (kernel) sels.push('kern.*', 'daemon.*', 'cron.*', 'syslog.*');
+    // auditd forwards via 'user' or 'local' facility once the syslog plugin is on;
+    // its records also carry type=... so they're recognizable. auth selection above
+    // already catches audit-relevant PAM events; this line captures the audisp stream.
+    if (audit) sels.push('user.*');
+    if (!sels.length) sels.push('authpriv,auth.*');  // never emit an empty config
+    sels.forEach(s => lines.push(s.padEnd(22) + target));
+  }
+  $('selfmonRsyslog').textContent = lines.join('\n');
+}
+
+async function initSelfmon() {
+  // prefill port from the configured listen ports (first one)
+  try {
+    const cfg = await (await fetch('/api/listen-ports')).json();
+    const ports = Array.isArray(cfg.ports) ? cfg.ports : [];
+    if (ports.length) $('selfmonPort').value = String(ports[0]).trim();
+  } catch (e) { $('selfmonPort').value = '514'; }
+  ['selfmonHost','selfmonPort','selfmonProto','src_audit','src_auth','src_kernel','src_all']
+    .forEach(id => $(id).addEventListener(id.startsWith('src_')||id==='selfmonProto'?'change':'input', _selfmonRender));
+  _selfmonRender();
+}
+
+async function loadAliases() {  try {
+    const r = await fetch('/api/search-aliases');
+    const d = await r.json();
+    $('aliasSource').value = (d.source || []).join(', ');
+    $('aliasHost').value = (d.host || []).join(', ');
+    $('aliasDest').value = (d.destination || []).join(', ');
+  } catch (e) {
+    $('aliasStatus').textContent = 'Failed to load.'; $('aliasStatus').className = 'status-line err';
+  }
+}
+
+$('aliasSaveBtn').addEventListener('click', async () => {
+  const st = $('aliasStatus'); st.textContent = 'Saving…'; st.className = 'status-line';
+  try {
+    const r = await fetch('/api/search-aliases', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({source: $('aliasSource').value, host: $('aliasHost').value, destination: $('aliasDest').value})});
+    if (!r.ok) throw new Error('save failed');
+    st.textContent = 'Saved — applies immediately, including to existing logs.'; st.className = 'status-line ok';
+  } catch (e) {
+    st.textContent = 'Failed to save.'; st.className = 'status-line err';
+  }
+});
+
+$('aliasResetBtn').addEventListener('click', () => {
+  $('aliasSource').value = ALIAS_DEFAULTS.source;
+  $('aliasHost').value = ALIAS_DEFAULTS.host;
+  $('aliasDest').value = ALIAS_DEFAULTS.destination;
+  $('aliasStatus').textContent = 'Defaults restored — click Save to apply.'; $('aliasStatus').className = 'status-line';
+});
+
+async function loadForwarders() {
+  const r = await fetch('/api/forwarders');
+  const rows = await r.json();
+  const wrap = $('fwTableWrap');
+  if (!rows.length) {
+    wrap.innerHTML = '<div class="muted">No forwarders configured yet. Add one above.</div>';
+    return;
+  }
+  wrap.innerHTML = `<table>
+    <thead><tr>
+      <th>Name</th><th>Destination</th><th>Filters</th><th>Status</th>
+      <th>Forwarded</th><th>Last forward</th><th>Last error</th><th>Actions</th>
+    </tr></thead>
+    <tbody>${rows.map(f => `
+      <tr>
+        <td><strong>${esc(f.name)}</strong></td>
+        <td class="mono-cell">${esc(f.protocol)}://${esc(f.host)}:${f.port}</td>
+        <td class="mono-cell">${f.min_severity ? 'sev≥' + esc(f.min_severity) : ''}${f.min_severity && f.filter_pattern ? ' · ' : ''}${f.filter_pattern ? 'regex: ' + esc(f.filter_pattern) : ''}${!f.min_severity && !f.filter_pattern ? '<span class="muted">all messages</span>' : ''}${f.origin_mode && f.origin_mode !== 'off' ? ' · <span style="color:var(--accent);">origin: ' + esc(f.origin_mode) + '</span>' : ''}${f.protocol === 'tcp' && f.tcp_framing === 'octet' ? ' · <span style="color:var(--accent);">RFC6587</span>' : ''}</td>
+        <td>${f.enabled ? '<span class="badge b-on">enabled</span>' : '<span class="badge b-off">disabled</span>'}</td>
+        <td>${f.forwarded_count || 0}</td>
+        <td class="mono-cell">${f.last_forward_at ? esc(f.last_forward_at.replace('T',' ').slice(0,19)) : '—'}</td>
+        <td>${f.last_error ? `<span class="err-text">${esc(f.last_error)}</span>` : '—'}</td>
+        <td><div class="row-actions">
+          <button class="secondary small" onclick="toggleFw(${f.id}, ${f.enabled ? 0 : 1})">${f.enabled ? 'Disable' : 'Enable'}</button>
+          <button class="secondary small" onclick="testFw(${f.id}, this)">Test</button>
+          <button class="danger small" onclick="deleteFw(${f.id}, '${esc(f.name)}')">Delete</button>
+        </div></td>
+      </tr>`).join('')}</tbody></table>`;
+}
+
+$('addBtn').addEventListener('click', async () => {
+  const body = {
+    name: $('fName').value,
+    host: $('fHost').value,
+    port: parseInt($('fPort').value),
+    protocol: $('fProto').value,
+    min_severity: $('fMinSev').value,
+    origin_mode: $('fOrigin').value,
+    tcp_framing: $('fFraming').value,
+    filter_pattern: $('fPattern').value,
+    enabled: true,
+  };
+  $('addBtn').disabled = true;
+  $('addStatus').textContent = 'Saving…'; $('addStatus').className = 'status-line';
+  try {
+    const r = await fetch('/api/forwarders', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await r.json();
+    if (data.error) {
+      $('addStatus').textContent = data.error; $('addStatus').className = 'status-line err';
+    } else {
+      $('addStatus').textContent = 'Added — the listener picks it up within ~5s.'; $('addStatus').className = 'status-line ok';
+      $('fName').value = ''; $('fHost').value = ''; $('fPattern').value = '';
+      loadForwarders();
+    }
+  } finally {
+    $('addBtn').disabled = false;
+  }
+});
+
+async function toggleFw(id, enabled) {
+  await fetch('/api/forwarders/' + id, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ enabled: !!enabled }),
+  });
+  loadForwarders();
+}
+
+async function deleteFw(id, name) {
+  if (!confirm(`Delete forwarder "${name}"? The listener will stop forwarding to it within ~5 seconds.`)) return;
+  await fetch('/api/forwarders/' + id, { method: 'DELETE' });
+  loadForwarders();
+}
+
+async function testFw(id, btn) {
+  btn.disabled = true; btn.textContent = 'Testing…';
+  try {
+    const r = await fetch(`/api/forwarders/${id}/test`, { method: 'POST' });
+    const data = await r.json();
+    alert(data.ok ? 'Test message ' + data.note : 'Test failed: ' + data.error);
+  } finally {
+    btn.disabled = false; btn.textContent = 'Test';
+  }
+}
+
+// ---- API log receiver ----
+async function loadApiKeys() {
+  let rows = [];
+  try { rows = await (await fetch('/api/ingest/keys')).json(); } catch(e) { return; }
+  const b = document.getElementById('apiKeysBody');
+  if (!Array.isArray(rows) || !rows.length) {
+    b.innerHTML = '<tr><td colspan="6" class="muted" style="padding:8px;">No keys yet.</td></tr>';
+    return;
+  }
+  b.innerHTML = rows.map(k => `
+    <tr>
+      <td style="padding:6px;"><strong>${esc(k.name)}</strong></td>
+      <td style="padding:6px;" class="mono">${esc(k.key_prefix||'')}…</td>
+      <td style="padding:6px;">${k.enabled ? '<span class="badge b-on">enabled</span>' : '<span class="badge b-err">disabled</span>'}</td>
+      <td style="padding:6px;">${k.last_used ? new Date(k.last_used).toLocaleString() : '<span class="muted">never</span>'}</td>
+      <td style="padding:6px;">${k.use_count||0}</td>
+      <td style="padding:6px;text-align:right;white-space:nowrap;">
+        <button class="secondary small" onclick="toggleApiKey(${k.id})">${k.enabled?'Disable':'Enable'}</button>
+        <button class="danger small" onclick="delApiKey(${k.id},'${esc(k.name)}')">Delete</button>
+      </td>
+    </tr>`).join('');
+}
+async function createApiKey() {
+  const name = document.getElementById('akName').value.trim();
+  if (!name) { alert('Give the key a name (which product it is for).'); return; }
+  const r = await fetch('/api/ingest/keys', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({name})});
+  const d = await r.json();
+  if (d.error) { alert(d.error); return; }
+  document.getElementById('akName').value = '';
+  document.getElementById('apiKeyNewName').textContent = d.name;
+  document.getElementById('apiKeyNewVal').textContent = d.api_key;
+  document.getElementById('apiKeyNew').style.display = 'block';
+  loadApiKeys();
+}
+async function toggleApiKey(id) {
+  await fetch('/api/ingest/keys/'+id+'/toggle', {method:'POST'});
+  loadApiKeys();
+}
+async function delApiKey(id, name) {
+  if (!confirm('Delete API key "'+name+'"? Any product using it will stop being able to send logs.')) return;
+  await fetch('/api/ingest/keys/'+id, {method:'DELETE'});
+  loadApiKeys();
+}
+document.getElementById('akCreateBtn').addEventListener('click', createApiKey);
+document.getElementById('apiKeyCopy').addEventListener('click', () => {
+  navigator.clipboard.writeText(document.getElementById('apiKeyNewVal').textContent);
+  document.getElementById('apiKeyCopy').textContent = 'Copied';
+  setTimeout(() => { document.getElementById('apiKeyCopy').textContent = 'Copy'; }, 1500);
+});
+
+// ---- Syslog listen ports ----
+async function loadListenPorts() {
+  try {
+    const d = await (await fetch('/api/listen-ports')).json();
+    if (d.ports) document.getElementById('listenPorts').value = d.ports.join(',');
+    if (d.config_writable === false) {
+      document.getElementById('portsStatus').textContent =
+        'Note: the config file is not writable by the dashboard process — changes may fail to save.';
+    }
+  } catch(e) {}
+}
+document.getElementById('savePortsBtn').addEventListener('click', async () => {
+  const val = document.getElementById('listenPorts').value.trim();
+  const btn = document.getElementById('savePortsBtn');
+  btn.disabled = true;
+  document.getElementById('portsStatus').textContent = '';
+  try {
+    const r = await fetch('/api/listen-ports', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ports: val})
+    });
+    const d = await r.json();
+    if (d.error) {
+      document.getElementById('portsStatus').textContent = d.error;
+    } else {
+      document.getElementById('portsSavedVal').textContent = d.ports.join(', ');
+      document.getElementById('portsRestartBanner').style.display = 'block';
+      document.getElementById('portsStatus').textContent = 'Saved.';
+    }
+  } catch(e) {
+    document.getElementById('portsStatus').textContent = 'Save failed.';
+  } finally {
+    btn.disabled = false;
+  }
+});
+loadListenPorts();
+
+// ---- API poller connectors ----
+function pFmtTime(s){ if(!s) return '—'; try{ return new Date(s).toLocaleString(); }catch(e){ return s; } }
+async function loadPollers(){
+  let rows=[];
+  try{ rows = await (await fetch('/api/pollers')).json(); }catch(e){ return; }
+  const tb=document.querySelector('#pollersTable tbody');
+  const none=document.getElementById('noPollers');
+  if(!tb) return;
+  tb.innerHTML='';
+  if(!rows.length){ none.style.display='block'; document.getElementById('pollersTable').style.display='none'; return; }
+  none.style.display='none'; document.getElementById('pollersTable').style.display='';
+  rows.forEach(p=>{
+    const status = p.enabled ? (p.last_error ? `<span style="color:var(--err);">error</span>` : `<span style="color:var(--ok);">polling</span>`) : `<span class="muted">disabled</span>`;
+    const schemeLabel = {oauth2_client_credentials:'OAuth2', oauth2_sophos:'Sophos', api_key:'API key'}[p.auth_scheme] || p.auth_scheme;
+    const tr=document.createElement('tr');
+    tr.innerHTML=`<td class="mono-cell">${esc(p.name)}</td>`+
+      `<td>${schemeLabel}</td>`+
+      `<td class="mono-cell" style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(p.events_url)}">${esc(p.events_url)}</td>`+
+      `<td>${p.interval_seconds}s</td>`+
+      `<td>${status}${p.last_error?`<br><span style="font-size:11px;color:var(--err);word-break:break-word;white-space:normal;">${esc(p.last_error)}</span>`:''}</td>`+
+      `<td style="font-size:12px;">${pFmtTime(p.last_poll_at)}${p.pulled_count?`<br><span class="muted">${p.pulled_count} pulled</span>`:''}</td>`+
+      `<td><button data-id="${p.id}" data-en="${p.enabled}" class="pTgl" style="font-size:11px;padding:3px 8px;">${p.enabled?'Disable':'Enable'}</button> <button data-id="${p.id}" class="pDel" style="font-size:11px;padding:3px 8px;color:var(--err);">Delete</button></td>`;
+    tb.appendChild(tr);
+  });
+  tb.querySelectorAll('.pTgl').forEach(b=>b.addEventListener('click',async()=>{
+    await fetch('/api/pollers/'+b.dataset.id,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled: b.dataset.en=='1'?false:true})});
+    loadPollers();
+  }));
+  tb.querySelectorAll('.pDel').forEach(b=>b.addEventListener('click',async()=>{
+    if(!confirm('Delete this connector?')) return;
+    await fetch('/api/pollers/'+b.dataset.id,{method:'DELETE'}); loadPollers();
+  }));
+}
+(function(){
+  const modeSel=document.getElementById('pSecretMode');
+  const note=document.getElementById('pSecretModeNote');
+  const schemeSel=document.getElementById('pScheme');
+  function show(cls,on){ document.querySelectorAll('.'+cls).forEach(e=>e.style.display= on?'':'none'); }
+  function updScheme(){
+    const s=schemeSel.value;
+    show('sch-oauth', s==='oauth2_client_credentials'||s==='oauth2_sophos');
+    show('sch-sophos', s==='oauth2_sophos');
+    show('sch-apikey', s==='api_key');
+  }
+  function updNote(){
+    if(!note) return;
+    if(modeSel.value==='vaultgate'){
+      note.innerHTML='⚠ VaultGate brokering isn\'t wired up yet — a connector using it will report "VaultGate not configured" until you connect VaultGate. Use encrypted-in-database for now.';
+    } else {
+      note.innerHTML='The secret is encrypted at rest in mini-SIEM\'s database. This protects against someone reading the database file; it does not protect against full host compromise (the key lives on this server).';
+    }
+  }
+  if(schemeSel){ schemeSel.addEventListener('change',updScheme); updScheme(); }
+  if(modeSel){ modeSel.addEventListener('change',updNote); updNote(); }
+  const btn=document.getElementById('addPollerBtn');
+  if(btn) btn.addEventListener('click', async ()=>{
+    const out=document.getElementById('pollerStatus'); out.textContent=''; btn.disabled=true;
+    const scheme=$('pScheme').value;
+    // the secret field depends on scheme: OAuth uses client secret, api_key uses the key
+    const secret = scheme==='api_key' ? $('pApiKey').value : $('pClientSecret').value;
+    try{
+      const r=await fetch('/api/pollers',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+        name:$('pName').value, auth_scheme:scheme,
+        token_url:$('pTokenUrl').value, events_url:$('pEventsUrl').value,
+        whoami_url:$('pWhoamiUrl').value, tenant_header:$('pTenantHeader').value,
+        api_key_header:$('pApiKeyHeader').value,
+        client_id:$('pClientId').value, client_secret:secret,
+        scope:$('pScope').value, secret_mode:$('pSecretMode').value,
+        interval_seconds:Number($('pInterval').value||60),
+        initial_lookback_seconds:Number($('pLookback').value||86400),
+        enabled: $('pEnabled').value==='1'
+      })});
+      const d=await r.json();
+      if(d.error){ out.textContent=d.error; }
+      else{ out.textContent='Connector added.'; ['pName','pTokenUrl','pEventsUrl','pWhoamiUrl','pTenantHeader','pApiKey','pApiKeyHeader','pClientId','pClientSecret','pScope'].forEach(id=>$(id).value=''); loadPollers(); }
+    }catch(e){ out.textContent='Failed to add connector.'; }
+    finally{ btn.disabled=false; }
+  });
+  loadPollers();
+})();
+
+loadApiKeys();
+
+// ---- Source field mapping (profiles + tester + unidentified) ----
+function profFormToBody(){
+  return {
+    name: $('profName').value, priority: Number($('profPriority').value||100),
+    match_type: $('profMatchType').value, match_value: $('profMatchValue').value,
+    map_host: $('profMapHost').value, map_message: $('profMapMessage').value,
+    map_app: $('profMapApp').value, map_msgid: $('profMapMsgid').value,
+    map_severity: $('profMapSeverity').value, map_timestamp: $('profMapTimestamp').value,
+    ts_format: $('profTsFormat').value, enabled: $('profEnabled').value==='1'
+  };
+}
+function profClearForm(){
+  $('profEditId').value=''; $('profName').value=''; $('profPriority').value='100';
+  $('profMatchType').value='key_present'; $('profMatchValue').value='';
+  ['profMapHost','profMapMessage','profMapApp','profMapMsgid','profMapSeverity','profMapTimestamp','profTsFormat'].forEach(id=>$(id).value='');
+  $('profEnabled').value='1'; $('profFormTitle').textContent='Add / edit a profile';
+  $('profPreviewOut').innerHTML=''; $('profStatus').textContent='';
+}
+function profLoadIntoForm(p){
+  $('profEditId').value=p.id; $('profName').value=p.name; $('profPriority').value=p.priority;
+  $('profMatchType').value=p.match_type; $('profMatchValue').value=p.match_value||'';
+  $('profMapHost').value=p.map_host||''; $('profMapMessage').value=p.map_message||'';
+  $('profMapApp').value=p.map_app||''; $('profMapMsgid').value=p.map_msgid||'';
+  $('profMapSeverity').value=p.map_severity||''; $('profMapTimestamp').value=p.map_timestamp||'';
+  $('profTsFormat').value=p.ts_format||''; $('profEnabled').value=String(p.enabled);
+  $('profFormTitle').textContent='Editing: '+p.name;
+  window.scrollTo({top:$('profFormTitle').offsetTop-20,behavior:'smooth'});
+}
+const MATCH_LABEL={key_present:'key present',source_ip:'source =',app_contains:'app contains'};
+async function loadProfiles(){
+  let rows=[]; try{ rows=await (await fetch('/api/profiles')).json(); }catch(e){ return; }
+  const tb=document.querySelector('#profTable tbody'); if(!tb) return;
+  tb.innerHTML='';
+  if(!rows.length){ $('noProfiles').style.display='block'; $('profTable').style.display='none'; return; }
+  $('noProfiles').style.display='none'; $('profTable').style.display='';
+  rows.forEach(p=>{
+    const tr=document.createElement('tr');
+    tr.innerHTML=`<td>${p.priority}</td><td class="mono-cell">${esc(p.name)}</td>`+
+      `<td style="font-size:12px;">${MATCH_LABEL[p.match_type]||p.match_type}: <span class="mono">${esc(p.match_value||'')}</span></td>`+
+      `<td class="mono-cell" style="font-size:11px;">${esc(p.map_host||'—')}</td>`+
+      `<td class="mono-cell" style="font-size:11px;">${esc(p.map_message||'—')}</td>`+
+      `<td class="mono-cell" style="font-size:11px;">${esc(p.map_severity||'—')}</td>`+
+      `<td>${p.enabled?'<span style="color:var(--ok);">on</span>':'<span class="muted">off</span>'}</td>`+
+      `<td><button class="pfEdit" data-id="${p.id}" style="font-size:11px;padding:3px 8px;">Edit</button> <button class="pfDel" data-id="${p.id}" style="font-size:11px;padding:3px 8px;color:var(--err);">Delete</button></td>`;
+    tb.appendChild(tr);
+  });
+  tb.querySelectorAll('.pfEdit').forEach(b=>b.addEventListener('click',()=>{
+    const p=rows.find(x=>x.id==b.dataset.id); if(p) profLoadIntoForm(p);
+  }));
+  tb.querySelectorAll('.pfDel').forEach(b=>b.addEventListener('click',async()=>{
+    if(!confirm('Delete this profile?')) return;
+    await fetch('/api/profiles/'+b.dataset.id,{method:'DELETE'}); loadProfiles();
+  }));
+}
+async function loadUnidentified(){
+  const box=$('unidBox'); if(!box) return;
+  let d; try{ d=await (await fetch('/api/unidentified-log')).json(); }catch(e){ box.textContent='—'; return; }
+  if(!d.present){ box.innerHTML='<span class="muted">None — all recent JSON events matched a profile.</span>'; return; }
+  const keys=(d.keys||[]).map(k=>`<span class="mono" style="background:var(--line);padding:1px 5px;border-radius:3px;margin:2px;display:inline-block;">${esc(k)}</span>`).join(' ');
+  box.innerHTML=`<div style="margin-bottom:6px;"><strong>Source:</strong> <span class="mono">${esc(d.source||'')}</span> · <span style="color:var(--err);">${esc((d.reasons||[]).join(', '))}</span></div>`+
+    `<div style="margin-bottom:6px;"><strong>Keys:</strong> ${keys||'—'}</div>`+
+    `<button id="unidLoadBtn" style="font-size:11px;padding:4px 10px;">Load into tester</button> `+
+    `<button id="unidClearBtn" style="font-size:11px;padding:4px 10px;background:var(--canvas);border:1px solid var(--line);color:var(--ink-soft);">Dismiss</button>`;
+  $('unidLoadBtn').addEventListener('click',()=>{
+    try{ $('profTestRaw').value=JSON.stringify(JSON.parse(d.raw),null,2); }catch(e){ $('profTestRaw').value=d.raw||''; }
+    window.scrollTo({top:$('profTestRaw').offsetTop-40,behavior:'smooth'});
+  });
+  $('unidClearBtn').addEventListener('click',async()=>{ await fetch('/api/unidentified-log',{method:'DELETE'}); loadUnidentified(); });
+}
+async function profPreview(){
+  const out=$('profPreviewOut'); out.innerHTML='';
+  const raw=$('profTestRaw').value.trim();
+  if(!raw){ out.innerHTML='<span style="color:var(--err);">Paste a raw event first.</span>'; return; }
+  const body={raw, source:$('profMatchValue').value, profile:profFormToBody()};
+  let d; try{ d=await (await fetch('/api/profiles/preview',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})).json(); }
+  catch(e){ out.innerHTML='<span style="color:var(--err);">Preview failed.</span>'; return; }
+  if(d.error){ out.innerHTML=`<span style="color:var(--err);">${esc(d.error)}</span>`; return; }
+  const m=d.mapped;
+  const row=(k,v)=>`<tr><td style="padding:3px 10px;color:var(--ink-soft);">${k}</td><td class="mono" style="padding:3px 10px;">${esc(v||'—')}</td></tr>`;
+  out.innerHTML=`<div style="border:1px solid var(--line);border-radius:6px;padding:8px;">`+
+    `<div style="margin-bottom:6px;">Match rule ${d.matches?'<span style="color:var(--ok);">matches ✓</span>':'<span style="color:var(--err);">does NOT match ✗ (this profile wouldn\'t apply)</span>'}</div>`+
+    `<table style="font-size:12px;">${row('host',m.hostname)}${row('message',m.message)}${row('app',m.app_name)}${row('msg_id',m.msg_id)}${row('severity',m.severity)}${row('timestamp',m.device_timestamp)}</table></div>`;
+}
+async function profSave(){
+  const out=$('profStatus'); out.textContent='';
+  const body=profFormToBody(); const eid=$('profEditId').value;
+  const url=eid?('/api/profiles/'+eid):'/api/profiles';
+  const method=eid?'PUT':'POST';
+  let d; try{ d=await (await fetch(url,{method,headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})).json(); }
+  catch(e){ out.textContent='Save failed.'; return; }
+  if(d.error){ out.textContent=d.error; return; }
+  out.textContent=eid?'Profile updated.':'Profile added.';
+  profClearForm(); loadProfiles();
+}
+(function(){
+  if(!$('profSaveBtn')) return;
+  $('profPreviewBtn').addEventListener('click',profPreview);
+  $('profSaveBtn').addEventListener('click',profSave);
+  $('profClearBtn').addEventListener('click',profClearForm);
+  loadProfiles(); loadUnidentified();
+})();
+loadForwarders();
+setInterval(loadForwarders, 5000);
+
+// ---- Users & access ----
+async function loadAuthMethods() {
+  try {
+    const m = await (await fetch('/api/auth/methods')).json();
+    const parts = [];
+    parts.push('Local login: <strong>' + (m.local ? 'enabled' : 'disabled') + '</strong>');
+    parts.push('OAuth (' + m.oauth.provider_name + '): <strong>' + (m.oauth.enabled ? (m.oauth.configured ? 'enabled' : 'enabled but not configured') : 'off') + '</strong>');
+    parts.push('SAML: <strong>' + (m.saml.enabled ? (m.saml.configured ? 'enabled' : 'enabled but not configured') : 'off') + '</strong>');
+    document.getElementById('authMethods').innerHTML =
+      'Login methods — ' + parts.join(' &nbsp;·&nbsp; ') + '<br><span class="muted" style="font-size:11.5px;">' + m.note + '</span>';
+  } catch(e) {}
+}
+async function loadUsers() {
+  const rows = await (await fetch('/api/users')).json();
+  const b = document.getElementById('usersBody');
+  if (!rows.length) { b.innerHTML = '<tr><td colspan="5" class="muted" style="padding:10px;">No users.</td></tr>'; return; }
+  const isAdmin = window._role === 'admin';
+  b.innerHTML = rows.map(u => `
+    <tr>
+      <td style="padding:8px;border-bottom:1px solid var(--line);"><strong>${esc(u.username)}</strong></td>
+      <td style="padding:8px;border-bottom:1px solid var(--line);">${esc(u.role||'admin')}</td>
+      <td style="padding:8px;border-bottom:1px solid var(--line);font-family:var(--mono);font-size:12px;">${esc(u.auth_source||'local')}</td>
+      <td style="padding:8px;border-bottom:1px solid var(--line);">${u.must_change_password ? '<span class="badge b-err">must change pw</span>' : '<span class="badge b-on">active</span>'}</td>
+      <td style="padding:8px;border-bottom:1px solid var(--line);text-align:right;">
+        ${isAdmin ? `<button class="danger small" onclick="delUser('${esc(u.username)}')">Delete</button>` : '<span class="muted" style="font-size:11px;">—</span>'}</td>
+    </tr>`).join('');
+}
+async function delUser(name) {
+  if (!confirm('Delete user "' + name + '"?')) return;
+  const r = await fetch('/api/users/' + encodeURIComponent(name), {method:'DELETE'});
+  const d = await r.json();
+  if (d.error) alert(d.error); else loadUsers();
+}
+document.getElementById('addUserBtn').addEventListener('click', async () => {
+  const body = {
+    username: document.getElementById('nuName').value,
+    password: document.getElementById('nuPass').value,
+    role: document.getElementById('nuRole').value,
+  };
+  const st = document.getElementById('userStatus');
+  st.textContent = 'Saving…'; st.className = 'status-line';
+  const r = await fetch('/api/users', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  const d = await r.json();
+  if (d.error) { st.textContent = d.error; st.className = 'status-line err'; }
+  else { st.textContent = 'Added.'; st.className = 'status-line ok';
+    document.getElementById('nuName').value=''; document.getElementById('nuPass').value=''; loadUsers(); }
+});
+document.getElementById('pwBtn').addEventListener('click', async () => {
+  const cur = document.getElementById('pwCur').value;
+  const nw = document.getElementById('pwNew').value;
+  const cf = document.getElementById('pwConf').value;
+  const st = document.getElementById('pwStatus');
+  if (nw !== cf) { st.textContent = 'New passwords do not match.'; st.className = 'status-line err'; return; }
+  st.textContent = 'Updating…'; st.className = 'status-line';
+  const r = await fetch('/api/users/password', {method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({current_password:cur, new_password:nw})});
+  const d = await r.json();
+  if (d.error) { st.textContent = d.error; st.className = 'status-line err'; }
+  else { st.textContent = 'Password updated.'; st.className = 'status-line ok';
+    ['pwCur','pwNew','pwConf'].forEach(id=>document.getElementById(id).value=''); }
+});
+(async () => {
+  try {
+    const who = await (await fetch('/api/whoami')).json();
+    window._role = who.role || 'viewer';
+  } catch(e) { window._role = 'viewer'; }
+  if (window._role !== 'admin') {
+    // hide the add-user form and show a note; the server enforces this too
+    const addBtn = document.getElementById('addUserBtn');
+    if (addBtn) {
+      const form = addBtn.closest('.panel');
+      ['nuName','nuPass','nuRole','addUserBtn'].forEach(id => {
+        const el = document.getElementById(id); if (el) el.disabled = true;
+      });
+      const note = document.createElement('p');
+      note.className = 'sub';
+      note.style.color = 'var(--warn)';
+      note.textContent = 'Your role (' + window._role + ') is read-only for user management. Only administrators can add or remove users.';
+      addBtn.parentElement.appendChild(note);
+    }
+  }
+  loadAuthMethods(); loadUsers();})();
+
+// ---- Idle session timeout ----
+async function loadIdleTimeout() {
+  try {
+    const d = await (await fetch('/api/idle-timeout')).json();
+    const el = document.getElementById('idleTimeout');
+    if (el && typeof d.minutes === 'number') el.value = d.minutes || 0;
+  } catch(e) {}
+}
+(function(){
+  const btn = document.getElementById('saveIdleBtn');
+  if (!btn) return;
+  btn.addEventListener('click', async () => {
+    const v = document.getElementById('idleTimeout').value;
+    const out = document.getElementById('idleStatus');
+    out.textContent = '';
+    try {
+      const r = await fetch('/api/idle-timeout', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({minutes: v === '' ? 0 : Number(v)})
+      });
+      const d = await r.json();
+      if (d.error) { out.textContent = d.error; }
+      else { out.textContent = d.minutes ? `Saved — users log out after ${d.minutes} min idle.` : 'Saved — idle timeout disabled.'; }
+    } catch(e) { out.textContent = 'Save failed.'; }
+  });
+  loadIdleTimeout();
+})();
+// ---- Ticket connector ----
+async function loadTicketCfg(){
+  const c = await (await fetch('/api/tickets/config')).json();
+  document.getElementById('tkEnabled').value = c.enabled ? 'true' : 'false';
+  document.getElementById('tkUrl').value = c.url || '';
+  document.getElementById('tkSev').value = c.min_severity || 'warning';
+  document.getElementById('tkTemplate').value = c.template || c.default_template || '';
+  document.getElementById('tkHeaders').placeholder = (c.header_names && c.header_names.length)
+    ? 'headers saved (' + c.header_names.join(', ') + ') — enter JSON to replace'
+    : '{"Authorization": "Bearer YOUR-TOKEN"}';
+}
+document.getElementById('tkSaveBtn').addEventListener('click', async () => {
+  const st = document.getElementById('tkStatus'); st.textContent='Saving…'; st.className='status-line';
+  const body = { enabled: document.getElementById('tkEnabled').value==='true',
+                 url: document.getElementById('tkUrl').value,
+                 min_severity: document.getElementById('tkSev').value,
+                 template: document.getElementById('tkTemplate').value };
+  const h = document.getElementById('tkHeaders').value.trim();
+  if (h) body.headers = h;
+  const r = await fetch('/api/tickets/config', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  const d = await r.json();
+  if(d.error){ st.textContent=d.error; st.className='status-line err'; }
+  else { st.textContent='Saved.'; st.className='status-line ok'; document.getElementById('tkHeaders').value=''; loadTicketCfg(); }
+});
+document.getElementById('tkTestBtn').addEventListener('click', async () => {
+  const st = document.getElementById('tkStatus'); st.textContent='Sending test…'; st.className='status-line';
+  const r = await fetch('/api/tickets/test', {method:'POST'});
+  const d = await r.json();
+  st.textContent = d.ok ? ('OK — ' + d.detail) : d.error;
+  st.className = 'status-line ' + (d.ok ? 'ok' : 'err');
+});
+loadTicketCfg();
+</script>
+
+</body>
+</html>

@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta name="csrf-token" content="{{ csrf_token() }}">
+<script src="{{ url_for('static', filename='csrf.js') }}"></script>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>mini-SIEM — Help</title>
+<style>
+  :root {
+    --ink:#16202b; --ink-soft:#4a5a6a; --line:#d7dee5; --panel:#fff; --canvas:#eef1f4;
+    --accent:#1f5eff; --accent-dark:#143fb0; --accent-soft:#e8eefc;
+    --ok:#1a7f5a; --warn:#b5350c; --amber:#9a6b00;
+    --mono:'SFMono-Regular',Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;
+  }
+  * { box-sizing:border-box; }
+  body { font-family:var(--sans); margin:0; background:var(--canvas); color:var(--ink); }
+  header { background:var(--ink); color:#fff; padding:18px 28px; display:flex; align-items:baseline; gap:20px; flex-wrap:wrap; }
+  header h1 { margin:0; font-size:18px; }
+  header nav a { color:#9fb3c8; font-size:13px; text-decoration:none; margin-right:14px; }
+  header nav a:hover, header nav a.active { color:#fff; }
+  .wrap { max-width:1000px; margin:24px auto; padding:0 20px; display:flex; gap:24px; }
+  .toc { flex:0 0 200px; position:sticky; top:24px; align-self:flex-start; font-size:13px; }
+  .toc a { display:block; color:var(--ink-soft); text-decoration:none; padding:4px 0; }
+  .toc a:hover { color:var(--accent); }
+  .content { flex:1; min-width:0; }
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:22px 26px; margin-bottom:18px; }
+  .panel h2 { margin:0 0 12px; font-size:16px; scroll-margin-top:20px; }
+  .panel h3 { margin:18px 0 6px; font-size:13.5px; color:var(--ink); }
+  .panel p { color:var(--ink-soft); font-size:13px; line-height:1.6; margin:0 0 12px; }
+  .panel ul { color:var(--ink-soft); font-size:13px; line-height:1.6; margin:0 0 12px; padding-left:20px; }
+  .panel li { margin-bottom:5px; }
+  .mono { font-family:var(--mono); font-size:12px; background:var(--canvas); padding:1px 5px; border-radius:4px; }
+  strong { color:var(--ink); }
+  .lead { font-size:13.5px; color:var(--ink-soft); max-width:70ch; }
+  @media (max-width:760px){ .wrap{flex-direction:column;} .toc{position:static;flex-basis:auto;} }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>mini-SIEM</h1>
+  <nav>
+    <a href="/">Live logs &amp; alerts</a>
+    <a href="/correlate">Correlate</a>
+    <a href="/threatintel">Threat Intel</a>
+    <a href="/health">Health</a>
+    <a href="/audit">Audit</a>
+    <a href="/setup">Setup</a>
+    <a href="/ai">AI Analyst</a>
+    <a href="/help" class="active">Help</a>
+    <a href="/logout">Log out</a>
+  </nav>
+</header>
+
+<div class="wrap">
+  <nav class="toc">
+    <a href="#intel">Threat Intel &amp; IOC feeds</a>
+    <a href="#feed-auth">Feed authentication</a>
+    <a href="#search">Log search</a>
+    <a href="#aliases">Search field aliases</a>
+    <a href="#normalization">How normalization works</a>
+    <a href="#correlate">Correlation &amp; playbooks</a>
+    <a href="#selfmon">Monitor this host</a>
+  </nav>
+
+  <div class="content">
+    <p class="lead" style="margin-bottom:20px;">Reference for the parts of mini-SIEM that need more than a one-line label.
+      Each page keeps a short hint inline; the fuller explanation lives here.</p>
+
+    <div class="panel" id="intel">
+      <h2>Threat Intel &amp; IOC feeds</h2>
+      <p>Every incoming log is checked against the enabled indicators live at ingest. A match is recorded on the
+        Threat Intel page <strong>and raises a <span class="mono">threat_intel_match</span> alert</strong> on the main
+        dashboard (which auto-triages if the AI analyst is enabled).</p>
+
+      <h3>Importing indicators (paste)</h3>
+      <p>One indicator per line — either plain values, or CSV in the form
+        <span class="mono">value,type,threat</span>. Lines starting with <span class="mono">#</span> are treated as
+        comments and ignored. Duplicates are skipped. This works directly with copy-pastes from abuse.ch feeds
+        (Feodo Tracker, URLhaus), Spamhaus DROP, or your own lists. The <strong>Feed name / source</strong> groups
+        an import so you can manage or remove it as a set; <strong>Default severity</strong> and
+        <strong>Default threat</strong> are applied to any indicator line that doesn't specify its own.</p>
+
+      <h3>External feed URLs (auto-import)</h3>
+      <p>Point mini-SIEM at a plain-text indicator list on the web (e.g. abuse.ch Feodo Tracker ipblocklist,
+        URLhaus text feed, Spamhaus DROP) and it downloads and imports it — on demand or on a schedule.
+        <strong>This makes outbound HTTP requests from the SIEM to the feed URL</strong>, so make sure that egress is
+        allowed and the source is one you trust. The same line formats as pasting apply: one indicator per line,
+        <span class="mono">#</span> comments, or CSV <span class="mono">value,type,threat</span>.</p>
+    </div>
+
+    <div class="panel" id="feed-auth">
+      <h2>Feed authentication</h2>
+      <p>Feeds that need an API key or token are supported through the same connector, using whichever scheme the
+        provider's docs specify. The key is encrypted at rest and never shown again after saving.</p>
+      <ul>
+        <li><strong>Static header key</strong> — a fixed header carries the key (e.g. AlienVault OTX's
+          <span class="mono">X-OTX-API-Key</span>, abuse.ch's <span class="mono">Auth-Key</span>, VirusTotal's
+          <span class="mono">x-apikey</span>).</li>
+        <li><strong>Authorization header (raw key)</strong> — the key goes in <span class="mono">Authorization</span>
+          with no <span class="mono">Bearer</span> prefix (MISP's convention).</li>
+        <li><strong>URL query parameter</strong> — the key is appended to the URL (Shodan-style,
+          <span class="mono">?key=…</span>).</li>
+        <li><strong>HTTP Basic auth</strong> — key as username/password (IBM X-Force style).</li>
+      </ul>
+      <p>A feed needing full OAuth2 client-credentials (e.g. CrowdStrike Falcon Intel) is better set up as an
+        <strong>API poller connector</strong> under Setup, since that flow already exists there.</p>
+    </div>
+
+    <div class="panel" id="search">
+      <h2>Log search</h2>
+      <p>The <strong>message</strong> box does a full-text search of the log message (prefix-matching on word tokens,
+        via FTS). <strong>Source</strong>, <strong>Host</strong>, and <strong>Destination</strong> each search their
+        base column plus any configured aliases (see below). All boxes support <span class="mono">!term</span> to
+        exclude, comma-separated terms, and — for the IP-bearing fields — subnet matching
+        (<span class="mono">192.168.1.0/24</span>, or a dotted prefix like <span class="mono">192.168.1</span>).</p>
+
+      <h3>Field filters &amp; columns</h3>
+      <p>Click any log row to expand it and see every extracted field with its exact name and value. Click a field
+        name to add it as a column; click the <span class="mono">+</span> (or drag it) to add it as a filter
+        condition. With two or more filter conditions, an <strong>AND / OR</strong> toggle appears to control how
+        they combine. Extracted fields are materialized at ingest into an indexed table, so filtering and sorting
+        search your entire history, not just the visible page.</p>
+    </div>
+
+    <div class="panel" id="aliases">
+      <h2>Search field aliases</h2>
+      <p>Different sources use different field names for the same idea — Fortigate's <span class="mono">src=</span>
+        and Sophos's <span class="mono">endpoint_ip</span> both identify "the source machine". Search field aliases
+        (under Setup) let you declare, per concept, which raw field names also count as
+        <strong>source</strong>, <strong>host</strong>, or <strong>destination</strong>. Then one Source search
+        finds a machine regardless of which source reported it.</p>
+      <p>This resolves at <strong>query time</strong>, so edits apply to all historical data immediately — nothing
+        needs reindexing. The correlation playbooks use the same aliases to group events by identity across sources,
+        so search and correlation always agree on what "source" means.</p>
+    </div>
+
+    <div class="panel" id="normalization">
+      <h2>How normalization works — the three layers</h2>
+      <p>There are three distinct stages, each configured (or not) in a different place:</p>
+
+      <h3>1. Field extraction (automatic)</h3>
+      <p>Every event has <em>all</em> its fields pulled into a searchable table. JSON events (poller/API, e.g. Sophos):
+        every top-level key becomes a field, and a nested <span class="mono">source_info.ip</span> is surfaced as
+        <span class="mono">endpoint_ip</span>. key=value messages (e.g. Fortigate): every
+        <span class="mono">key=value</span> token becomes a field. Custom regex patterns (saved from the expand panel)
+        add extra fields. This layer is exhaustive and isn't configured per source — any field is searchable even if
+        it isn't promoted to a column.</p>
+
+      <h3>2. Built-in parsing (fixed, in code)</h3>
+      <ul>
+        <li><strong>Fortigate:</strong> <span class="mono">src=</span> fills the Net-source column;
+          <span class="mono">dst=</span> fills Destination. Note <span class="mono">FTNTFGTlevel</span> is Fortigate's
+          own severity field — not the same as a mini-SIEM dashboard alert.</li>
+        <li><strong>Windows / NXLog:</strong> <span class="mono">EventID</span> maps to severity via a built-in table
+          (e.g. 4625 = failed logon, 1102 = audit log cleared).</li>
+        <li><strong>All sources:</strong> timestamps normalized to ISO-8601; <span class="mono">peer_ip</span> records
+          the true network sender.</li>
+      </ul>
+
+      <h3>3. Configured normalization (two editable tabs under Setup)</h3>
+      <ul>
+        <li><strong>Source field mapping</strong> — per-source profiles that map a few chosen fields into the base
+          columns (Host, Message, Severity, Timestamp). E.g. for Sophos, <span class="mono">location</span> → Host.</li>
+        <li><strong>Search field aliases</strong> — cross-source concept aliases for search and correlation (above).</li>
+      </ul>
+    </div>
+
+    <div class="panel" id="correlate">
+      <h2>Correlation &amp; playbooks</h2>
+      <p>A dashboard <strong>alert</strong> is not a single log line — it's a correlation playbook firing when its
+        pattern, grouping, threshold, and time window are all satisfied. Logs are the raw stream; alerts are the
+        interesting patterns mini-SIEM extracts from it. One alert can reference many logs.</p>
+      <p>Playbooks group events by an identity (source, host, or user). For source/host/destination grouping, the
+        engine resolves identity through the same Search field aliases as log search — so a poller source whose
+        <span class="mono">source_ip</span> column holds a connector name (e.g. "sophos") still correlates by the
+        real per-endpoint IP, not the shared connector name.</p>
+    </div>
+
+    <div class="panel" id="selfmon">
+      <h2>Monitor this host</h2>
+      <p>A SIEM that can't see its own host is blind to attacks against itself. This section (Setup &rarr; Monitor
+        this host) generates config to forward the SIEM server's own logs into mini-SIEM, so its logins, sudo, SSH,
+        and audit trail are searchable and correlated alongside everything else.</p>
+
+      <h3>Two kinds of "audit log" on Linux</h3>
+      <ul>
+        <li><strong>Authentication (auth.log)</strong> — handled by rsyslog/journald: logins, sudo, su, sshd. The
+          everyday "who logged in / who ran sudo" events. Forwarding this needs only the rsyslog config.</li>
+        <li><strong>Linux audit trail (auditd)</strong> — the compliance-grade audit log
+          (<span class="mono">/var/log/audit/audit.log</span>): syscall-level records, file-access watches, account
+          and policy changes. auditd does <em>not</em> flow through rsyslog by default, so it needs a one-time bridge
+          (the <span class="mono">audisp</span> syslog plugin) before its records can be forwarded.</li>
+      </ul>
+
+      <h3>How it works</h3>
+      <p>The generated rsyslog config sends the selected facilities to the listener's address/port using standard
+        syslog (<span class="mono">@</span> for UDP, <span class="mono">@@</span> for TCP). When the listener runs on
+        this same box, <span class="mono">127.0.0.1</span> keeps the traffic on-host. Once rsyslog is restarted (and
+        auditd bridged, if you chose the audit trail), the host's events appear in Log Search under the server's own
+        hostname — searchable, correlated, and forwardable like any other source.</p>
+
+      <h3>Watching specific files</h3>
+      <p>To audit access to a sensitive file or directory, add an auditd watch rule, e.g.
+        <span class="mono">sudo auditctl -w /path/to/siem.db -p wa -k siem_db</span> (<span class="mono">-p wa</span> =
+        writes and attribute changes; <span class="mono">-k</span> tags the events with a searchable key). Make it
+        persistent by adding the same rule to <span class="mono">/etc/audit/rules.d/</span>.</p>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>

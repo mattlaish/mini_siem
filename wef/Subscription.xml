@@ -1,0 +1,69 @@
+<Subscription xmlns="http://schemas.microsoft.com/2006/03/windows/events/subscription">
+    <SubscriptionId>mini-SIEM-Test</SubscriptionId>
+    <SubscriptionType>SourceInitiated</SubscriptionType>
+    <Description>mini-SIEM curated security events — logons, privilege use, account and group changes, process creation, service/task installs, and log clearing. Deliberately NOT "everything": this is the high-signal subset, sized to avoid drowning the SIEM (important in a large or clinical environment where volume and PHI exposure both matter).</Description>
+    <Enabled>true</Enabled>
+    <Uri>http://schemas.microsoft.com/wbem/wsman/1/windows/EventLog</Uri>
+
+    <!-- Batched delivery: efficient, ~30s latency. For near-real-time on a
+         test box you can lower MaxLatencyTime, but batching is what makes WEF
+         scale to hundreds of machines. -->
+    <ConfigurationMode>Custom</ConfigurationMode>
+    <Delivery Mode="Push">
+        <Batching>
+            <MaxItems>50</MaxItems>
+            <MaxLatencyTime>30000</MaxLatencyTime>
+        </Batching>
+        <PushSettings>
+            <Heartbeat Interval="60000"/>
+        </PushSettings>
+    </Delivery>
+
+    <Query>
+        <![CDATA[
+        <QueryList>
+          <!-- Security: authentication, privilege, account/group lifecycle -->
+          <Query Id="0" Path="Security">
+            <!-- Logon / logoff / special privileges / explicit creds -->
+            <Select Path="Security">*[System[(EventID=4624 or EventID=4625 or EventID=4634 or EventID=4647 or EventID=4648 or EventID=4672)]]</Select>
+            <!-- Account management: user create/enable/disable/delete/pwd, lockout -->
+            <Select Path="Security">*[System[(EventID=4720 or EventID=4722 or EventID=4723 or EventID=4724 or EventID=4725 or EventID=4726 or EventID=4740 or EventID=4767)]]</Select>
+            <!-- Group membership changes (privileged groups matter most) -->
+            <Select Path="Security">*[System[(EventID=4728 or EventID=4732 or EventID=4756 or EventID=4729 or EventID=4733 or EventID=4757)]]</Select>
+            <!-- Process creation (requires audit policy + 4688 enabled) -->
+            <Select Path="Security">*[System[(EventID=4688)]]</Select>
+            <!-- Log cleared / audit policy changed — tampering indicators -->
+            <Select Path="Security">*[System[(EventID=1102 or EventID=4719)]]</Select>
+            <!-- Scheduled task created/updated — persistence -->
+            <Select Path="Security">*[System[(EventID=4698 or EventID=4702)]]</Select>
+          </Query>
+
+          <!-- System: service installs, unexpected stops, log service issues -->
+          <Query Id="1" Path="System">
+            <Select Path="System">*[System[Provider[@Name='Service Control Manager'] and (EventID=7045 or EventID=7040 or EventID=7031 or EventID=7034)]]</Select>
+            <!-- Event log service stopped -->
+            <Select Path="System">*[System[(EventID=104)]]</Select>
+          </Query>
+
+          <!-- PowerShell script block logging (if enabled) — high value -->
+          <Query Id="2" Path="Microsoft-Windows-PowerShell/Operational">
+            <Select Path="Microsoft-Windows-PowerShell/Operational">*[System[(EventID=4104)]]</Select>
+          </Query>
+
+          <!-- Sysmon (if installed) — process/network/image telemetry.
+               Harmless if Sysmon isn't present; the channel just won't exist. -->
+          <Query Id="3" Path="Microsoft-Windows-Sysmon/Operational">
+            <Select Path="Microsoft-Windows-Sysmon/Operational">*</Select>
+          </Query>
+        </QueryList>
+        ]]>
+    </Query>
+
+    <ReadExistingEvents>false</ReadExistingEvents>
+    <TransportName>HTTP</TransportName>
+    <ContentFormat>RenderedText</ContentFormat>
+    <Locale Language="en-US"/>
+    <LogFile>ForwardedEvents</LogFile>
+    <AllowedSourceNonDomainComputers></AllowedSourceNonDomainComputers>
+    <AllowedSourceDomainComputers>O:NSG:NSD:(A;;GA;;;DC)(A;;GA;;;NS)</AllowedSourceDomainComputers>
+</Subscription>

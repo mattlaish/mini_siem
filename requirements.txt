@@ -1,0 +1,7 @@
+Flask>=2.3,<4.0
+# Local username/password login needs nothing extra (werkzeug ships with Flask).
+# Optional, only if you enable the matching feature:
+#   PostgreSQL backend:        psycopg2-binary>=2.9
+#   OAuth / OIDC login:        authlib>=1.2
+#   SAML SSO login:            python3-saml>=1.15   (also needs system libs xmlsec1, libxml2)
+#   Health page disk/net I/O:  psutil>=5.9          (CPU/RAM/disk/UDP work without it on Linux)

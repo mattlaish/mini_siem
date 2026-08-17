@@ -1,0 +1,433 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta name="csrf-token" content="{{ csrf_token() }}">
+<script src="{{ url_for('static', filename='csrf.js') }}"></script>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>mini-SIEM — AI SOC Analyst</title>
+<style>
+  :root {
+    --ink: #16202b; --ink-soft: #4a5a6a; --line: #d7dee5;
+    --panel: #ffffff; --canvas: #eef1f4;
+    --accent: #1f5eff; --accent-dark: #143fb0; --accent-soft: #e8eefc;
+    --ok: #1a7f5a; --ok-soft: #e5f5ee;
+    --warn: #b5350c; --warn-soft: #fbe9e2;
+    --amber: #9a6b00; --amber-soft: #fbf1dc;
+    --mono: 'SFMono-Regular', Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body { font-family: var(--sans); margin: 0; background: var(--canvas); color: var(--ink); }
+  header { background: var(--ink); color: #fff; padding: 18px 28px; display: flex; align-items: baseline; gap: 20px; }
+  header h1 { margin: 0; font-size: 18px; }
+  header nav a { color: #9fb3c8; font-size: 13px; text-decoration: none; margin-right: 14px; }
+  header nav a:hover, header nav a.active { color: #fff; }
+  .wrap { max-width: 1100px; margin: 24px auto; padding: 0 20px; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 18px; margin-bottom: 20px; }
+  .panel h2 { margin: 0 0 4px; font-size: 15px; }
+  .panel .sub { color: var(--ink-soft); font-size: 12.5px; margin: 0 0 14px; line-height: 1.5; }
+
+  .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .fld { flex: 1; min-width: 160px; }
+  .fld label { display: block; font-size: 12px; font-weight: 600; margin-bottom: 4px; }
+  .fld label .hint { font-weight: 400; color: var(--ink-soft); }
+  input, select, textarea { width: 100%; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; font-size: 13px; font-family: var(--sans); }
+  input.mono { font-family: var(--mono); font-size: 12.5px; }
+  textarea { resize: vertical; min-height: 70px; }
+
+  button { padding: 8px 14px; border: none; border-radius: 6px; font-size: 13px; font-weight: 600; cursor: pointer; background: var(--accent); color: #fff; white-space: nowrap; }
+  button:hover { background: var(--accent-dark); }
+  button.secondary { background: #fff; color: var(--accent); border: 1px solid var(--accent); }
+  button.secondary:hover { background: var(--accent-soft); }
+  button:disabled { opacity: 0.6; cursor: default; }
+
+  .settings-head { display: flex; justify-content: space-between; align-items: center; cursor: pointer; }
+  .settings-body { margin-top: 14px; }
+  .collapsed .settings-body { display: none; }
+  .status-line { font-size: 12.5px; margin-top: 8px; }
+  .status-line.err { color: var(--warn); }
+  .status-line.ok { color: var(--ok); }
+  .muted { color: var(--ink-soft); font-size: 12px; }
+  .badge { font-family: var(--mono); font-size: 10px; padding: 2px 7px; border-radius: 20px; border: 1px solid var(--line); }
+  .b-warn { background: var(--warn-soft); color: var(--warn); border-color: var(--warn); }
+  .b-amber { background: var(--amber-soft); color: var(--amber); border-color: var(--amber); }
+  .b-ok { background: var(--ok-soft); color: var(--ok); border-color: var(--ok); }
+
+  .answer { background: var(--canvas); border: 1px solid var(--line); border-left: 3px solid var(--accent); border-radius: 6px; padding: 14px 16px; font-size: 13.5px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; margin-top: 12px; max-height: 75vh; overflow-y: auto; }
+  .answer.err { border-left-color: var(--warn); color: var(--warn); }
+  .ctx-note { font-size: 11.5px; color: var(--ink-soft); margin-top: 6px; font-family: var(--mono); }
+  .disclaimer { background: var(--amber-soft); border: 1px solid var(--amber); color: var(--amber); border-radius: 8px; padding: 10px 14px; font-size: 12.5px; margin-bottom: 16px; line-height: 1.5; }
+
+  .chat-log { display: flex; flex-direction: column; gap: 10px; margin-bottom: 12px; max-height: 55vh; overflow-y: auto; }
+  .bubble { padding: 10px 14px; border-radius: 10px; font-size: 13.5px; line-height: 1.55; white-space: pre-wrap; word-break: break-word; max-width: 88%; }
+  .bubble.user { align-self: flex-end; background: var(--accent-soft); border: 1px solid var(--accent); }
+  .bubble.ai { align-self: flex-start; background: var(--canvas); border: 1px solid var(--line); }
+  .bubble.thinking { color: var(--ink-soft); font-style: italic; }
+  .spin { display:inline-block; width:12px; height:12px; border:2px solid var(--line); border-top-color: var(--accent); border-radius:50%; animation: s 0.7s linear infinite; vertical-align: middle; }
+  @keyframes s { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>mini-SIEM</h1>
+  <nav>
+    <a href="/">Live logs &amp; alerts</a>
+    <a href="/correlate">Correlate</a>
+    <a href="/threatintel">Threat Intel</a>
+    <a href="/health">Health</a>
+    <a href="/audit">Audit</a>
+    <a href="/setup">Setup</a>
+    <a href="/ai" class="active">AI Analyst</a>
+    <a href="/help">Help</a>
+    <a href="/logout">Log out</a>
+  </nav>
+</header>
+
+<div class="wrap">
+
+  <div class="panel" id="masterPanel" style="display:flex;align-items:center;justify-content:space-between;gap:12px;">
+    <div>
+      <h2 style="margin:0;">AI SOC Analyst <span id="stateBadge" class="badge b-amber">OFF</span></h2>
+      <p class="sub" id="stateHint" style="margin:6px 0 0;">Turn this on once your local LLM machine is ready. It stays off until then — no connections are attempted.</p>
+    </div>
+    <button id="masterToggle">Turn ON</button>
+  </div>
+
+  <div id="aiBody">
+
+  <div class="disclaimer">
+    This assistant runs against your <strong>local</strong> LLM — no log data leaves your network. Its output is
+    assistive analysis to speed up triage, <strong>not</strong> an authoritative verdict. Always verify against the
+    raw evidence before acting. The model only sees context the server gathers for each request; it cannot run its
+    own queries.
+  </div>
+
+  <!-- Settings -->
+  <div class="panel collapsed" id="settingsPanel">
+    <div class="settings-head" onclick="document.getElementById('settingsPanel').classList.toggle('collapsed')">
+      <h2>LLM connection <span class="muted" id="connSummary"></span></h2>
+      <span class="muted">▼ settings</span>
+    </div>
+    <div class="settings-body">
+      <div class="row" style="margin-bottom:12px;align-items:center;">
+        <div class="fld" style="max-width:340px;">
+          <label>AI location</label>
+          <select id="aiMode">
+            <option value="local">Local LLM — data stays on your network</option>
+            <option value="external">External AI provider — uses an API token</option>
+          </select>
+        </div>
+      </div>
+
+      <div id="egressWarn" class="disclaimer" style="display:none;background:var(--warn-soft);border-color:var(--warn);color:var(--warn);">
+        <strong>Data leaves your network in external mode.</strong> Every triage/chat request sends log
+        context — source IPs, hostnames, usernames, alert details — to the external provider. With
+        auto-triage on, this happens automatically for every alert. Only use a provider your data-handling
+        policy permits, and prefer local mode for sensitive environments.
+      </div>
+
+      <p class="sub" id="localHint">
+        Point this at your local model's OpenAI-compatible endpoint.
+        <strong>Ollama:</strong> <span class="mono">http://localhost:11434/v1</span> (run <span class="mono">ollama pull qwen2.5:7b</span> first).
+        <strong>LM Studio:</strong> <span class="mono">http://localhost:1234/v1</span>.
+      </p>
+      <p class="sub" id="externalHint" style="display:none;">
+        Any OpenAI-compatible provider works. Examples —
+        <strong>OpenAI:</strong> <span class="mono">https://api.openai.com/v1</span> · model <span class="mono">gpt-4o-mini</span>.
+        <strong>Groq:</strong> <span class="mono">https://api.groq.com/openai/v1</span>.
+        <strong>OpenRouter:</strong> <span class="mono">https://openrouter.ai/api/v1</span>.
+        Paste the provider's API token below.
+      </p>
+
+      <div class="row">
+        <div class="fld">
+          <label>Endpoint base URL</label>
+          <input type="text" id="baseUrl" class="mono" placeholder="http://localhost:11434/v1">
+        </div>
+        <div class="fld">
+          <label>Model name</label>
+          <input type="text" id="model" class="mono" placeholder="qwen2.5:7b">
+        </div>
+        <div class="fld">
+          <label id="apiKeyLabel">API key <span class="hint">(usually blank for local)</span></label>
+          <input type="password" id="apiKey" class="mono" placeholder="(leave blank)">
+        </div>
+      </div>
+
+      <div class="row" style="margin-top:12px;">
+        <div class="fld full">
+          <label>System prompt <span class="hint">(defines the AI's role &amp; output format; blank = built-in SOC analyst prompt)</span></label>
+          <textarea id="sysPrompt" class="mono" style="min-height:120px;" placeholder="(using built-in SOC analyst prompt — type here to override)"></textarea>
+          <div style="margin-top:4px;"><button type="button" id="loadDefaultPrompt" class="secondary" style="font-size:11px;padding:3px 10px;">Load built-in prompt to edit</button></div>
+        </div>
+      </div>
+      <div class="row">
+        <div class="fld full">
+          <label>User prompt template <span class="hint">(how evidence is framed each request; blank = default. Placeholders: {evidence} {rule_name} {severity} {source_ip} {description} — must include {evidence})</span></label>
+          <textarea id="userTemplate" class="mono" style="min-height:90px;" placeholder="{evidence}&#10;&#10;Triage this alert and prioritize containment steps."></textarea>
+        </div>
+      </div>
+      <div class="row">
+        <div class="fld" style="max-width:220px;">
+          <label>Max output tokens <span class="hint">(64–8192)</span></label>
+          <input type="number" id="maxTokens" class="mono" min="64" max="8192" step="1" placeholder="900">
+        </div>
+      </div>
+      <div class="row" style="margin-top:14px;padding-top:14px;border-top:1px solid var(--line);align-items:center;">
+        <label style="display:flex;align-items:center;gap:8px;font-size:13px;font-weight:600;">
+          <input type="checkbox" id="autoTriage" style="width:auto;"> Automatically triage new alerts
+        </label>
+        <div class="fld" style="max-width:260px;">
+          <label style="font-size:12px;">Only auto-triage severity ≥</label>
+          <select id="autoMinSev">
+            <option value="">All alerts</option>
+            <option value="warning">warning and above</option>
+            <option value="error">error and above</option>
+            <option value="critical">critical only</option>
+          </select>
+        </div>
+        <div class="fld" style="max-width:260px;">
+          <label style="font-size:12px;">Skip alerts older than</label>
+          <select id="autoMaxAge">
+            <option value="0">No limit (triage full backlog)</option>
+            <option value="4">4 hours</option>
+            <option value="24">24 hours</option>
+            <option value="72">3 days</option>
+            <option value="168">7 days</option>
+          </select>
+        </div>
+      </div>
+      <p class="sub" style="margin-top:8px;">When on, every new alert is sent to the model as it fires (in the background, off the ingest path) and its analysis is attached to the alert automatically.</p>
+      <div class="row" style="margin-top:12px;">
+        <button id="saveCfg">Save</button>
+        <button class="secondary" id="testCfg">Test connection</button>
+        <span class="status-line" id="cfgStatus"></span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Alert triage -->
+  <div class="panel">
+    <h2>Triage an alert</h2>
+    <p class="sub">Pick a recent alert; the server gathers the triggering events plus the source's history and asks the model to assess it.</p>
+    <div class="row">
+      <div class="fld" style="flex:3;">
+        <label>Alert</label>
+        <select id="alertSelect"><option value="">Loading alerts…</option></select>
+      </div>
+      <button id="triageBtn" style="align-self:flex-end;">Triage with AI</button>
+    </div>
+    <div id="triageResult"></div>
+  </div>
+
+  <!-- Chat -->
+  <div class="panel">
+    <h2>Ask about your logs</h2>
+    <p class="sub">Ask in plain language. The server retrieves relevant events by keyword and passes them to the model as evidence.</p>
+    <div class="chat-log" id="chatLog"></div>
+    <div class="row">
+      <div class="fld" style="flex:5;">
+        <textarea id="chatInput" placeholder="e.g. Is 10.0.0.99 doing anything suspicious? What failed logins have we seen today?"></textarea>
+      </div>
+      <button id="chatSend" style="align-self:flex-end;">Send</button>
+    </div>
+    <div class="row" style="margin-top:6px;">
+      <button class="secondary" id="chatClear" style="font-size:12px;padding:5px 10px;">Clear conversation</button>
+    </div>
+  </div>
+
+  </div><!-- /aiBody -->
+
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+function esc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;'); }
+
+let aiEnabled = false;
+
+function applyMode(){
+  const ext = $('aiMode').value === 'external';
+  $('egressWarn').style.display = ext ? 'block' : 'none';
+  $('localHint').style.display = ext ? 'none' : 'block';
+  $('externalHint').style.display = ext ? 'block' : 'none';
+  $('apiKeyLabel').innerHTML = ext
+    ? 'API token <span class="hint" style="color:var(--warn)">(required for external)</span>'
+    : 'API key <span class="hint">(usually blank for local)</span>';
+  if (ext) {
+    if ($('baseUrl').value.includes('localhost')) $('baseUrl').placeholder = 'https://api.openai.com/v1';
+    $('apiKey').placeholder = $('apiKey').placeholder.includes('saved') ? $('apiKey').placeholder : 'paste provider API token';
+  }
+}
+$('aiMode').addEventListener('change', applyMode);
+document.getElementById('loadDefaultPrompt').addEventListener('click', () => {
+  if (window._defaultSysPrompt) $('sysPrompt').value = window._defaultSysPrompt;
+});
+
+function applyEnabledState(){
+  $('aiBody').style.opacity = aiEnabled ? '1' : '0.45';
+  $('aiBody').style.pointerEvents = aiEnabled ? 'auto' : 'none';
+  const badge = $('stateBadge'), btn = $('masterToggle'), hint = $('stateHint');
+  if (aiEnabled){
+    badge.textContent = 'ON'; badge.className = 'badge b-ok';
+    btn.textContent = 'Turn OFF'; btn.className = 'secondary';
+    hint.textContent = 'AI Analyst is active. Configure the LLM connection below and start triaging.';
+  } else {
+    badge.textContent = 'OFF'; badge.className = 'badge b-amber';
+    btn.textContent = 'Turn ON'; btn.className = '';
+    hint.textContent = 'Turn this on once your local LLM machine is ready. It stays off until then — no connections are attempted.';
+  }
+}
+
+$('masterToggle').addEventListener('click', async () => {
+  aiEnabled = !aiEnabled;
+  await fetch('/api/ai/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ai_enabled:aiEnabled})});
+  applyEnabledState();
+  if (aiEnabled) loadAlerts();
+});
+
+// ---- settings ----
+async function loadCfg(){
+  const r = await fetch('/api/ai/config'); const c = await r.json();
+  aiEnabled = c.ai_enabled;
+  $('baseUrl').value = c.ai_base_url; $('model').value = c.ai_model;
+  $('apiKey').placeholder = c.ai_api_key_set ? '(key saved — leave blank to keep)' : '(leave blank)';
+  $('autoTriage').checked = c.ai_auto_triage;
+  $('autoMinSev').value = c.ai_auto_triage_min_severity || '';
+  $('autoMaxAge').value = String(c.ai_auto_triage_max_age_hours || 0);
+  $('sysPrompt').value = c.ai_system_prompt || '';
+  $('userTemplate').value = c.ai_user_template || '';
+  $('maxTokens').value = c.ai_max_tokens || 900;
+  window._defaultSysPrompt = c.ai_default_system_prompt || '';
+  $('aiMode').value = c.ai_mode || 'local';
+  applyMode();
+  $('connSummary').textContent = `— ${c.ai_model} @ ${c.ai_base_url}`;
+  applyEnabledState();
+}
+$('saveCfg').addEventListener('click', async () => {
+  $('cfgStatus').textContent='Saving…'; $('cfgStatus').className='status-line';
+  const body = { ai_base_url: $('baseUrl').value, ai_model: $('model').value,
+                 ai_mode: $('aiMode').value,
+                 ai_auto_triage: $('autoTriage').checked,
+                 ai_auto_triage_min_severity: $('autoMinSev').value,
+                 ai_auto_triage_max_age_hours: parseInt($('autoMaxAge').value),
+                 ai_system_prompt: $('sysPrompt').value,
+                 ai_user_template: $('userTemplate').value,
+                 ai_max_tokens: parseInt($('maxTokens').value) || 900 };
+  if ($('apiKey').value) body.ai_api_key = $('apiKey').value;
+  await fetch('/api/ai/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  $('apiKey').value=''; $('cfgStatus').textContent='Saved.'; $('cfgStatus').className='status-line ok';
+  loadCfg();
+});
+$('testCfg').addEventListener('click', async () => {
+  $('cfgStatus').innerHTML='<span class="spin"></span> Testing…'; $('cfgStatus').className='status-line';
+  $('testCfg').disabled=true;
+  try {
+    const r = await fetch('/api/ai/test',{method:'POST'}); const d = await r.json();
+    if(d.ok){ $('cfgStatus').textContent='✓ '+d.detail; $('cfgStatus').className='status-line ok'; }
+    else { $('cfgStatus').textContent='✗ '+d.error; $('cfgStatus').className='status-line err'; }
+  } finally { $('testCfg').disabled=false; }
+});
+
+// ---- alerts for triage ----
+async function loadAlerts(){
+  const r = await fetch('/api/alerts?limit=100'); const rows = await r.json();
+  const sel = $('alertSelect');
+  if(!rows.length){ sel.innerHTML='<option value="">No alerts yet</option>'; return; }
+  sel.innerHTML = rows.map(a =>
+    `<option value="${a.id}">#${a.id} · ${esc(a.rule_name)} · ${esc(a.severity)} · ${esc(a.source_ip||'-')} · ${esc((a.description||'').slice(0,70))}</option>`
+  ).join('');
+}
+function openTriageModal(title, text){
+  document.getElementById('triageModalTitle').textContent = title;
+  document.getElementById('triageModalBody').textContent = text || '(no analysis text)';
+  document.getElementById('triageModalOverlay').style.display = 'flex';
+  document.body.style.overflow = 'hidden';
+}
+function closeTriageModal(){
+  document.getElementById('triageModalOverlay').style.display = 'none';
+  document.body.style.overflow = '';
+}
+function copyTriage(){
+  const t = document.getElementById('triageModalBody').textContent;
+  navigator.clipboard.writeText(t).catch(()=>{});
+}
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeTriageModal(); });
+
+$('triageBtn').addEventListener('click', async () => {
+  const id = $('alertSelect').value;
+  if(!id){ return; }
+  const box = $('triageResult');
+  box.innerHTML = '<div class="answer"><span class="spin"></span> Analyzing alert with the local model… (first call may be slow while the model loads)</div>';
+  $('triageBtn').disabled=true;
+  try {
+    const r = await fetch('/api/ai/triage',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({alert_id:parseInt(id)})});
+    const d = await r.json();
+    if(d.error){ box.innerHTML = `<div class="answer err">${esc(d.error)}</div>`; return; }
+    const c = d.context_summary;
+    window._lastTriageAnswer = d.answer;
+    box.innerHTML = `<div style="display:flex;justify-content:space-between;align-items:center;margin-top:12px;margin-bottom:-6px;">
+        <span class="ctx-note" style="margin:0;">context: ${c.related_events} triggering event(s), ${c.source_history_events} from source ${esc(c.source||'-')}</span>
+        <button type="button" id="expandTriage" class="secondary" style="font-size:11px;padding:3px 10px;">⤢ Expand</button>
+      </div>
+      <div class="answer">${esc(d.answer)}</div>`;
+    document.getElementById('expandTriage').addEventListener('click', () =>
+      openTriageModal($('alertSelect').selectedOptions[0]?.text || 'AI analysis', d.answer));
+  } finally { $('triageBtn').disabled=false; }
+});
+
+// ---- chat ----
+let history = [];
+function renderChat(){
+  $('chatLog').innerHTML = history.map(t =>
+    `<div class="bubble ${t.role==='user'?'user':'ai'}">${esc(t.content)}</div>`).join('');
+  $('chatLog').scrollTop = $('chatLog').scrollHeight;
+}
+async function sendChat(){
+  const q = $('chatInput').value.trim();
+  if(!q) return;
+  history.push({role:'user', content:q});
+  $('chatInput').value='';
+  renderChat();
+  $('chatLog').innerHTML += '<div class="bubble ai thinking" id="thinking"><span class="spin"></span> thinking…</div>';
+  $('chatLog').scrollTop = $('chatLog').scrollHeight;
+  $('chatSend').disabled=true;
+  try {
+    const r = await fetch('/api/ai/chat',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({question:q, history:history.slice(0,-1)})});
+    const d = await r.json();
+    if(d.error){ history.push({role:'assistant', content:'⚠ '+d.error}); }
+    else { history.push({role:'assistant', content:d.answer}); }
+    renderChat();
+  } finally { $('chatSend').disabled=false; }
+}
+$('chatSend').addEventListener('click', sendChat);
+$('chatInput').addEventListener('keydown', e => { if(e.key==='Enter' && (e.ctrlKey||e.metaKey)){ sendChat(); } });
+$('chatClear').addEventListener('click', () => { history=[]; renderChat(); });
+
+loadCfg().then(() => { if (aiEnabled) loadAlerts(); });
+</script>
+
+
+<!-- AI analysis expand popup -->
+<div id="triageModalOverlay" onclick="if(event.target===this)closeTriageModal()" style="display:none;position:fixed;inset:0;background:rgba(22,32,43,.55);z-index:1000;align-items:center;justify-content:center;padding:24px;">
+  <div style="background:var(--panel);border-radius:12px;max-width:900px;width:100%;max-height:88vh;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,.3);">
+    <div style="padding:16px 22px;border-bottom:1px solid var(--line);display:flex;align-items:flex-start;justify-content:space-between;gap:12px;">
+      <div>
+        <div style="font-family:var(--mono);font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--ink-soft);margin-bottom:4px;">AI analysis</div>
+        <div id="triageModalTitle" style="font-size:14px;font-weight:600;"></div>
+      </div>
+      <button onclick="closeTriageModal()" style="background:none;border:none;font-size:22px;line-height:1;cursor:pointer;color:var(--ink-soft);padding:2px 6px;" title="Close (Esc)">×</button>
+    </div>
+    <div id="triageModalBody" style="padding:18px 22px;overflow-y:auto;white-space:pre-wrap;font-size:13.5px;line-height:1.6;word-break:break-word;"></div>
+    <div style="padding:12px 22px;border-top:1px solid var(--line);display:flex;gap:10px;justify-content:flex-end;">
+      <button onclick="copyTriage()" class="secondary">Copy text</button>
+      <button onclick="closeTriageModal()">Close</button>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>

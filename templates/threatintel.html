@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta name="csrf-token" content="{{ csrf_token() }}">
+<script src="{{ url_for('static', filename='csrf.js') }}"></script>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>mini-SIEM — Threat Intelligence</title>
+<style>
+  :root {
+    --ink:#16202b; --ink-soft:#4a5a6a; --line:#d7dee5; --panel:#fff; --canvas:#eef1f4;
+    --accent:#1f5eff; --accent-dark:#143fb0; --accent-soft:#e8eefc;
+    --ok:#1a7f5a; --ok-soft:#e5f5ee; --warn:#b5350c; --warn-soft:#fbe9e2;
+    --amber:#9a6b00; --amber-soft:#fbf1dc;
+    --mono:'SFMono-Regular',Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;
+  }
+  * { box-sizing:border-box; }
+  body { font-family:var(--sans); margin:0; background:var(--canvas); color:var(--ink); }
+  header { background:var(--ink); color:#fff; padding:18px 28px; display:flex; align-items:baseline; gap:20px; flex-wrap:wrap; }
+  header h1 { margin:0; font-size:18px; }
+  header nav a { color:#9fb3c8; font-size:13px; text-decoration:none; margin-right:14px; }
+  header nav a:hover, header nav a.active { color:#fff; }
+  .wrap { max-width:1150px; margin:24px auto; padding:0 20px; }
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:20px; margin-bottom:20px; }
+  .panel h2 { margin:0 0 6px; font-size:15px; }
+  .sub { color:var(--ink-soft); font-size:12.5px; line-height:1.55; margin:0 0 14px; }
+  .stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px; margin-bottom:20px; }
+  .stat-card { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:14px 16px; }
+  .stat-card .num { font-size:24px; font-weight:700; }
+  .stat-card .label { font-size:11px; font-family:var(--mono); text-transform:uppercase; letter-spacing:.06em; color:var(--ink-soft); margin-top:2px; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th { text-align:left; padding:6px 8px; border-bottom:1px solid var(--line); font-family:var(--mono); font-size:10px; text-transform:uppercase; color:var(--ink-soft); }
+  td { padding:8px; border-bottom:1px solid var(--line); vertical-align:top; }
+  .mono { font-family:var(--mono); font-size:12px; }
+  .badge { display:inline-block; font-family:var(--mono); font-size:10px; padding:2px 8px; border-radius:20px; border:1px solid var(--line); }
+  .b-ip { background:var(--accent-soft); color:var(--accent); border-color:var(--accent); }
+  .b-domain { background:var(--amber-soft); color:var(--amber); border-color:var(--amber); }
+  .b-url { background:#f3e8fc; color:#7a3b9d; border-color:#7a3b9d; }
+  .b-hash { background:var(--ok-soft); color:var(--ok); border-color:var(--ok); }
+  .b-off { background:var(--canvas); color:var(--ink-soft); }
+  .b-hit { background:var(--warn-soft); color:var(--warn); border-color:var(--warn); }
+  .form-grid { display:grid; grid-template-columns:2fr 1fr 2fr 1fr; gap:12px; }
+  .fld label { display:block; font-size:12px; font-weight:600; margin-bottom:4px; }
+  .fld input, .fld select, textarea { width:100%; padding:8px 10px; border:1px solid var(--line); border-radius:6px; font-size:13px; }
+  .fld.full { grid-column:1 / -1; }
+  textarea { font-family:var(--mono); font-size:12px; min-height:110px; resize:vertical; }
+  button { padding:8px 14px; border:none; border-radius:6px; font-size:13px; font-weight:600; cursor:pointer; background:var(--accent); color:#fff; }
+  button:hover { background:var(--accent-dark); }
+  button.secondary { background:#fff; color:var(--accent); border:1px solid var(--accent); }
+  button.danger { background:#fff; color:var(--warn); border:1px solid var(--warn); }
+  button.small { padding:4px 10px; font-size:11.5px; }
+  .status-line { font-size:12.5px; margin-left:10px; }
+  .status-line.ok { color:var(--ok); } .status-line.err { color:var(--warn); }
+  .table-scroll { max-height:420px; overflow-y:auto; }
+  .muted { color:var(--ink-soft); font-size:12px; }
+  .hint { font-weight:400; color:var(--ink-soft); font-size:11px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>mini-SIEM</h1>
+  <nav>
+    <a href="/">Live logs &amp; alerts</a>
+    <a href="/correlate">Correlate</a>
+    <a href="/threatintel" class="active">Threat Intel</a>
+    <a href="/health">Health</a>
+    <a href="/audit">Audit</a>
+    <a href="/setup">Setup</a>
+    <a href="/ai">AI Analyst</a>
+    <a href="/help">Help</a>
+    <a href="/logout">Log out</a>
+  </nav>
+</header>
+
+<div class="wrap">
+
+  <div class="stats">
+    <div class="stat-card"><div class="num" id="stTotal">–</div><div class="label">Indicators</div></div>
+    <div class="stat-card"><div class="num" id="stEnabled">–</div><div class="label">Enabled</div></div>
+    <div class="stat-card"><div class="num" id="stMatches">–</div><div class="label">Total matches</div></div>
+    <div class="stat-card"><div class="num" id="stTypes">–</div><div class="label">By type</div></div>
+  </div>
+
+  <div class="panel">
+    <h2>Recent IOC matches</h2>
+    <p class="sub">Enabled indicators are checked against every log live at ingest; a match raises a <span class="mono">threat_intel_match</span> alert. <a href="/help#intel">Learn more</a></p>
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>Time</th><th>Type</th><th>Indicator</th><th>Threat</th><th>Source</th><th>Host</th><th>Log</th></tr></thead>
+        <tbody id="matchesBody"><tr><td colspan="7" class="muted">Loading…</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>Add indicator</h2>
+    <div class="form-grid">
+      <div class="fld"><label>Value <span class="hint">(IP, domain, URL, or file hash)</span></label><input type="text" id="iVal" class="mono" placeholder="203.0.113.66  ·  evil.example.com  ·  44d88612fea8a8f3…"></div>
+      <div class="fld"><label>Type <span class="hint">(auto-detected if blank)</span></label>
+        <select id="iType"><option value="">auto</option><option>ip</option><option>domain</option><option>url</option><option>hash</option></select></div>
+      <div class="fld"><label>Threat name <span class="hint">(optional)</span></label><input type="text" id="iThreat" placeholder="Cobalt Strike C2"></div>
+      <div class="fld"><label>Alert severity</label>
+        <select id="iSev"><option>critical</option><option>error</option><option selected>warning</option><option>notice</option></select></div>
+      <div class="fld full"><button id="addBtn">Add indicator</button><span class="status-line" id="addStatus"></span></div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>Import feed (paste)</h2>
+    <p class="sub">One indicator per line, or CSV <span class="mono">value,type,threat</span>. <span class="mono">#</span> lines and duplicates are skipped. <a href="/help#intel">Formats &amp; examples</a></p>
+    <textarea id="feedText" placeholder="# Feodo Tracker botnet C2 sample
+203.0.113.66
+198.51.100.23,ip,QakBot C2
+badsite.example.net,domain,Phishing kit
+44d88612fea8a8f36de82e1278abb02f,hash,EICAR test"></textarea>
+    <div class="form-grid" style="grid-template-columns:2fr 1fr 1fr 2fr;margin-top:12px;">
+      <div class="fld"><label>Feed name / source <span class="hint">(groups this import)</span></label><input type="text" id="fSource" placeholder="feodo-tracker"></div>
+      <div class="fld"><label>Default severity</label>
+        <select id="fSev"><option>critical</option><option>error</option><option selected>warning</option></select></div>
+      <div class="fld"><label>Default threat</label><input type="text" id="fThreat" placeholder="(optional)"></div>
+      <div class="fld" style="display:flex;align-items:flex-end;gap:8px;">
+        <button id="importBtn">Import</button>
+        <button class="danger" id="clearSrcBtn" title="Delete all indicators with this feed name (for re-importing an updated feed)">Delete this feed</button>
+      </div>
+    </div>
+    <span class="status-line" id="importStatus"></span>
+  </div>
+
+  <div class="panel">
+    <h2>External feed URLs (auto-import)</h2>
+    <p class="sub">Auto-import a plain-text indicator list from the web, on demand or on a schedule. <strong>Makes outbound HTTP requests from the SIEM.</strong> <a href="/help#intel">Learn more</a></p>
+    <div class="form-grid" style="grid-template-columns:1fr 2fr 1fr 1fr;">
+      <div class="fld"><label>Feed name</label><input type="text" id="feedName" placeholder="feodo-tracker"></div>
+      <div class="fld"><label>URL</label><input type="text" id="feedUrl" class="mono" placeholder="https://feodotracker.abuse.ch/downloads/ipblocklist.txt"></div>
+      <div class="fld"><label>Severity</label><select id="feedSev"><option>critical</option><option>error</option><option selected>warning</option></select></div>
+      <div class="fld"><label>Auto-refresh</label>
+        <select id="feedRefresh"><option value="0">Manual only</option><option value="6">Every 6h</option><option value="24">Daily</option><option value="168">Weekly</option></select></div>
+      <div class="fld full"><button id="addFeedBtn">Add feed &amp; fetch now</button><span class="status-line" id="feedStatus"></span></div>
+    </div>
+    <details style="margin-top:10px;">
+      <summary style="cursor:pointer;color:var(--ink-soft);font-size:13px;">Authentication (optional — for feeds that require an API key/token)</summary>
+      <p class="sub" style="margin-top:8px;">Pick the scheme your provider's docs specify. The key is encrypted at rest and never shown again after saving. <a href="/help#feed-auth">Which scheme?</a></p>
+      <div class="form-grid" style="grid-template-columns:1fr 1fr 1fr 1fr;">
+        <div class="fld"><label>Auth type</label>
+          <select id="feedAuthScheme">
+            <option value="none" selected>None (public feed)</option>
+            <option value="header">Static header key</option>
+            <option value="authorization">Authorization header (raw key)</option>
+            <option value="query_param">URL query parameter</option>
+            <option value="basic">HTTP Basic auth</option>
+          </select>
+        </div>
+        <div class="fld" id="feedAuthHeaderNameFld" style="display:none;">
+          <label>Header name</label>
+          <input type="text" id="feedAuthHeaderName" class="mono" placeholder="X-OTX-API-Key">
+        </div>
+        <div class="fld" id="feedAuthQueryParamFld" style="display:none;">
+          <label>Query param name</label>
+          <input type="text" id="feedAuthQueryParam" class="mono" placeholder="key">
+        </div>
+        <div class="fld" id="feedAuthBasicUserFld" style="display:none;">
+          <label>Username</label>
+          <input type="text" id="feedAuthBasicUser" placeholder="api-user">
+        </div>
+        <div class="fld" id="feedAuthKeyFld" style="display:none;">
+          <label id="feedAuthKeyLabel">API key / token</label>
+          <input type="password" id="feedAuthKey" autocomplete="new-password">
+        </div>
+      </div>
+    </details>
+    <div class="table-scroll" style="max-height:200px;margin-top:10px;">
+      <table>
+        <thead><tr><th>Feed</th><th>URL</th><th>Refresh</th><th>Last fetch</th><th>Status</th><th></th></tr></thead>
+        <tbody id="feedsBody"><tr><td colspan="6" class="muted">Loading…</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>Indicators</h2>
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>Type</th><th>Value</th><th>Threat</th><th>Severity</th><th>Source</th><th>Added</th><th></th></tr></thead>
+        <tbody id="iocBody"><tr><td colspan="7" class="muted">Loading…</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;');
+
+async function loadStats(){
+  const s = await (await fetch('/api/iocs/stats')).json();
+  $('stTotal').textContent = s.total;
+  $('stEnabled').textContent = s.enabled;
+  $('stMatches').textContent = s.total_matches;
+  $('stTypes').textContent = Object.entries(s.by_type||{}).map(([k,v])=>`${v} ${k}`).join(' · ') || '—';
+  $('stTypes').style.fontSize = '13px';
+}
+
+async function loadMatches(){
+  const rows = await (await fetch('/api/ioc-matches?limit=100')).json();
+  const b = $('matchesBody');
+  if(!rows.length){ b.innerHTML = '<tr><td colspan="7" class="muted">No matches yet — that\'s a good thing.</td></tr>'; return; }
+  b.innerHTML = rows.map(m => `
+    <tr>
+      <td class="mono">${new Date(m.matched_at).toLocaleString()}</td>
+      <td><span class="badge b-${m.ioc_type}">${m.ioc_type}</span></td>
+      <td class="mono">${esc(m.ioc_value)}</td>
+      <td><span class="badge b-hit">${esc(m.threat||'IOC hit')}</span></td>
+      <td class="mono">${esc(m.source_ip||'—')}</td>
+      <td class="mono">${esc(m.hostname||'—')}</td>
+      <td><a href="/?ids=${m.log_id}" title="view the matched log">#${m.log_id}</a></td>
+    </tr>`).join('');
+}
+
+async function loadIocs(){
+  const rows = await (await fetch('/api/iocs')).json();
+  const b = $('iocBody');
+  if(!rows.length){ b.innerHTML = '<tr><td colspan="7" class="muted">No indicators yet — add one above or paste a feed.</td></tr>'; return; }
+  b.innerHTML = rows.map(i => `
+    <tr style="${i.enabled?'':'opacity:.5;'}">
+      <td><span class="badge b-${i.ioc_type}">${i.ioc_type}</span></td>
+      <td class="mono">${esc(i.value)}</td>
+      <td>${esc(i.threat||'—')}</td>
+      <td>${esc(i.severity)}</td>
+      <td class="mono">${esc(i.source||'—')}</td>
+      <td class="mono">${i.created_at? new Date(i.created_at).toLocaleDateString():'—'}</td>
+      <td style="text-align:right;white-space:nowrap;">
+        <button class="secondary small" onclick="toggleIoc(${i.id}, ${i.enabled?0:1})">${i.enabled?'Disable':'Enable'}</button>
+        <button class="danger small" onclick="delIoc(${i.id})">Delete</button>
+      </td>
+    </tr>`).join('');
+}
+
+async function toggleIoc(id, en){
+  await fetch('/api/iocs/'+id, {method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:!!en})});
+  loadIocs(); loadStats();
+}
+async function delIoc(id){
+  if(!confirm('Delete this indicator?')) return;
+  await fetch('/api/iocs/'+id, {method:'DELETE'});
+  loadIocs(); loadStats();
+}
+
+$('addBtn').addEventListener('click', async () => {
+  const st = $('addStatus'); st.textContent='Saving…'; st.className='status-line';
+  const r = await fetch('/api/iocs', {method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({value:$('iVal').value, ioc_type:$('iType').value, threat:$('iThreat').value, severity:$('iSev').value})});
+  const d = await r.json();
+  if(d.error){ st.textContent=d.error; st.className='status-line err'; }
+  else { st.textContent='Added.'; st.className='status-line ok'; $('iVal').value=''; $('iThreat').value=''; loadIocs(); loadStats(); }
+});
+
+$('importBtn').addEventListener('click', async () => {
+  const st = $('importStatus'); st.textContent='Importing…'; st.className='status-line';
+  const r = await fetch('/api/iocs/import', {method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({text:$('feedText').value, source:$('fSource').value||'pasted feed', severity:$('fSev').value, threat:$('fThreat').value})});
+  const d = await r.json();
+  if(d.error){ st.textContent=d.error; st.className='status-line err'; }
+  else { st.textContent=`Imported ${d.added} indicators (${d.skipped_duplicates} duplicates skipped).`; st.className='status-line ok'; loadIocs(); loadStats(); }
+});
+
+$('clearSrcBtn').addEventListener('click', async () => {
+  const src = $('fSource').value.trim();
+  if(!src){ alert('Enter the feed name to delete in the "Feed name / source" box.'); return; }
+  if(!confirm(`Delete ALL indicators from feed "${src}"?`)) return;
+  await fetch('/api/iocs/clear', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source:src})});
+  $('importStatus').textContent = `Feed "${src}" deleted.`; $('importStatus').className='status-line ok';
+  loadIocs(); loadStats();
+});
+
+loadStats(); loadMatches(); loadIocs();
+setInterval(()=>{ loadMatches(); loadStats(); }, 5000);
+// ---- External feeds ----
+async function loadFeeds(){
+  const rows = await (await fetch('/api/ioc-feeds')).json();
+  const b = $('feedsBody');
+  if(!rows.length){ b.innerHTML='<tr><td colspan="6" class="muted">No feeds configured.</td></tr>'; return; }
+  b.innerHTML = rows.map(f => `
+    <tr style="${f.enabled?'':'opacity:.5;'}">
+      <td><strong>${esc(f.name)}</strong>${f.has_key?' <span class="mono" title="authenticated feed" style="font-size:11px;color:var(--ink-soft);">🔒</span>':''}</td>
+      <td class="mono" style="max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(f.url)}</td>
+      <td>${f.refresh_hours>0? 'every '+f.refresh_hours+'h' : 'manual'}</td>
+      <td class="mono">${f.last_fetch_at? new Date(f.last_fetch_at).toLocaleString():'never'}</td>
+      <td class="mono" style="font-size:11px;">${esc(f.last_status||'—')}</td>
+      <td style="white-space:nowrap;text-align:right;">
+        <button class="secondary small" onclick="fetchFeed(${f.id})">Fetch now</button>
+        <button class="danger small" onclick="delFeed(${f.id})">Delete</button></td>
+    </tr>`).join('');
+}
+async function fetchFeed(id){
+  $('feedStatus').textContent='Fetching…'; $('feedStatus').className='status-line';
+  const r = await fetch('/api/ioc-feeds/'+id+'/fetch', {method:'POST'});
+  const d = await r.json();
+  $('feedStatus').textContent = d.ok ? `Imported ${d.added} new (${d.skipped_duplicates} duplicates).` : ('Fetch failed: '+(d.error||''));
+  $('feedStatus').className = 'status-line ' + (d.ok?'ok':'err');
+  loadFeeds(); loadIocs(); loadStats();
+}
+async function delFeed(id){
+  if(!confirm('Delete this feed? (already-imported indicators stay; use "Delete this feed" above with the feed name to remove them)')) return;
+  await fetch('/api/ioc-feeds/'+id, {method:'DELETE'}); loadFeeds();
+}
+function updateFeedAuthFields(){
+  const scheme = $('feedAuthScheme').value;
+  $('feedAuthHeaderNameFld').style.display = scheme==='header' ? '' : 'none';
+  $('feedAuthQueryParamFld').style.display = scheme==='query_param' ? '' : 'none';
+  $('feedAuthBasicUserFld').style.display = scheme==='basic' ? '' : 'none';
+  $('feedAuthKeyFld').style.display = scheme==='none' ? 'none' : '';
+  $('feedAuthKeyLabel').textContent = scheme==='basic' ? 'Password / key' : 'API key / token';
+}
+$('feedAuthScheme').addEventListener('change', updateFeedAuthFields);
+updateFeedAuthFields();
+
+$('addFeedBtn').addEventListener('click', async () => {
+  const st = $('feedStatus'); st.textContent='Adding…'; st.className='status-line';
+  const scheme = $('feedAuthScheme').value;
+  const r = await fetch('/api/ioc-feeds', {method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({name:$('feedName').value, url:$('feedUrl').value, severity:$('feedSev').value,
+                         refresh_hours: parseInt($('feedRefresh').value),
+                         auth_scheme: scheme,
+                         header_name: $('feedAuthHeaderName').value,
+                         query_param: $('feedAuthQueryParam').value,
+                         basic_user: $('feedAuthBasicUser').value,
+                         key: $('feedAuthKey').value})});
+  const d = await r.json();
+  if(d.error){ st.textContent=d.error; st.className='status-line err'; return; }
+  $('feedAuthKey').value = '';  // never leave the key sitting in the form
+  loadFeeds();
+  fetchFeed(d.id);
+});
+loadFeeds();
+</script>
+
+</body>
+</html>

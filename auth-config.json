@@ -1,0 +1,22 @@
+{
+  "session_secret": "",
+  "local_auth": {
+    "enabled": true
+  },
+  "oauth": {
+    "enabled": false,
+    "provider_name": "SSO",
+    "discovery_url": "",
+    "client_id": "",
+    "client_secret": "",
+    "scopes": "openid email profile"
+  },
+  "saml": {
+    "enabled": false,
+    "sp_entity_id": "mini-siem",
+    "sp_acs_url": "http://localhost:8080/auth/saml/acs",
+    "idp_entity_id": "",
+    "idp_sso_url": "",
+    "idp_x509cert": ""
+  }
+}

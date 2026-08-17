@@ -1,0 +1,28 @@
+{
+  "_comment": "mini-SIEM agent config for the WEF COLLECTOR. Instead of reading this machine's own Security log, it reads 'ForwardedEvents' — the channel where WEF deposits everything forwarded from the fleet. Put this on the collector, point SiemHost at your mini-SIEM, and run MiniSiemAgent.ps1. On the 200 endpoints you install NOTHING: they forward via WEF/Group Policy.",
+
+  "SiemHost": "10.0.0.10",
+  "SiemPort": 514,
+  "Protocol": "TCP",
+
+  "EventLog": {
+    "Enabled": true,
+    "PollIntervalSeconds": 10,
+    "BatchSizePerChannel": 500,
+    "Channels": [
+      { "Name": "ForwardedEvents" }
+    ]
+  },
+
+  "SyslogRelay": {
+    "Enabled": false,
+    "ListenAddress": "0.0.0.0",
+    "ListenPort": 514
+  },
+
+  "Facility": 16,
+  "HeartbeatMinutes": 15,
+  "StateFilePath": "C:\\ProgramData\\mini-siem-agent\\wef-state.json",
+  "LogFilePath": "C:\\ProgramData\\mini-siem-agent\\wef-agent.log",
+  "MaxLogFileSizeMB": 20
+}

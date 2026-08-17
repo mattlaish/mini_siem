@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta name="csrf-token" content="{{ csrf_token() }}">
+<script src="{{ url_for('static', filename='csrf.js') }}"></script>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>mini-SIEM — Audit trail</title>
+<style>
+  :root {
+    --ink:#16202b; --ink-soft:#4a5a6a; --line:#d7dee5; --panel:#fff; --canvas:#eef1f4;
+    --accent:#1f5eff; --accent-dark:#143fb0; --accent-soft:#e8eefc;
+    --ok:#1a7f5a; --ok-soft:#e5f5ee; --warn:#b5350c; --warn-soft:#fbe9e2;
+    --amber:#9a6b00; --amber-soft:#fbf1dc;
+    --mono:'SFMono-Regular',Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;
+  }
+  * { box-sizing:border-box; }
+  body { font-family:var(--sans); margin:0; background:var(--canvas); color:var(--ink); }
+  header { background:var(--ink); color:#fff; padding:18px 28px; display:flex; align-items:baseline; gap:20px; flex-wrap:wrap; }
+  header h1 { margin:0; font-size:18px; }
+  header nav a { color:#9fb3c8; font-size:13px; text-decoration:none; margin-right:14px; }
+  header nav a:hover, header nav a.active { color:#fff; }
+  .wrap { max-width:1150px; margin:24px auto; padding:0 20px; }
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:20px; }
+  .panel h2 { margin:0 0 6px; font-size:15px; }
+  .sub { color:var(--ink-soft); font-size:12.5px; line-height:1.55; margin:0 0 14px; }
+  .toolbar { display:flex; gap:10px; flex-wrap:wrap; margin-bottom:14px; }
+  .toolbar input, .toolbar select { padding:8px 10px; border:1px solid var(--line); border-radius:6px; font-size:13px; }
+  .toolbar button { padding:8px 14px; border:none; border-radius:6px; font-size:13px; font-weight:600; cursor:pointer; background:var(--accent); color:#fff; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th { text-align:left; padding:6px 8px; border-bottom:1px solid var(--line); font-family:var(--mono); font-size:10px; text-transform:uppercase; color:var(--ink-soft); position:sticky; top:0; background:var(--panel); }
+  td { padding:7px 8px; border-bottom:1px solid var(--line); vertical-align:top; }
+  .mono { font-family:var(--mono); font-size:12px; }
+  .badge { display:inline-block; font-family:var(--mono); font-size:10px; padding:2px 8px; border-radius:20px; border:1px solid var(--line); }
+  .b-auth { background:var(--accent-soft); color:var(--accent); border-color:var(--accent); }
+  .b-fail { background:var(--warn-soft); color:var(--warn); border-color:var(--warn); }
+  .b-user { background:var(--amber-soft); color:var(--amber); border-color:var(--amber); }
+  .b-cfg  { background:var(--ok-soft); color:var(--ok); border-color:var(--ok); }
+  .table-scroll { max-height:600px; overflow-y:auto; }
+  .muted { color:var(--ink-soft); font-size:12px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>mini-SIEM</h1>
+  <nav>
+    <a href="/">Live logs &amp; alerts</a>
+    <a href="/correlate">Correlate</a>
+    <a href="/threatintel">Threat Intel</a>
+    <a href="/health">Health</a>
+    <a href="/audit" class="active">Audit</a>
+    <a href="/setup">Setup</a>
+    <a href="/ai">AI Analyst</a>
+    <a href="/help">Help</a>
+    <a href="/logout">Log out</a>
+  </nav>
+</header>
+
+<div class="wrap">
+  <div class="panel">
+    <h2>Audit trail</h2>
+    <p class="sub">Who did what in the SIEM itself: logins and failures, password changes, user management, IOC and feed changes, forwarder/AI/ticket configuration, report runs. Recorded server-side with the acting user and their client IP.</p>
+    <div class="toolbar">
+      <select id="fUser"><option value="">All users</option></select>
+      <select id="fAction"><option value="">All actions</option></select>
+      <input type="text" id="fQ" placeholder="Search target/detail…">
+      <select id="fLimit"><option value="200">Last 200</option><option value="500">Last 500</option><option value="2000">Last 2000</option></select>
+      <button id="applyBtn">Apply</button>
+      <span class="muted" id="countLine" style="align-self:center;"></span>
+    </div>
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>Time</th><th>User</th><th>Client IP</th><th>Action</th><th>Target</th><th>Detail</th></tr></thead>
+        <tbody id="auditBody"><tr><td colspan="6" class="muted">Loading…</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;');
+
+function badgeClass(action){
+  if (action === 'login_failed') return 'b-fail';
+  if (action.startsWith('login') || action === 'logout' || action === 'password_changed') return 'b-auth';
+  if (action.startsWith('user_')) return 'b-user';
+  return 'b-cfg';
+}
+
+let filtersLoaded = false;
+async function load(){
+  const p = new URLSearchParams();
+  if ($('fUser').value) p.set('username', $('fUser').value);
+  if ($('fAction').value) p.set('action', $('fAction').value);
+  if ($('fQ').value.trim()) p.set('q', $('fQ').value.trim());
+  p.set('limit', $('fLimit').value);
+  const d = await (await fetch('/api/audit?' + p.toString())).json();
+  if (!filtersLoaded){
+    $('fUser').innerHTML = '<option value="">All users</option>' + (d.users||[]).map(u=>`<option>${esc(u)}</option>`).join('');
+    $('fAction').innerHTML = '<option value="">All actions</option>' + (d.actions||[]).map(a=>`<option>${esc(a)}</option>`).join('');
+    filtersLoaded = true;
+  }
+  const rows = d.entries || [];
+  $('countLine').textContent = rows.length + ' entr' + (rows.length===1?'y':'ies');
+  const b = $('auditBody');
+  if (!rows.length){ b.innerHTML = '<tr><td colspan="6" class="muted">No audit entries match.</td></tr>'; return; }
+  b.innerHTML = rows.map(e => `
+    <tr>
+      <td class="mono">${new Date(e.at).toLocaleString()}</td>
+      <td><strong>${esc(e.username)}</strong></td>
+      <td class="mono">${esc(e.source_ip||'—')}</td>
+      <td><span class="badge ${badgeClass(e.action)}">${esc(e.action)}</span></td>
+      <td class="mono">${esc(e.target||'—')}</td>
+      <td style="font-size:12px;">${esc(e.detail||'—')}</td>
+    </tr>`).join('');
+}
+$('applyBtn').addEventListener('click', load);
+['fUser','fAction','fLimit'].forEach(id => $(id).addEventListener('change', load));
+$('fQ').addEventListener('keydown', e => { if (e.key === 'Enter') load(); });
+load();
+setInterval(load, 10000);
+</script>
+
+</body>
+</html>

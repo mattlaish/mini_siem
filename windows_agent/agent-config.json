@@ -1,0 +1,28 @@
+{
+  "SiemHost": "10.0.0.10",
+  "SiemPort": 514,
+  "Protocol": "UDP",
+
+  "EventLog": {
+    "Enabled": true,
+    "PollIntervalSeconds": 10,
+    "BatchSizePerChannel": 500,
+    "Channels": [
+      { "Name": "Security" },
+      { "Name": "System", "MinimumLevel": "Warning" },
+      { "Name": "Application", "MinimumLevel": "Warning" }
+    ]
+  },
+
+  "SyslogRelay": {
+    "Enabled": false,
+    "ListenAddress": "0.0.0.0",
+    "ListenPort": 514
+  },
+
+  "Facility": 16,
+  "HeartbeatMinutes": 15,
+  "StateFilePath": "C:\\ProgramData\\mini-siem-agent\\state.json",
+  "LogFilePath": "C:\\ProgramData\\mini-siem-agent\\agent.log",
+  "MaxLogFileSizeMB": 10
+}
