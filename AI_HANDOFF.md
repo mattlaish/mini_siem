@@ -63,11 +63,13 @@ not installed in the active Python environment.
 - OAuth/OIDC and SAML flows have not been tested against live identity providers.
 - PostgreSQL has not been tested against a live server.
 - No automated unit/integration test suite or CI configuration is present.
-- Live socket ingestion, long-running workers, external AI providers, API
-  pollers, forwarding targets, and scheduled threat-intelligence retrieval were
-  not exercised in this baseline.
-- The live rule engine keeps sliding-window state in memory, so state resets on
-  restart. TCP ingestion assumes newline-delimited messages rather than RFC6587
+- Live socket ingestion, long-running workers, external AI providers, generic
+  API pollers, forwarding targets, and scheduled threat-intelligence retrieval
+  were not exercised in this local baseline. The Sophos poller is an exception:
+  it is fully implemented and user-confirmed working in production. From
+  2026-08-05 through 2026-08-20 it continuously pulled 4,739 real Sophos API
+  events. It was not independently revalidated during this local baseline.
+- TCP ingestion assumes newline-delimited messages rather than RFC6587
   octet-counted framing.
 
 ## Important Decisions
@@ -75,10 +77,32 @@ not installed in the active Python environment.
 - Codex and Claude may both work on this repository.
 - `AGENTS.md` contains permanent working instructions; this file tracks changing
   development state.
+- `patch.md` is the persistent implementation and validation ledger. Every
+  material AI-assisted change must update it in the same work session.
+  `AI_HANDOFF.md` remains the concise current-state/design handoff, while
+  `patch.md` records concrete patches, deployment notes, validation, and planned
+  slices.
 - Continue using temporary databases for destructive or authentication-changing
   tests. Do not point `security_dynamic_scan.py` at production data.
 - Treat the static scanner as advisory: trace flagged dynamic SQL to its source
   rather than changing safe placeholder construction merely to silence it.
+- Live-rule sliding-window state is intentionally memory-only and resets when
+  the listener restarts. Stored logs and generated alerts remain persistent;
+  historical detection across restarts is handled by database-backed
+  correlation playbooks. Do not add rule-state persistence unless this design
+  is explicitly changed.
+- The working Sophos Central poller design is intentional: use the
+  `oauth2_sophos` scheme, exchange the configured client ID/secret at
+  `https://id.sophos.com/api/v2/oauth2/token` with scope `token`, pass the JWT
+  as `Authorization: Bearer <token>` to
+  `https://api.central.sophos.com/whoami/v1`, discover the tenant ID and
+  `apiHosts.dataRegion`, then request the path-only `/siem/v1/events` with the
+  JWT and automatically selected `X-Tenant-ID` header. Access tokens are
+  intentionally cached in memory and refreshed before their assumed expiry;
+  the event cursor is persisted in the database so polling resumes without
+  starting over. The client secret is stored encrypted in the SIEM database.
+  Preserve this verified integration flow unless a change is explicitly
+  requested and tested against Sophos.
 
 ## Failed or Deferred Approaches
 - Dashboard and dynamic security checks were attempted with the system
