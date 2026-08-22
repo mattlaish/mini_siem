@@ -7,14 +7,15 @@ Mini SIEM
 Continue development and improvement of the Mini SIEM platform.
 
 ## Current Status
-The initial source import is intact. Per the maintainer, the platform is
-well tested in practice: it has been exercised functionally end-to-end and is
-considered stable for its intended use. That testing is manual/functional and
-lives outside this repository — there is no automated test suite or CI checked
-in (see Known Issues). The standard-library ingestion/storage path additionally
-has a passing local smoke baseline recorded below. Any dashboard/Flask-dependent
-checks that a given environment cannot run (e.g. Flask not installed) should be
-treated as environment gaps, not product defects.
+The initial source import is intact. Per the maintainer, the platform is well
+tested in practice: it has been exercised functionally end-to-end and is
+considered stable for its intended use (the Sophos poller, for example, has run
+in production — see Known Issues). That testing is manual/functional and lives
+outside this repository — there is no automated test suite or CI checked in.
+The standard-library ingestion/storage path additionally has a passing local
+smoke baseline recorded below. Dashboard/Flask-dependent checks that a given
+environment cannot run (e.g. Flask not installed) are environment gaps, not
+product defects.
 
 ## Architecture Baseline
 - `siem.py` is the combined entry point for syslog listeners and the Flask
@@ -45,8 +46,9 @@ treated as environment gaps, not product defects.
   project purpose, permanent working rules, and current state. Recorded the
   maintainer's assessment that the platform is well tested in practice, and
   captured a Proposed Feature Roadmap of substantial (non-bug-fix) next builds.
-  No source code was changed and no commands were run this session; only this
-  handoff document was edited.
+  Merged the concurrent `main` update (patch.md ledger, Sophos-poller and
+  rule-state decisions) into this branch. No source code was changed this
+  session; only handoff/ledger documentation was edited.
 
 ## Test and Review Results (2026-08-17)
 - `python3 -m compileall -q .`: PASS (bytecode redirected outside the repo).
@@ -79,12 +81,14 @@ treated as environment gaps, not product defects.
 - The platform is well tested manually/functionally per the maintainer, but
   that coverage is not yet encoded as an automated in-repo unit/integration
   suite, and no CI configuration is present. Codifying the existing manual
-  test coverage into an automated suite would guard against regressions.
-- Live socket ingestion, long-running workers, external AI providers, API
-  pollers, forwarding targets, and scheduled threat-intelligence retrieval were
-  not exercised in this baseline.
-- The live rule engine keeps sliding-window state in memory, so state resets on
-  restart. TCP ingestion assumes newline-delimited messages rather than RFC6587
+  coverage into an automated suite would guard against regressions.
+- Live socket ingestion, long-running workers, external AI providers, generic
+  API pollers, forwarding targets, and scheduled threat-intelligence retrieval
+  were not exercised in this local baseline. The Sophos poller is an exception:
+  it is fully implemented and user-confirmed working in production. From
+  2026-08-05 through 2026-08-20 it continuously pulled 4,739 real Sophos API
+  events. It was not independently revalidated during this local baseline.
+- TCP ingestion assumes newline-delimited messages rather than RFC6587
   octet-counted framing.
 
 ## Important Decisions
@@ -92,10 +96,32 @@ treated as environment gaps, not product defects.
 - Codex and Claude may both work on this repository.
 - `AGENTS.md` contains permanent working instructions; this file tracks changing
   development state.
+- `patch.md` is the persistent implementation and validation ledger. Every
+  material AI-assisted change must update it in the same work session.
+  `AI_HANDOFF.md` remains the concise current-state/design handoff, while
+  `patch.md` records concrete patches, deployment notes, validation, and planned
+  slices.
 - Continue using temporary databases for destructive or authentication-changing
   tests. Do not point `security_dynamic_scan.py` at production data.
 - Treat the static scanner as advisory: trace flagged dynamic SQL to its source
   rather than changing safe placeholder construction merely to silence it.
+- Live-rule sliding-window state is intentionally memory-only and resets when
+  the listener restarts. Stored logs and generated alerts remain persistent;
+  historical detection across restarts is handled by database-backed
+  correlation playbooks. Do not add rule-state persistence unless this design
+  is explicitly changed.
+- The working Sophos Central poller design is intentional: use the
+  `oauth2_sophos` scheme, exchange the configured client ID/secret at
+  `https://id.sophos.com/api/v2/oauth2/token` with scope `token`, pass the JWT
+  as `Authorization: Bearer <token>` to
+  `https://api.central.sophos.com/whoami/v1`, discover the tenant ID and
+  `apiHosts.dataRegion`, then request the path-only `/siem/v1/events` with the
+  JWT and automatically selected `X-Tenant-ID` header. Access tokens are
+  intentionally cached in memory and refreshed before their assumed expiry;
+  the event cursor is persisted in the database so polling resumes without
+  starting over. The client secret is stored encrypted in the SIEM database.
+  Preserve this verified integration flow unless a change is explicitly
+  requested and tested against Sophos.
 
 ## Proposed Feature Roadmap (candidate next builds)
 Substantial feature work (not bug fixes) recommended for the platform. Each
@@ -152,12 +178,13 @@ work is feature development rather than a test/CI catch-up. Pick one item from
 the Proposed Feature Roadmap and implement it on the working branch. Suggested
 starting point: item 1 (alert case management / triage lifecycle), the largest
 analyst-workflow gap; item 2 (Sigma rule ingestion) is the alternative if
-deepening detection coverage is the priority. Before merging any dashboard-side
+deepening detection coverage is the priority. Record the concrete work in
+`patch.md` per the AGENTS.md ledger rule. Before merging any dashboard-side
 work, run the Flask-dependent smoke checks (`dashboard.py`/`siem.py --help`,
 `security_dynamic_scan.py`) in an environment with `requirements.txt` installed.
 
 ## Last Verified
 - Runtime/test baseline: 2026-08-17 in `/Users/mattlai/Projects/mini_siem` at
   commit `fa41fc5` (`Initial import of Mini SIEM project`).
-- Handoff update: 2026-08-21 (documentation-only; no code changed, no commands
-  run). Status, roadmap, and next-step guidance refreshed.
+- Handoff update: 2026-08-21 (documentation-only; no code changed). Status,
+  roadmap, and next-step guidance refreshed and merged with `main`.
