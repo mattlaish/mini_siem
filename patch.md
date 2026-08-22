@@ -268,3 +268,46 @@ Copy this section for every material change:
 ### Remaining Work
 
 - Repository owner handles Git review and synchronization.
+
+## 2026-08-21 — Handoff refresh and feature roadmap — READY FOR OWNER REVIEW
+
+### Intent
+
+- Record the maintainer's assessment that the platform is well tested in
+  practice (manual/functional; no automated in-repo suite yet).
+- Capture a Proposed Feature Roadmap of substantial, non-bug-fix next builds
+  so a future session can pick one up cold.
+- Reconcile this branch with the concurrent `main` update that introduced the
+  `patch.md` ledger and the Sophos-poller / rule-state decisions.
+
+### Files Changed
+
+- `AI_HANDOFF.md`: reworded Current Status / Architecture / Known Issues to the
+  well-tested framing; added the Proposed Feature Roadmap (alert triage
+  lifecycle, Sigma rule ingestion, GeoIP + impossible-travel, visual analytics
+  overview); refreshed Completed / In Progress / Recommended Next Step /
+  Last Verified. Merged with `main` (Sophos + patch.md + rule-state content
+  preserved).
+- `patch.md`: this entry.
+- `AGENTS.md`: taken from `main` via merge (no local edits).
+
+### Behavior and Decisions
+
+- No runtime behavior changed; documentation-only session.
+- Well-tested status is recorded as the maintainer's assessment, not an
+  independently verified claim; the Sophos poller's production run is preserved
+  from `main`.
+- Git commit/push/merge performed at the owner's explicit request this session.
+
+### Validation
+
+- Merge conflict resolved with zero remaining conflict markers; only markdown
+  files involved (`AI_HANDOFF.md`, `AGENTS.md`, `patch.md`).
+
+### Deployment / Migration
+
+- None; documentation-only change.
+
+### Remaining Work
+
+- Implement a Proposed Feature Roadmap item (suggested: alert triage lifecycle).
