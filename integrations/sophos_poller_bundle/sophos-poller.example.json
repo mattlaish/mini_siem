@@ -1,0 +1,16 @@
+{
+  "name": "sophos-central",
+  "auth_scheme": "oauth2_sophos",
+  "token_url": "https://id.sophos.com/api/v2/oauth2/token",
+  "events_url": "/siem/v1/events",
+  "whoami_url": "https://api.central.sophos.com/whoami/v1",
+  "tenant_header": "",
+  "client_id": "REPLACE_WITH_CLIENT_ID",
+  "client_secret": "",
+  "api_key_header": "",
+  "secret_mode": "encrypted",
+  "scope": "token",
+  "interval_seconds": 60,
+  "initial_lookback_seconds": 86400,
+  "enabled": 0
+}

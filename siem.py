@@ -106,11 +106,12 @@ def main():
         dashboard.set_ingest_hook(on_message, storage)
         dashboard.start_triage_worker()
         dashboard.start_automation_workers()
-        threads.append(threading.Thread(
-            target=lambda: dashboard.app.run(
-                host=args.dashboard_host, port=args.dashboard_port,
-                debug=False, use_reloader=False),
-            daemon=True))
+        def run_dashboard():
+            from waitress import serve
+            serve(dashboard.app, host=args.dashboard_host,
+                  port=args.dashboard_port, threads=8)
+
+        threads.append(threading.Thread(target=run_dashboard, daemon=True))
 
     for t in threads:
         t.start()

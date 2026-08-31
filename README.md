@@ -8,7 +8,9 @@ correlation/alerting rule engine, and a web dashboard.
 mini_siem/
   listener.py     syslog receiver + parser + storage + rule engine hookup
   rules.py        correlation rules (brute force, denies burst, severity)
-  dashboard.py    Flask web UI (log search + alert feed)
+  dashboard.py    Flask app shell + core routes
+  web_blueprints/ AI, IOC feeds, DB health/backup, users, reports, tickets
+  sql_helpers.py  allow-listed SQL composition helpers
   templates/
     index.html
   requirements.txt
@@ -21,7 +23,8 @@ pip install -r requirements.txt
 ```
 
 The listener itself has zero third-party dependencies (pure standard
-library — socket, sqlite3, re). Flask is only needed for the dashboard.
+library — socket, sqlite3, re). The dashboard uses Flask and is served by
+Waitress rather than Flask's development server.
 
 ## 1b. Choose a database backend (do this before going live)
 
@@ -31,7 +34,9 @@ The SIEM can store everything in either backend — pick one up front:
   handful to a few dozen devices. Nothing to install or run.
 - **PostgreSQL** — external server; real concurrent writes, scales well
   past SQLite's single-writer ceiling. Needs a reachable Postgres and
-  the driver: `pip install psycopg2-binary`.
+  the driver: `pip install psycopg2-binary`. PostgreSQL connections are reused through a
+  small thread-safe pool (`pool_min` defaults to 1, `pool_max` defaults to 10
+  under the `postgres` config object).
 
 Run the interactive chooser:
 
@@ -150,19 +155,18 @@ overwriting doesn't (that depends on *file* ownership, which is root's).
 That's why delete-then-copy works but replace doesn't. `chmod` loosens
 permission bits but the ownership mismatch remains, so it recurs.
 
-The clean fixes, best first:
-1. **Run both processes as the same user.** If you use the systemd
-   service (`install-service.sh`), it runs everything as one user, so
-   this doesn't happen. Prefer that over launching pieces by hand with
-   mixed `sudo`.
-2. **Fix ownership once** if it already happened:
-   ```bash
-   sudo chown youruser:youruser siem.db
-   ```
-   (run as the user that will own the SIEM going forward)
-3. **Avoid needing root at all** for port 514 using the `setcap` or
-   port-redirect options below — then nothing runs as root and the DB
-   stays owned by your normal user.
+The preferred production fix is the **two-service installer** in section 10:
+`install-services.sh` runs only the port-514 listener as root and automatically
+creates a non-login `siem` service account for the Waitress dashboard/pollers.
+Both share the `minisiem` group, and the installer keeps the SQLite/WAL state
+writable without making your personal login account part of the service model.
+This avoids running the web UI as root without forcing you to hand-manage DB
+permissions.
+
+For manual/test launches, either keep both processes under one consistent
+identity, use the capability/redirect options below, or repair existing file
+ownership before continuing. Do not solve recurring ownership problems with
+`chmod 777`.
 
 The point is ownership, not permission bits — `chown` once (or run as
 one consistent user) and the read-only errors stop for good.
@@ -204,9 +208,11 @@ update" problem**, both of which come from root-owned files.
 
 Caveat: this grants the capability to that Python interpreter for *any*
 script it runs, system-wide — fine on a dedicated SIEM box, less ideal on a
-shared one. To scope it to just mini-SIEM instead, use the systemd service
-(`install-services.sh`), which sets the capability on that one service only.
-To undo the grant later: `sudo setcap -r $(readlink -f $(which python3))`.
+shared one. The recommended production alternative is the two-service systemd
+installer (`install-services.sh`): it keeps the dashboard unprivileged and runs
+only the listener as root for port 514. It does not modify the system Python
+capabilities. To undo a manual setcap grant later:
+`sudo setcap -r $(readlink -f $(which python3))`.
 
 **Option C — bind an unprivileged port and forward 514 to it (Linux, iptables):**
 ```bash
@@ -251,8 +257,9 @@ configured to send TCP for reliable delivery.
 ```bash
 python3 dashboard.py --db siem.db --host 127.0.0.1 --port 8080
 ```
-Then open `http://127.0.0.1:8080`. It polls the same SQLite file the
-listener writes to, refreshing every 5 seconds. It's read-only and can
+Then open `http://127.0.0.1:8080`. The command serves Flask through Waitress
+(single process, threaded) rather than Werkzeug's development server. It polls
+the same SQLite file the listener writes to, refreshing every 5 seconds. It's read-only and can
 run on a different machine than the listener as long as it can reach
 the `siem.db` file (e.g. on shared storage), or you point `--db` at a
 copy/replica.
@@ -559,43 +566,126 @@ does not (yet) auto-download feeds from the internet on a schedule.
 Pasting a feed weekly takes a minute; scheduled feed pulls are a natural
 next step if you want them.
 
-## 10. Easiest way to run: one command / install as a service
+## 10. Recommended production install: two systemd services
 
-Instead of running listener.py and dashboard.py separately, use the
-combined entry point:
+The supported production layout keeps the privileged syslog socket separate
+from the web surface:
 
-```bash
-sudo python3 siem.py
+```text
+mini-siem-listener   root             listener.py    TCP/UDP 514
+mini-siem-dashboard  siem (non-login) dashboard.py   Waitress 8080 + API pollers
 ```
 
-That starts the syslog listener (UDP+TCP 514) and the dashboard
-(127.0.0.1:8080) together in one process. Same flags as the individual
-scripts: `--port`, `--protocol`, `--db`, `--dashboard-host`,
-`--dashboard-port`, `--no-dashboard`.
-
-To make it fully hands-off — start at boot, restart on failure —
-install it as a systemd service:
+Create a project virtual environment first:
 
 ```bash
-cd /opt/mini_siem        # or wherever you keep the folder permanently
-sudo ./install-service.sh
+cd /opt/mini_siem
+python3 -m venv .venv
+./.venv/bin/pip install -r requirements.txt
 ```
 
-Then manage it like any service:
+Then install the services. No username or numeric UID is required:
 
 ```bash
-systemctl status mini-siem
-journalctl -u mini-siem -f          # live event/alert/forwarder output
-sudo systemctl restart mini-siem    # after updating code
-sudo ./install-service.sh uninstall # remove the service (keeps files + DB)
+cd /opt/mini_siem
+sudo ./install-services.sh
 ```
 
-The installer writes the unit file pointing at the folder you run it
-from, checks Flask is importable first, and stores the database as
-`siem.db` in that same folder. Note the combined process runs as root
-(needed for port 514) — keep the dashboard on 127.0.0.1 and use an SSH
-tunnel, or use the non-root options in section 2 and edit `User=` in
-the unit.
+The installer creates a dedicated system account named `siem` with a non-login
+shell and a shared `minisiem` group. `mini-siem-dashboard` always runs as
+`siem`; `mini-siem-listener` remains `root` only because TCP/UDP 514 is a
+privileged port. Your personal account (for example `matt`) is not used by
+either service.
+
+`install-services.sh` **prefers `/opt/mini_siem/.venv/bin/python3`** when that
+venv exists, so `sudo` does not accidentally select `/bin/python3` while Flask
+and Waitress are installed only for another interpreter/user.
+
+On CentOS/RHEL with SELinux Enforcing, moving/copying the project from a home
+directory can leave `/opt/mini_siem` incorrectly labeled `user_home_t`. That
+causes systemd to fail before Python starts with `status=203/EXEC` and
+`Permission denied`. The installer detects this stale label under `/opt` and
+runs the safe default-label repair (`restorecon`). It never disables SELinux.
+You can verify manually with:
+
+```bash
+getenforce
+ls -Zd /opt/mini_siem
+sudo restorecon -RFv /opt/mini_siem
+```
+
+A normal `/opt` deployment should not remain `user_home_t`; on the CentOS/RHEL
+host tested during deployment troubleshooting it restored to `usr_t`.
+
+Verify both services and ports:
+
+```bash
+sudo systemctl --no-pager -l status mini-siem-listener
+sudo systemctl --no-pager -l status mini-siem-dashboard
+sudo ss -lntup | grep -E ':514|:8080'
+getent passwd siem
+ps -eo user,group,pid,cmd | grep -E '[l]istener.py|[d]ashboard.py'
+```
+
+Expected process identity: `listener.py` is `root:minisiem`; `dashboard.py` is
+`siem:minisiem`. The `siem` account should have a `nologin`/`false` shell.
+
+Useful logs:
+
+```bash
+sudo journalctl -u mini-siem-listener -n 50 --no-pager
+sudo journalctl -u mini-siem-dashboard -n 50 --no-pager
+```
+
+### Upgrading an existing SQLite installation
+
+If the old installation uses SQLite, **move the whole `siem.db` file**, not
+individual tables. `siem.db` contains the application data/state, including
+`api_pollers`, `app_config`, users, logs, IOC feeds, source profiles, report and
+ticket data, poller cursor/state, and the encrypted poller secret/master-key
+records. Therefore there is no separate `api_pollers` + `app_config` migration
+when the complete SQLite database is carried forward.
+
+Safe migration pattern:
+
+```bash
+# 1. Stop the old writer(s) first.
+sudo systemctl stop mini-siem 2>/dev/null || true
+sudo systemctl stop mini-siem-listener 2>/dev/null || true
+sudo systemctl stop mini-siem-dashboard 2>/dev/null || true
+
+# 2. Back up the old DB.
+cp -a /old/path/siem.db /old/path/siem.db.pre-upgrade
+
+# 3. Put the old database into the new code tree.
+cp -a /old/path/siem.db /opt/mini_siem/siem.db
+```
+
+After a clean shutdown, migrate the main `siem.db`; do **not** blindly copy
+stale `siem.db-wal` or `siem.db-shm` files from a running/unclean instance.
+If you cannot cleanly stop the old SQLite writer, use SQLite's online backup
+mechanism instead of a raw copy.
+
+If you also have deployment files such as `db-config.json` or
+`auth-config.json`, review/carry them forward as appropriate. Do not overwrite
+new program files with old code modules.
+
+Then install dependencies/services and validate:
+
+```bash
+cd /opt/mini_siem
+python3 -m venv .venv
+./.venv/bin/pip install -r requirements.txt
+sudo ./install-services.sh
+sudo ss -lntup | grep -E ':514|:8080'
+```
+
+### Legacy combined service
+
+`siem.py` and `install-service.sh` remain for compatibility. They run the
+combined listener/dashboard model, which historically meant running the web
+surface as root when binding port 514. For new deployments prefer
+`install-services.sh` above.
 
 ## 11. Manual/legacy: separate processes (optional)
 

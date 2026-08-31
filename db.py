@@ -22,6 +22,9 @@ PostgreSQL needs the psycopg2 driver:  pip install psycopg2-binary
 import json
 import os
 import sqlite3
+import threading
+
+from sql_helpers import sqlite_integrity_pragma
 
 # --------------------------------------------------------------------------
 # Config
@@ -96,9 +99,11 @@ class Connection:
     '%s'. Rows are dict-like on both backends (sqlite3.Row / psycopg2
     RealDictRow), so row["col"] and dict(row) work everywhere."""
 
-    def __init__(self, raw, backend: str):
+    def __init__(self, raw, backend: str, release=None):
         self.raw = raw
         self.backend = backend
+        self._release = release
+        self._closed = False
 
     def _sql(self, sql: str) -> str:
         return sql.replace("?", "%s") if self.backend == "postgres" else sql
@@ -115,7 +120,8 @@ class Connection:
         """Run an INSERT and return the new row's integer id."""
         if self.backend == "postgres":
             cur = self.raw.cursor()
-            cur.execute(self._sql(sql) + " RETURNING id", params)
+            returning_sql = self._sql(sql) + " RETURNING id"
+            cur.execute(returning_sql, params)
             row = cur.fetchone()
             return row["id"] if isinstance(row, dict) else row[0]
         cur = self.raw.execute(sql, params)
@@ -125,7 +131,13 @@ class Connection:
         self.raw.commit()
 
     def close(self):
-        self.raw.close()
+        if self._closed:
+            return
+        self._closed = True
+        if self._release is not None:
+            self._release(self.raw)
+        else:
+            self.raw.close()
 
 
 # --------------------------------------------------------------------------
@@ -374,22 +386,50 @@ def _connect_sqlite(config: dict) -> Connection:
     return Connection(raw, "sqlite")
 
 
-def _connect_postgres(config: dict) -> Connection:
+_PG_POOLS = {}
+_PG_POOLS_LOCK = threading.Lock()
+
+
+def _postgres_pool(config: dict):
     try:
-        import psycopg2
         import psycopg2.extras
+        from psycopg2.pool import ThreadedConnectionPool
     except ImportError as exc:
         raise RuntimeError(
             "PostgreSQL backend selected but psycopg2 is not installed. "
             "Run: pip install psycopg2-binary"
         ) from exc
     p = config["postgres"]
-    raw = psycopg2.connect(
-        host=p["host"], port=p["port"], dbname=p["dbname"],
-        user=p["user"], password=p["password"],
-        cursor_factory=psycopg2.extras.RealDictCursor,
-    )
-    return Connection(raw, "postgres")
+    minconn = max(1, int(p.get("pool_min", 1)))
+    maxconn = max(minconn, int(p.get("pool_max", 10)))
+    key = (p.get("host"), int(p.get("port", 5432)), p.get("dbname"),
+           p.get("user"), p.get("password"), minconn, maxconn)
+    with _PG_POOLS_LOCK:
+        pool = _PG_POOLS.get(key)
+        if pool is None:
+            pool = ThreadedConnectionPool(
+                minconn, maxconn, host=p["host"], port=p["port"],
+                dbname=p["dbname"], user=p["user"], password=p["password"],
+                cursor_factory=psycopg2.extras.RealDictCursor,
+            )
+            _PG_POOLS[key] = pool
+    return pool
+
+
+def _connect_postgres(config: dict) -> Connection:
+    pool = _postgres_pool(config)
+    raw = pool.getconn()
+
+    def release(connection):
+        broken = bool(getattr(connection, "closed", False))
+        if not broken:
+            try:
+                connection.rollback()  # never leak transaction state to the next borrower
+            except Exception:
+                broken = True
+        pool.putconn(connection, close=broken)
+
+    return Connection(raw, "postgres", release=release)
 
 
 def connect(config: dict) -> Connection:
@@ -524,8 +564,9 @@ def integrity_check(config: dict, quick: bool = True):
         return True, "integrity_check is a SQLite feature; PostgreSQL manages its own integrity."
     try:
         conn = connect(config)
-        pragma = "quick_check" if quick else "integrity_check"
-        rows = conn.execute(f"PRAGMA {pragma}").fetchall()
+        pragma = sqlite_integrity_pragma(quick=quick)
+        pragma_sql = "PRAGMA " + pragma
+        rows = conn.execute(pragma_sql).fetchall()
         conn.close()
         results = []
         for r in rows:
@@ -553,11 +594,20 @@ def db_file_info(config: dict):
         except OSError:
             info[key] = 0
     return info
-    """Returns (ok: bool, detail: str)."""
+
+
+def test_connection(config: dict):
+    """Returns ``(ok, detail)`` after a minimal round-trip query."""
+    conn = None
     try:
         conn = connect(config)
         conn.execute("SELECT 1")
-        conn.close()
         return True, f"Connected: {describe(config)}"
     except Exception as exc:
         return False, f"{type(exc).__name__}: {exc}"
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass

@@ -19,11 +19,12 @@ import re
 import threading
 import time
 
-from flask import Flask, jsonify, render_template, request, session, redirect, url_for
+from flask import Flask, jsonify, render_template, request, session, redirect, url_for, g, has_request_context
 
 import severity as severity_mod
 import db as dbmod
 import auth
+from sql_helpers import placeholders, identifier, where_clause
 
 import ai_soc
 import ai_worker
@@ -203,8 +204,41 @@ def admin_required(fn):
     return _wrap
 
 
+class _RequestConnectionProxy:
+    """Request-scoped DB handle whose legacy ``close()`` calls are no-ops.
+
+    Existing route code often closes connections explicitly.  Keeping those
+    calls harmless lets a request reuse one connection without a broad
+    behavioral rewrite; the real connection is released by teardown.
+    """
+    def __init__(self, conn):
+        self._conn = conn
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+    def close(self):
+        return None
+
+
 def get_conn():
-    return dbmod.connect(_db_config())
+    if not has_request_context():
+        return dbmod.connect(_db_config())
+    conn = g.get("_minisiem_db_conn")
+    if conn is None:
+        conn = dbmod.connect(_db_config())
+        g._minisiem_db_conn = conn
+    return _RequestConnectionProxy(conn)
+
+
+@app.teardown_appcontext
+def _close_request_connection(_exc=None):
+    conn = g.pop("_minisiem_db_conn", None)
+    if conn is not None:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 
 # --- HTTP log ingest -------------------------------------------------------
@@ -390,9 +424,8 @@ def api_audit():
         params.extend([f"%{q}%", f"%{q}%"])
     where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
     conn = get_conn()
-    rows = [dict(r) for r in conn.execute(
-        f"SELECT * FROM audit_log {where} ORDER BY id DESC LIMIT ?",
-        params + [limit]).fetchall()]
+    audit_sql = "SELECT * FROM audit_log " + where + " ORDER BY id DESC LIMIT ?"
+    rows = [dict(r) for r in conn.execute(audit_sql, params + [limit]).fetchall()]
     actions = [r["action"] for r in conn.execute(
         "SELECT DISTINCT action FROM audit_log ORDER BY action").fetchall()]
     users = [r["username"] for r in conn.execute(
@@ -1011,8 +1044,9 @@ def _query_logs_extracted(args, limit, select_cols, sort_cap=100000):
     conn = get_conn()
     try:
         if not needs:
+            limited_sql = base_sql + " LIMIT ?"
             rows = [dict(r) for r in conn.execute(
-                base_sql + " LIMIT ?", base_params + [limit]).fetchall()]
+                limited_sql, base_params + [limit]).fetchall()]
             return rows
 
         # base WHERE applies to alias l
@@ -1112,17 +1146,18 @@ def _query_logs_extracted(args, limit, select_cols, sort_cap=100000):
             page_ids = ordered_ids[:limit]
             if not page_ids:
                 return []
-            ph = ",".join("?" * len(page_ids))
-            fetched = {r["id"]: dict(r) for r in conn.execute(
-                f"SELECT {cols} FROM logs l WHERE l.id IN ({ph})", page_ids).fetchall()}
+            ph = placeholders(len(page_ids))
+            fetch_sql = "SELECT " + cols + " FROM logs l WHERE l.id IN (" + ph + ")"
+            fetched = {r["id"]: dict(r) for r in conn.execute(fetch_sql, page_ids).fetchall()}
             rows = [fetched[i] for i in page_ids if i in fetched]
         else:
             # base-column sort (or default) while extracted columns are shown
             SORTABLE = {"received_at", "source_ip", "severity", "hostname",
                         "app_name", "id"}
             if sort in SORTABLE:
+                safe_sort = identifier("l." + sort, allowed={"l." + c for c in SORTABLE})
                 d = "ASC" if direction == "asc" else "DESC"
-                sql += f" ORDER BY l.{sort} {d}, l.id DESC LIMIT ?"
+                sql += " ORDER BY " + safe_sort + " " + d + ", l.id DESC LIMIT ?"
             else:
                 sql += " ORDER BY l.id DESC LIMIT ?"
             params.append(limit)
@@ -1131,13 +1166,12 @@ def _query_logs_extracted(args, limit, select_cols, sort_cap=100000):
         # batch-fetch display values for this page only
         if rows and fields:
             ids = [r["id"] for r in rows]
-            ph = ",".join("?" * len(ids))
-            fph = ",".join("?" * len(fields))
+            ph = placeholders(len(ids))
+            fph = placeholders(len(fields))
             vals = {}
-            for fr in conn.execute(
-                    f"SELECT log_id, field, value FROM log_fields "
-                    f"WHERE log_id IN ({ph}) AND field IN ({fph})",
-                    ids + fields).fetchall():
+            field_sql = ("SELECT log_id, field, value FROM log_fields WHERE log_id IN ("
+                         + ph + ") AND field IN (" + fph + ")")
+            for fr in conn.execute(field_sql, ids + fields).fetchall():
                 vals.setdefault(fr["log_id"], {})[fr["field"]] = fr["value"]
             for r in rows:
                 got = vals.get(r["id"], {})
@@ -1163,10 +1197,10 @@ def api_logs():
     ids = [r["id"] for r in rows]
     if ids:
         conn = get_conn()
-        ph = ",".join("?" * len(ids))
-        eip = {r["log_id"]: r["value"] for r in conn.execute(
-            f"SELECT log_id, value FROM log_fields "
-            f"WHERE field='endpoint_ip' AND log_id IN ({ph})", ids).fetchall()}
+        ph = placeholders(len(ids))
+        eip_sql = ("SELECT log_id, value FROM log_fields "
+                   "WHERE field='endpoint_ip' AND log_id IN (" + ph + ")")
+        eip = {r["log_id"]: r["value"] for r in conn.execute(eip_sql, ids).fetchall()}
         conn.close()
         for r in rows:
             if eip.get(r["id"]):
@@ -1574,207 +1608,6 @@ def api_forwarders_test(fw_id):
 
 
 # ---------------------------------------------------------------------------
-# AI SOC analyst endpoints (used by /ai)
-# ---------------------------------------------------------------------------
-
-@app.route("/api/ai/config", methods=["GET"])
-def api_ai_config_get():
-    cfg = get_ai_config()
-    # never echo the API key back to the browser; just say whether one is set
-    return jsonify({
-        "ai_enabled": cfg["ai_enabled"] == "true",
-        "ai_mode": cfg.get("ai_mode", "local"),
-        "ai_base_url": cfg["ai_base_url"],
-        "ai_model": cfg["ai_model"],
-        "ai_api_key_set": bool(cfg["ai_api_key"]),
-        "ai_auto_triage": cfg.get("ai_auto_triage", "true") == "true",
-        "ai_auto_triage_min_severity": cfg.get("ai_auto_triage_min_severity", ""),
-        "ai_auto_triage_max_age_hours": int(cfg.get("ai_auto_triage_max_age_hours", "0") or 0),
-        "ai_system_prompt": cfg.get("ai_system_prompt", ""),
-        "ai_user_template": cfg.get("ai_user_template", ""),
-        "ai_max_tokens": int(cfg.get("ai_max_tokens", "900") or 900),
-        "ai_default_system_prompt": ai_soc.TRIAGE_SYSTEM,
-    })
-
-
-@app.route("/api/ai/config", methods=["POST"])
-@admin_required
-def api_ai_config_set():
-    body = request.get_json(force=True, silent=True) or {}
-    updates = {}
-    if "ai_enabled" in body:
-        updates["ai_enabled"] = "true" if body["ai_enabled"] else "false"
-    if "ai_mode" in body:
-        updates["ai_mode"] = "external" if body["ai_mode"] == "external" else "local"
-    if "ai_base_url" in body:
-        updates["ai_base_url"] = str(body["ai_base_url"]).strip()
-    if "ai_model" in body:
-        updates["ai_model"] = str(body["ai_model"]).strip()
-    if "ai_auto_triage" in body:
-        updates["ai_auto_triage"] = "true" if body["ai_auto_triage"] else "false"
-    if "ai_auto_triage_min_severity" in body:
-        updates["ai_auto_triage_min_severity"] = str(body["ai_auto_triage_min_severity"]).strip()
-    if "ai_auto_triage_max_age_hours" in body:
-        try:
-            updates["ai_auto_triage_max_age_hours"] = str(max(0, min(int(body["ai_auto_triage_max_age_hours"] or 0), 8760)))
-        except (TypeError, ValueError):
-            pass
-    if "ai_system_prompt" in body:
-        updates["ai_system_prompt"] = str(body["ai_system_prompt"])[:8000]
-    if "ai_user_template" in body:
-        updates["ai_user_template"] = str(body["ai_user_template"])[:8000]
-    if "ai_max_tokens" in body:
-        try:
-            updates["ai_max_tokens"] = str(max(64, min(int(body["ai_max_tokens"] or 900), 8192)))
-        except (TypeError, ValueError):
-            pass
-    # only overwrite the key if a non-empty value is provided
-    if body.get("ai_api_key"):
-        updates["ai_api_key"] = str(body["ai_api_key"]).strip()
-    save_ai_config(updates)
-    # Record WHAT changed with values for non-sensitive settings, so the trail
-    # is meaningful (e.g. "ai_enabled=false"). The API key is never recorded as
-    # a value — only that it was updated.
-    SENSITIVE = {"ai_api_key"}
-    SUMMARIZE = {"ai_system_prompt", "ai_user_template"}  # long free text
-    parts = []
-    for k, v in updates.items():
-        if k in SENSITIVE:
-            parts.append(f"{k} (updated)")
-        elif k in SUMMARIZE:
-            parts.append(f"{k} ({'set' if str(v).strip() else 'cleared'})")
-        else:
-            parts.append(f"{k}={v}")
-    audit("ai_config_changed", detail=", ".join(parts) or "no changes")
-    return jsonify({"ok": True})
-
-
-def _ai_enabled():
-    return get_ai_config()["ai_enabled"] == "true"
-
-
-@app.route("/api/ai/test", methods=["POST"])
-def api_ai_test():
-    if not _ai_enabled():
-        return jsonify({"ok": False, "error": "AI Analyst is turned off. Enable it first."}), 400
-    cfg = get_ai_config()
-    if cfg.get("ai_mode") == "external" and not cfg.get("ai_api_key"):
-        return jsonify({"ok": False, "error": "External mode needs an API token — none is set."}), 400
-    ok, detail = _llm_from_config().test()
-    return (jsonify({"ok": True, "detail": detail}) if ok
-            else (jsonify({"ok": False, "error": detail}), 502))
-
-
-@app.route("/api/ai/queue/stats", methods=["GET"])
-def api_ai_queue_stats():
-    conn = get_conn()
-    def cnt(where):
-        r = conn.execute(f"SELECT COUNT(*) AS c FROM alerts WHERE {where}").fetchone()
-        return r["c"] if hasattr(r, "keys") else r[0]
-    stats = {
-        "queued": cnt("ai_status IS NULL OR ai_status = 'pending'"),
-        "failed": cnt("ai_status = 'error'"),
-        "done": cnt("ai_status = 'done'"),
-        "skipped": cnt("ai_status = 'skipped'"),
-    }
-    conn.close()
-    return jsonify(stats)
-
-
-@app.route("/api/ai/queue/retry", methods=["POST"])
-def api_ai_queue_retry():
-    """Reset failed, stuck, and skipped alerts so the triage worker
-    re-evaluates them — use after the LLM box comes back online. Alerts
-    below the min-severity or older than the max-age simply get
-    re-skipped on the next pass, so this is always safe."""
-    conn = get_conn()
-    cur = conn.execute(
-        "UPDATE alerts SET ai_status='pending', ai_attempts=0 "
-        "WHERE ai_status IS NULL OR ai_status IN ('error','pending','skipped')")
-    conn.commit()
-    n = cur.rowcount if hasattr(cur, "rowcount") else -1
-    conn.close()
-    audit("ai_queue_retry", detail=f"{n} alerts reset for re-triage")
-    return jsonify({"ok": True, "reset": n})
-
-
-@app.route("/api/ai/queue/clear", methods=["POST"])
-def api_ai_queue_clear():
-    """Mark all queued/failed alerts as skipped — the alerts themselves
-    stay; they just won't be sent to the LLM."""
-    conn = get_conn()
-    cur = conn.execute(
-        "UPDATE alerts SET ai_status='skipped' "
-        "WHERE ai_status IS NULL OR ai_status IN ('pending','error')")
-    conn.commit()
-    n = cur.rowcount if hasattr(cur, "rowcount") else -1
-    conn.close()
-    audit("ai_queue_cleared", detail=f"{n} alerts marked skipped")
-    return jsonify({"ok": True, "cleared": n})
-
-
-@app.route("/api/ai/triage", methods=["POST"])
-def api_ai_triage():
-    if not _ai_enabled():
-        return jsonify({"error": "AI Analyst is turned off. Enable it on the AI page."}), 400
-    body = request.get_json(force=True, silent=True) or {}
-    alert_id = body.get("alert_id")
-    if not alert_id:
-        return jsonify({"error": "alert_id is required"}), 400
-    conn = get_conn()
-    ctx = ai_soc.gather_alert_context(conn, int(alert_id))
-    conn.close()
-    if not ctx:
-        return jsonify({"error": "alert not found"}), 404
-    _cfg = get_ai_config()
-    messages = ai_soc.build_triage_messages(
-        ctx, system_prompt=_cfg.get("ai_system_prompt"),
-        user_template=_cfg.get("ai_user_template"))
-    try:
-        answer = _llm_from_config().chat(
-            messages, max_tokens=int(_cfg.get("ai_max_tokens", "900") or 900))
-    except Exception as exc:
-        return jsonify({"error": f"LLM call failed: {type(exc).__name__}: {exc}"}), 502
-    return jsonify({
-        "answer": answer,
-        "context_summary": {
-            "related_events": len(ctx["related"]),
-            "source_history_events": len(ctx["src_history"]),
-            "source": ctx["alert"]["source_ip"],
-        },
-    })
-
-
-@app.route("/api/ai/chat", methods=["POST"])
-def api_ai_chat():
-    if not _ai_enabled():
-        return jsonify({"error": "AI Analyst is turned off. Enable it on the AI page."}), 400
-    body = request.get_json(force=True, silent=True) or {}
-    question = (body.get("question") or "").strip()
-    history = body.get("history") or []
-    if not question:
-        return jsonify({"error": "question is required"}), 400
-    conn = get_conn()
-    ctx = ai_soc.gather_chat_context(conn, question)
-    conn.close()
-    _cfg = get_ai_config()
-    messages = ai_soc.build_chat_messages(
-        ctx, question, history, system_prompt=_cfg.get("ai_system_prompt"))
-    try:
-        answer = _llm_from_config().chat(
-            messages, max_tokens=int(_cfg.get("ai_max_tokens", "900") or 900))
-    except Exception as exc:
-        return jsonify({"error": f"LLM call failed: {type(exc).__name__}: {exc}"}), 502
-    return jsonify({
-        "answer": answer,
-        "context_summary": {
-            "matched_events": len(ctx["matches"]),
-            "keywords": ctx["keywords"],
-        },
-    })
-
-
-# ---------------------------------------------------------------------------
 # Health endpoints (/health page)
 # ---------------------------------------------------------------------------
 
@@ -1783,69 +1616,6 @@ def healthz():
     """Unauthenticated minimal liveness probe for external monitors —
     intentionally exposes no data."""
     return jsonify({"status": "ok"})
-
-
-@app.route("/api/health")
-def api_health():
-    conn = get_conn()
-    try:
-        snapshot = health_mod.collect(conn, _db_config())
-    finally:
-        conn.close()
-    return jsonify(snapshot)
-
-
-@app.route("/api/db/integrity", methods=["GET"])
-def api_db_integrity():
-    quick = request.args.get("full", "").lower() not in ("1", "true", "yes")
-    ok, detail = dbmod.integrity_check(_db_config(), quick=quick)
-    info = dbmod.db_file_info(_db_config())
-    return jsonify({"ok": ok, "detail": detail, "quick": quick, "file": info})
-
-
-@app.route("/api/db/backup", methods=["POST"])
-@admin_required
-def api_db_backup():
-    """Create a WAL-safe online backup of the sqlite DB into ./backups
-    (or a configured dir), then integrity-check the copy."""
-    import os
-    import sqlite3
-    from datetime import datetime, timezone
-    cfg = _db_config()
-    if cfg.get("backend") != "sqlite":
-        return jsonify({"error": "online backup endpoint is for the SQLite backend"}), 400
-    src_path = cfg["sqlite"]["path"]
-    backup_dir = cfg_get("db_backup_dir", "") or os.path.join(
-        os.path.dirname(os.path.abspath(src_path)) or ".", "backups")
-    try:
-        os.makedirs(backup_dir, exist_ok=True)
-        stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-        dest = os.path.join(backup_dir, f"siem-{stamp}.db")
-        # sqlite online backup API — safe while the DB is in use
-        src = sqlite3.connect(src_path)
-        dst = sqlite3.connect(dest)
-        with dst:
-            src.backup(dst)
-        dst.close()
-        src.close()
-        # verify the copy
-        ok, detail = dbmod.integrity_check(dbmod.config_from_path(dest), quick=False)
-        size = os.path.getsize(dest)
-        # rotate: keep newest 14
-        backups = sorted(f for f in os.listdir(backup_dir)
-                         if f.startswith("siem-") and f.endswith(".db"))
-        removed = 0
-        for old in backups[:-14]:
-            try:
-                os.remove(os.path.join(backup_dir, old)); removed += 1
-            except OSError:
-                pass
-        audit("db_backup", target=dest, detail=f"{size} bytes, integrity={'ok' if ok else detail}")
-        return jsonify({"ok": True, "path": dest, "size_bytes": size,
-                        "verified": ok, "verify_detail": detail,
-                        "rotated_out": removed, "dir": backup_dir})
-    except Exception as exc:
-        return jsonify({"error": f"{type(exc).__name__}: {exc}"}), 500
 
 
 # ---------------------------------------------------------------------------
@@ -1906,87 +1676,6 @@ def api_idle_timeout_set():
     cfg_set(idle_timeout_minutes=str(minutes))
     audit("idle_timeout_changed", detail=f"{minutes} min" if minutes else "disabled")
     return jsonify({"ok": True, "minutes": minutes})
-
-
-@app.route("/api/users", methods=["GET"])
-def api_users_list():
-    conn = get_conn()
-    rows = [dict(r) for r in conn.execute(
-        "SELECT username, role, auth_source, must_change_password, created_at FROM users ORDER BY username").fetchall()]
-    conn.close()
-    return jsonify(rows)
-
-
-@app.route("/api/users", methods=["POST"])
-@admin_required
-def api_users_create():
-    body = request.get_json(force=True, silent=True) or {}
-    username = (body.get("username") or "").strip()
-    password = body.get("password") or ""
-    role = (body.get("role") or "admin").strip()
-    if not username:
-        return jsonify({"error": "username is required"}), 400
-    if len(password) < 8:
-        return jsonify({"error": "password must be at least 8 characters"}), 400
-    conn = get_conn()
-    if auth.get_user(conn, username):
-        conn.close()
-        return jsonify({"error": "user already exists"}), 409
-    from werkzeug.security import generate_password_hash
-    from datetime import datetime, timezone
-    conn.execute(
-        """INSERT INTO users (username, password_hash, role, auth_source,
-                              must_change_password, created_at)
-           VALUES (?,?,?,?,?,?)""",
-        (username, generate_password_hash(password), role, "local", 0,
-         datetime.now(timezone.utc).isoformat()))
-    conn.commit()
-    conn.close()
-    audit("user_created", target=username, detail=f"role: {role}")
-    return jsonify({"ok": True})
-
-
-@app.route("/api/users/<username>", methods=["DELETE"])
-@admin_required
-def api_users_delete(username):
-    if username == auth.current_user():
-        return jsonify({"error": "you cannot delete the account you're logged in as"}), 400
-    conn = get_conn()
-    n = conn.execute("SELECT COUNT(*) AS c FROM users").fetchone()
-    total = n["c"] if isinstance(n, dict) else n[0]
-    if total <= 1:
-        conn.close()
-        return jsonify({"error": "cannot delete the last remaining user"}), 400
-    conn.execute("DELETE FROM users WHERE username=?", (username,))
-    conn.commit()
-    conn.close()
-    audit("user_deleted", target=username)
-    return jsonify({"ok": True})
-
-
-@app.route("/api/users/password", methods=["POST"])
-def api_users_password():
-    if not auth.current_user():
-        return jsonify({"error": "not authenticated"}), 401
-    body = request.get_json(force=True, silent=True) or {}
-    current = body.get("current_password") or ""
-    new = body.get("new_password") or ""
-    conn = get_conn()
-    user = auth.verify_local(conn, auth.current_user(), current)
-    if not user:
-        conn.close()
-        return jsonify({"error": "current password is incorrect"}), 400
-    if len(new) < 8:
-        conn.close()
-        return jsonify({"error": "new password must be at least 8 characters"}), 400
-    if new == auth.DEFAULT_ADMIN_PASS:
-        conn.close()
-        return jsonify({"error": "choose a password other than the default"}), 400
-    auth.set_password(conn, auth.current_user(), new)
-    conn.close()
-    session["must_change"] = False
-    audit("password_changed", detail="via Setup page")
-    return jsonify({"ok": True})
 
 
 @app.route("/api/auth/methods", methods=["GET"])
@@ -2628,256 +2317,6 @@ def api_pollers_delete(pid):
 
 
 # ---------------------------------------------------------------------------
-# Playbook reports
-# ---------------------------------------------------------------------------
-
-@app.route("/api/reports/run", methods=["POST"])
-def api_reports_run():
-    import workers
-    body = request.get_json(force=True, silent=True) or {}
-    days = max(1, min(int(body.get("window_days", 7)), 365))
-    conn = get_conn()
-    try:
-        report = workers.run_playbook_report(conn, window_days=days, trigger="manual")
-    finally:
-        conn.close()
-    audit("report_run", target=f"{days}-day window", detail=report.get("summary", ""))
-    return jsonify(report)
-
-
-@app.route("/api/reports", methods=["GET"])
-def api_reports_list():
-    conn = get_conn()
-    rows = [dict(r) for r in conn.execute(
-        """SELECT id, created_at, trigger, window_days, summary, findings
-           FROM reports ORDER BY id DESC LIMIT 100""").fetchall()]
-    conn.close()
-    return jsonify(rows)
-
-
-@app.route("/api/reports/<int:rid>", methods=["GET"])
-def api_reports_get(rid):
-    import json as _json
-    conn = get_conn()
-    row = conn.execute("SELECT * FROM reports WHERE id=?", (rid,)).fetchone()
-    conn.close()
-    if not row:
-        return jsonify({"error": "report not found"}), 404
-    d = dict(row)
-    d["results"] = _json.loads(d.pop("results_json") or "[]")
-    return jsonify(d)
-
-
-@app.route("/api/reports/<int:rid>", methods=["DELETE"])
-@admin_required
-def api_reports_delete(rid):
-    conn = get_conn()
-    conn.execute("DELETE FROM reports WHERE id=?", (rid,))
-    conn.commit()
-    conn.close()
-    return jsonify({"ok": True})
-
-
-@app.route("/api/reports/schedule", methods=["GET"])
-def api_reports_schedule_get():
-    return jsonify({"schedule": cfg_get("report_schedule", "off")})
-
-
-@app.route("/api/reports/schedule", methods=["POST"])
-def api_reports_schedule_set():
-    body = request.get_json(force=True, silent=True) or {}
-    sched = (body.get("schedule") or "off").lower()
-    if sched not in ("off", "weekly", "monthly"):
-        return jsonify({"error": "schedule must be off, weekly, or monthly"}), 400
-    cfg_set(report_schedule=sched)
-    audit("report_schedule_changed", target=sched)
-    return jsonify({"ok": True, "schedule": sched})
-
-
-# ---------------------------------------------------------------------------
-# Ticket system connector
-# ---------------------------------------------------------------------------
-
-TICKET_DEFAULTS = {
-    "ticket_enabled": "false",
-    "ticket_url": "",
-    "ticket_method": "POST",
-    "ticket_headers": "{}",
-    "ticket_template": "",
-    "ticket_min_severity": "warning",
-}
-
-
-def get_ticket_settings():
-    import workers, json as _json
-    try:
-        headers = _json.loads(cfg_get("ticket_headers", "{}") or "{}")
-    except Exception:
-        headers = {}
-    return {
-        "enabled": cfg_get("ticket_enabled", "false") == "true",
-        "url": cfg_get("ticket_url", ""),
-        "method": cfg_get("ticket_method", "POST") or "POST",
-        "headers": headers,
-        "template": cfg_get("ticket_template", "") or workers.DEFAULT_TICKET_TEMPLATE,
-        "min_severity": cfg_get("ticket_min_severity", "warning"),
-    }
-
-
-@app.route("/api/tickets/config", methods=["GET"])
-def api_tickets_config_get():
-    import workers
-    s = get_ticket_settings()
-    # never echo credential headers back; just report which header names are set
-    return jsonify({
-        "enabled": s["enabled"], "url": s["url"], "method": s["method"],
-        "header_names": sorted(s["headers"].keys()),
-        "template": s["template"], "min_severity": s["min_severity"],
-        "default_template": workers.DEFAULT_TICKET_TEMPLATE,
-    })
-
-
-@app.route("/api/tickets/config", methods=["POST"])
-@admin_required
-def api_tickets_config_set():
-    import json as _json
-    body = request.get_json(force=True, silent=True) or {}
-    updates = {}
-    if "enabled" in body:
-        updates["ticket_enabled"] = "true" if body["enabled"] else "false"
-    if "url" in body:
-        updates["ticket_url"] = str(body["url"]).strip()
-    if "method" in body:
-        updates["ticket_method"] = "PUT" if str(body["method"]).upper() == "PUT" else "POST"
-    if "headers" in body:
-        try:
-            hdrs = body["headers"] if isinstance(body["headers"], dict) else _json.loads(body["headers"] or "{}")
-        except Exception:
-            return jsonify({"error": "headers must be valid JSON (e.g. {\"Authorization\": \"Bearer ...\"})"}), 400
-        updates["ticket_headers"] = _json.dumps(hdrs)
-    if "template" in body:
-        tpl = str(body["template"]).strip()
-        if tpl:
-            try:
-                _json.loads(tpl.replace("{{", "").replace("}}", ""))
-            except Exception:
-                pass  # template with placeholders may not be strict JSON until rendered
-        updates["ticket_template"] = tpl
-    if "min_severity" in body:
-        sev = severity_mod.normalize(str(body["min_severity"])) or "warning"
-        updates["ticket_min_severity"] = sev
-    cfg_set(**updates)
-    audit("ticket_config_changed",
-          detail=", ".join("headers (updated)" if k == "ticket_headers" else k for k in updates))
-    return jsonify({"ok": True})
-
-
-@app.route("/api/tickets/test", methods=["POST"])
-def api_tickets_test():
-    import workers
-    w = workers.TicketWorker(get_conn, get_ticket_settings)
-    ok, detail = w.send_test()
-    return (jsonify({"ok": True, "detail": detail}) if ok
-            else (jsonify({"ok": False, "error": detail}), 502))
-
-
-# ---------------------------------------------------------------------------
-# IOC feeds (external URL import)
-# ---------------------------------------------------------------------------
-
-@app.route("/api/ioc-feeds", methods=["GET"])
-def api_ioc_feeds_list():
-    conn = get_conn()
-    rows = [dict(r) for r in conn.execute(
-        "SELECT * FROM ioc_feeds ORDER BY id DESC").fetchall()]
-    conn.close()
-    for r in rows:
-        r["has_key"] = bool(r.pop("key_encrypted", ""))  # never return the ciphertext
-    return jsonify(rows)
-
-
-@app.route("/api/ioc-feeds", methods=["POST"])
-def api_ioc_feeds_create():
-    body = request.get_json(force=True, silent=True) or {}
-    name = (body.get("name") or "").strip()
-    url = (body.get("url") or "").strip()
-    if not name or not url:
-        return jsonify({"error": "name and url are required"}), 400
-    if not url.lower().startswith(("http://", "https://")):
-        return jsonify({"error": "url must start with http:// or https://"}), 400
-    sev = severity_mod.normalize((body.get("severity") or "warning")) or "warning"
-    refresh = max(0, min(int(body.get("refresh_hours", 0) or 0), 720))
-
-    auth_scheme = (body.get("auth_scheme") or "none").lower()
-    valid_schemes = {"none", "header", "authorization", "query_param", "basic"}
-    if auth_scheme not in valid_schemes:
-        return jsonify({"error": f"auth_scheme must be one of {sorted(valid_schemes)}"}), 400
-    key_plain = (body.get("key") or "").strip()
-    key_enc = _secretbox.encrypt(key_plain, _secretbox_master()) if key_plain else ""
-
-    conn = get_conn()
-    new_id = conn.insert_returning_id(
-        """INSERT INTO ioc_feeds (name, url, severity, threat, default_type, refresh_hours,
-           enabled, auth_scheme, header_name, header_prefix, query_param, basic_user, key_encrypted)
-           VALUES (?,?,?,?,?,?,1,?,?,?,?,?,?)""",
-        (name, url, sev, (body.get("threat") or "").strip(),
-         (body.get("default_type") or "").strip().lower(), refresh,
-         auth_scheme, (body.get("header_name") or "").strip(),
-         (body.get("header_prefix") or "").strip(), (body.get("query_param") or "").strip(),
-         (body.get("basic_user") or "").strip(), key_enc))
-    conn.commit()
-    conn.close()
-    audit("ioc_feed_added", target=name, detail=url)
-    return jsonify({"id": new_id, "ok": True})
-
-
-def _resolve_feed_key(feed_row):
-    """Decrypt an ioc_feed's stored API key/token for use in a request."""
-    enc = feed_row.get("key_encrypted") or ""
-    if not enc:
-        return ""
-    return _secretbox.decrypt(enc, _secretbox_master())
-
-
-@app.route("/api/ioc-feeds/<int:fid>/fetch", methods=["POST"])
-def api_ioc_feeds_fetch(fid):
-    import workers
-    conn = get_conn()
-    row = conn.execute("SELECT * FROM ioc_feeds WHERE id=?", (fid,)).fetchone()
-    if not row:
-        conn.close()
-        return jsonify({"error": "feed not found"}), 404
-    result = workers.fetch_feed(conn, dict(row), resolve_key_fn=_resolve_feed_key)
-    conn.close()
-    return (jsonify(result) if result.get("ok") else (jsonify(result), 502))
-
-
-@app.route("/api/ioc-feeds/<int:fid>", methods=["PUT"])
-def api_ioc_feeds_update(fid):
-    body = request.get_json(force=True, silent=True) or {}
-    conn = get_conn()
-    if "enabled" in body:
-        conn.execute("UPDATE ioc_feeds SET enabled=? WHERE id=?",
-                     (1 if body["enabled"] else 0, fid))
-    if "refresh_hours" in body:
-        conn.execute("UPDATE ioc_feeds SET refresh_hours=? WHERE id=?",
-                     (max(0, min(int(body["refresh_hours"] or 0), 720)), fid))
-    conn.commit()
-    conn.close()
-    return jsonify({"ok": True})
-
-
-@app.route("/api/ioc-feeds/<int:fid>", methods=["DELETE"])
-@admin_required
-def api_ioc_feeds_delete(fid):
-    conn = get_conn()
-    conn.execute("DELETE FROM ioc_feeds WHERE id=?", (fid,))
-    conn.commit()
-    conn.close()
-    return jsonify({"ok": True})
-
-
-# ---------------------------------------------------------------------------
 # Message normalization patterns (log search field extraction)
 # ---------------------------------------------------------------------------
 
@@ -3247,6 +2686,47 @@ def api_ingest():
     return jsonify({"ok": True, "ingested": count})
 
 
+
+def _require_admin_now():
+    if auth.current_role() != "admin":
+        audit("permission_denied", target=request.endpoint or request.path,
+              detail=f"role={auth.current_role()}")
+        return jsonify({"error": "administrator role required for this action"}), 403
+    return None
+
+
+def _register_split_blueprints():
+    """Register the deliberately limited dashboard split.
+
+    Only AI, DB health/backup, users, reports, ticketing, and IOC feeds live
+    outside dashboard.py.  Other routes intentionally remain here.
+    """
+    from types import SimpleNamespace
+    from web_blueprints import ai as ai_routes
+    from web_blueprints import db_health as db_health_routes
+    from web_blueprints import users as user_routes
+    from web_blueprints import reports as report_routes
+    from web_blueprints import tickets as ticket_routes
+    from web_blueprints import ioc_feeds as feed_routes
+
+    services = SimpleNamespace(
+        get_conn=get_conn, audit=audit, require_admin=_require_admin_now,
+        db_config=_db_config, cfg_get=cfg_get, cfg_set=cfg_set,
+        get_ai_config=get_ai_config, save_ai_config=save_ai_config,
+        llm_from_config=_llm_from_config, secretbox_master=_secretbox_master,
+    )
+    for module in (ai_routes, db_health_routes, user_routes, report_routes,
+                   ticket_routes, feed_routes):
+        module.configure(services)
+        app.register_blueprint(module.bp)
+
+    # Preserve the callable interfaces used by the existing background workers.
+    globals()["get_ticket_settings"] = ticket_routes.get_ticket_settings
+    globals()["_resolve_feed_key"] = feed_routes.resolve_feed_key
+
+
+_register_split_blueprints()
+
 def main():
     global DB_PATH, DB_CONFIG
     ap = argparse.ArgumentParser(description="mini-SIEM dashboard")
@@ -3265,7 +2745,8 @@ def main():
     start_triage_worker()
     start_automation_workers()
     start_poller_manager()
-    app.run(host=args.host, port=args.port, debug=False)
+    from waitress import serve
+    serve(app, host=args.host, port=args.port, threads=8)
 
 
 if __name__ == "__main__":

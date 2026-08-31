@@ -26,6 +26,7 @@ import urllib.error
 from collections import Counter
 
 import severity as severity_mod
+from sql_helpers import select_in
 
 # --------------------------------------------------------------------------
 # Bounds — keep prompts small enough for a 7B-class local model
@@ -114,11 +115,11 @@ def gather_alert_context(conn, alert_id: int):
     log_ids = [int(i) for i in (alert["log_ids"] or "").split(",") if i.strip().isdigit()]
     related = []
     if log_ids:
-        placeholders = ",".join("?" * len(log_ids[:MAX_CONTEXT_EVENTS]))
-        related = conn.execute(
-            f"""SELECT id, received_at, source_ip, hostname, app_name, severity, message
-                FROM logs WHERE id IN ({placeholders}) ORDER BY id""",
-            log_ids[:MAX_CONTEXT_EVENTS]).fetchall()
+        related_sql, related_params = select_in(
+            "logs",
+            "id, received_at, source_ip, hostname, app_name, severity, message",
+            "id", log_ids[:MAX_CONTEXT_EVENTS], suffix=" ORDER BY id")
+        related = conn.execute(related_sql, related_params).fetchall()
 
     src = alert["source_ip"]
     src_history, src_sevs = [], []

@@ -10,12 +10,12 @@ Continue development and improvement of the Mini SIEM platform.
 The initial source import is intact. Per the maintainer, the platform is well
 tested in practice: it has been exercised functionally end-to-end and is
 considered stable for its intended use (the Sophos poller, for example, has run
-in production — see Known Issues). That testing is manual/functional and lives
-outside this repository — there is no automated test suite or CI checked in.
-The standard-library ingestion/storage path additionally has a passing local
-smoke baseline recorded below. Dashboard/Flask-dependent checks that a given
-environment cannot run (e.g. Flask not installed) are environment gaps, not
-product defects.
+in production — see Known Issues). That testing is primarily manual/functional. A small in-repo pytest regression
+baseline and GitHub Actions workflow now protect DB helpers, SQL-composition
+helpers, the dashboard/siem import surface, route-map parity, auth/public-route
+behavior, and CSRF behavior. Dashboard/Flask-dependent checks still cannot run
+in an environment where Flask is unavailable; that remains an environment gap,
+not a product defect.
 
 ## Architecture Baseline
 - `siem.py` is the combined entry point for syslog listeners and the Flask
@@ -31,9 +31,24 @@ product defects.
   ingestion, and administration/configuration endpoints.
 - The maintainer reports the platform is well tested through hands-on
   functional testing across ingestion, the dashboard, and its feature set.
-  This is not yet captured as an automated, in-repo unit/integration suite;
-  the repository's mechanical validation consists of `security_static_scan.py`,
+  This is now partially captured by a deliberately small pytest/CI regression
+  suite. Mechanical validation also includes `security_static_scan.py`,
   `security_dynamic_scan.py`, syntax compilation, and manual smoke tests.
+
+- 2026-08-31 refactor/hardening: fixed the missing `db.test_connection()`
+  function; replaced Flask/Werkzeug `app.run()` in both entry paths with
+  single-process threaded Waitress; split only AI, IOC feeds, DB health/backup,
+  users, reports, and ticket routes into `web_blueprints/` while preserving all
+  102 path/method route contracts; added request-scoped dashboard DB connection
+  reuse plus a bounded thread-safe PostgreSQL connection pool; centralized
+  dynamic SQL placeholder/identifier composition in `sql_helpers.py`; and added
+  pytest + GitHub Actions regression scaffolding. Static route comparison found
+  no missing/extra route contracts. `compileall`, SQLite initialize/connect/
+  integrity smoke, and `security_static_scan.py` pass; the static scanner reports
+  0 findings. Full Flask/pytest and `security_dynamic_scan.py` remain unexecuted
+  in the packaging environment because Flask/pytest are not installed and
+  network package installation is unavailable.
+
 ## AI Git Workflow
 
 AI may perform normal Git operations:
@@ -76,6 +91,13 @@ Never:
   Merged the concurrent `main` update (patch.md ledger, Sophos-poller and
   rule-state decisions) into this branch. No source code was changed this
   session; only handoff/ledger documentation was edited.
+- 2026-08-28 session: added a version-controlled, self-contained Sophos poller
+  integration bundle under `integrations/sophos_poller_bundle/`. It preserves
+  the verified callback/schema contract and includes SQLite/PostgreSQL schema,
+  a safe adapter skeleton, credential-free example configuration, integration
+  and operational notes, and offline HTTP-mocked tests. The portable copy uses
+  Sophos's documented first-run `from_date` query parameter; the production
+  root `api_poller.py` was intentionally not changed.
 
 ## Test and Review Results (2026-08-17)
 - `python3 -m compileall -q .`: PASS (bytecode redirected outside the repo).
@@ -118,6 +140,32 @@ Never:
 - TCP ingestion assumes newline-delimited messages rather than RFC6587
   octet-counted framing.
 
+## Deployment Update — 2026-08-31
+- Production Linux deployment now prefers `install-services.sh`: the syslog
+  listener runs as root only for TCP/UDP 514, while the Waitress dashboard and
+  API pollers run as the dedicated non-login system account `siem`. The
+  installer creates `siem` automatically; no personal username/UID argument is
+  accepted. Both services share the `minisiem` group for SQLite/WAL access.
+- Service-account hardening: `install-services.sh` creates `siem` with a
+  non-login shell and `/var/lib/mini-siem` home, keeps project code/venv out of
+  the service-writable set, and grants shared write only where runtime SQLite,
+  `db-config.json`, and backups require it. It preflights the `siem` account's
+  ability to execute the selected Python and write the SQLite directory before
+  enabling services.
+- The installer now prefers the repository `.venv/bin/python3` (or `.venv/bin/python`)
+  before falling back to PATH. This avoids `sudo` selecting `/bin/python3`
+  when Flask/Waitress are installed in the project venv.
+- CentOS/RHEL SELinux lesson: copying a tree from a home directory to
+  `/opt/mini_siem` with preserved labels can leave `user_home_t`; systemd then
+  fails at EXEC with `status=203/EXEC` / `Permission denied` before Python
+  starts. The installer detects this under `/opt` on Enforcing systems and runs
+  `restorecon`; do not disable SELinux to work around it.
+- Shell scripts are normalized to Unix LF to avoid `bash\\r` shebang failures.
+- SQLite upgrades carry the complete cleanly-closed `siem.db`; that already
+  includes `api_pollers`, `app_config`, poller cursor/encrypted secret state,
+  users, logs, IOC feeds, reports/tickets, and related tables. Do not migrate
+  those tables separately.
+
 ## Important Decisions
 - GitHub is the shared source of truth.
 - Codex and Claude may both work on this repository.
@@ -149,6 +197,12 @@ Never:
   starting over. The client secret is stored encrypted in the SIEM database.
   Preserve this verified integration flow unless a change is explicitly
   requested and tested against Sophos.
+- `integrations/sophos_poller_bundle/` is the supported transfer package for
+  embedding the same poller in another SIEM that implements the documented
+  `conn_factory`, `ingest_fn`, and `resolve_secret_fn` callbacks and matching
+  `api_pollers` schema. The target must provide connector-scoped event-ID
+  deduplication before enabling polling; a partial batch can be replayed before
+  the next cursor is persisted.
 
 ## Proposed Feature Roadmap (candidate next builds)
 Substantial feature work (not bug fixes) recommended for the platform. Each
@@ -215,3 +269,5 @@ work, run the Flask-dependent smoke checks (`dashboard.py`/`siem.py --help`,
   commit `fa41fc5` (`Initial import of Mini SIEM project`).
 - Handoff update: 2026-08-21 (documentation-only; no code changed). Status,
   roadmap, and next-step guidance refreshed and merged with `main`.
+- Sophos portable bundle: 2026-08-28. Two offline mocked-flow tests passed;
+  Python AST and JSON parsing passed; no external API was contacted.

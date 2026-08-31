@@ -24,6 +24,7 @@ plus suggested response steps. Add your own to PLAYBOOKS below.
 import re
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
+from sql_helpers import placeholders
 
 import severity as severity_mod
 
@@ -116,13 +117,12 @@ def _resolve_identity(conn, rows, group_by, aliases):
     if not needs_fallback:
         return
     ids = [r["id"] for r in needs_fallback]
-    ph = ",".join("?" * len(fields))
-    id_ph = ",".join("?" * len(ids))
+    ph = placeholders(len(fields))
+    id_ph = placeholders(len(ids))
     found = {}
-    for r in conn.execute(
-            f"SELECT log_id, field, value FROM log_fields "
-            f"WHERE log_id IN ({id_ph}) AND field IN ({ph}) "
-            f"ORDER BY log_id", ids + fields).fetchall():
+    alias_sql = ("SELECT log_id, field, value FROM log_fields WHERE log_id IN ("
+                 + id_ph + ") AND field IN (" + ph + ") ORDER BY log_id")
+    for r in conn.execute(alias_sql, ids + fields).fetchall():
         # first matching field wins, but for ip_shaped concepts only accept
         # values that actually parse as an IP — an alias field with a
         # non-IP value (rare, but possible with a misconfigured alias list)

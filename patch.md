@@ -311,3 +311,167 @@ Copy this section for every material change:
 ### Remaining Work
 
 - Implement a Proposed Feature Roadmap item (suggested: alert triage lifecycle).
+
+## 2026-08-28 — Portable Sophos poller integration bundle — READY FOR OWNER REVIEW
+
+### Intent
+
+- Package the production-verified Sophos Central polling flow for reuse by a
+  second SIEM using the same callback contract and `api_pollers` schema.
+- Provide a separate integration and operational-safety guide without placing
+  credentials or production data in version control.
+
+### Files Changed
+
+- `integrations/__init__.py`: integration-bundle namespace.
+- `integrations/sophos_poller_bundle/api_poller.py`: portable poller snapshot.
+- `integrations/sophos_poller_bundle/__init__.py`: exports `PollerManager`.
+- `integrations/sophos_poller_bundle/schema.sqlite.sql`: matching SQLite state
+  schema.
+- `integrations/sophos_poller_bundle/schema.postgresql.sql`: matching
+  PostgreSQL state schema.
+- `integrations/sophos_poller_bundle/sophos-poller.example.json`: safe Sophos
+  configuration with placeholders and no secret.
+- `integrations/sophos_poller_bundle/integration_example.py`: callback adapter
+  skeleton that refuses to advance the cursor until durable delivery is
+  implemented.
+- `integrations/sophos_poller_bundle/test_bundle.py`: offline mocked tests.
+- `integrations/sophos_poller_bundle/INTEGRATION.md`: integration steps,
+  callback/schema contract, and operational cautions.
+- `AI_HANDOFF.md`: records the portable bundle and transfer contract.
+- `patch.md`: this entry.
+
+### Behavior and Decisions
+
+- The production root `api_poller.py` and running mini-SIEM flow were not
+  changed.
+- The portable copy preserves OAuth2, Bearer Whoami, regional host discovery,
+  automatic tenant header, cursor, and callback behavior.
+- The portable copy uses the officially documented initial query parameter
+  `from_date`; the root production copy still uses its existing established
+  cursor path.
+- Cursor persistence remains after successful batch ingestion. The target SIEM
+  must deduplicate on `(connector, Sophos event id)` because a crash or partial
+  batch failure can replay events.
+- No Git operation was performed.
+
+### Validation
+
+- Offline mocked Sophos flow: 2 tests passed, 0 failed.
+- Verified token, Bearer Whoami, regional events URL, automatic tenant header,
+  cursor progression, and first-run `from_date` construction.
+- Example JSON parsed successfully.
+- Tests made no external HTTP requests and used no production credentials.
+
+### Deployment / Migration
+
+- Copy the entire `integrations/sophos_poller_bundle/` directory to the target
+  SIEM and follow `INTEGRATION.md`.
+- Apply one matching schema and implement all three callbacks before enabling
+  the poller.
+- Store the client secret outside the bundle and verify durable ingest plus
+  event-ID deduplication before allowing cursor advancement.
+
+### Remaining Work
+
+- Implement the target SIEM's concrete `deliver_to_siem()` adapter.
+- Optionally derive token refresh from the OAuth response `expires_in` and add
+  exponential backoff/graceful manager shutdown in a future revision.
+
+## 2026-08-31 — CentOS/RHEL two-service deployment hardening — IMPLEMENTED
+
+### Intent
+
+- Fix deployment failures observed while installing the refactored mini-SIEM
+  under `/opt/mini_siem` on an SELinux-Enforcing CentOS/RHEL-family host.
+- Make the documented privilege split unambiguous: only the syslog listener is
+  root for TCP/UDP 514; the Waitress dashboard and API pollers run as a normal
+  user.
+
+### Files Changed
+
+- `install-services.sh`: prefer project `.venv` Python, validate Flask+Waitress,
+  repair stale `/opt` `user_home_t` labels with `restorecon`, improve startup
+  verification/troubleshooting output, retain shared SQLite group semantics.
+- `README.md`: make the two-service installer the recommended production path;
+  document CentOS/RHEL SELinux `203/EXEC` diagnosis; document SQLite whole-file
+  migration including poller/app-config state; mark combined service legacy.
+- `AI_HANDOFF.md`: record the deployment behavior and troubleshooting lesson.
+- all `*.sh`: normalized to Unix LF line endings to prevent `/usr/bin/env:
+  bash\\r: No such file or directory` after Linux deployment.
+
+### Behavior and Decisions
+
+- Core SIEM runtime behavior, poller flow, rule state, database schema, routes,
+  and detection logic are unchanged.
+- The installer does not disable SELinux and does not set global Python
+  capabilities. Under `/opt` it repairs only a detected stale `user_home_t`
+  label using the platform's default `restorecon` policy.
+- The installer still runs `listener.py` as root because it binds port 514,
+  while `dashboard.py` runs as the selected non-root account.
+
+### Validation
+
+- `bash -n` passed for every shell script after LF normalization.
+- Installer static inspection confirms project `.venv` preference, Flask +
+  Waitress import check, SELinux Enforcing/user_home_t detection, `restorecon`
+  path, two generated systemd units, and post-install port/status guidance.
+- No live systemd/SELinux service launch was performed in the packaging
+  environment; the fix is based on the captured CentOS/RHEL deployment failure
+  (`status=203/EXEC`, `/opt/mini_siem` labeled `user_home_t`) and subsequent
+  successful relabel to `usr_t`.
+
+### Deployment / Migration
+
+- Recommended install: `python3 -m venv .venv`, install `requirements.txt`, then
+  `sudo ./install-services.sh <dashboard-user>`.
+- Existing SQLite installations migrate by carrying the complete cleanly-closed
+  `siem.db`; do not migrate poller/app-config tables separately and do not
+  blindly copy stale `-wal`/`-shm` files.
+
+## 2026-08-31 — Dedicated `siem` service account — IMPLEMENTED
+
+### Intent
+
+- Remove the production service dependency on a maintainer/login account such
+  as `matt`.
+- Make the privilege model deterministic: only the syslog listener is root;
+  the Waitress dashboard and API pollers always run as a dedicated non-login
+  service account.
+
+### Files Changed
+
+- `install-services.sh`: automatically creates/validates `minisiem` plus the
+  non-login system account `siem`; removes the username/UID installer argument;
+  runs the dashboard unit as `siem:minisiem`; creates `/var/lib/mini-siem` as
+  the service home; adds preflight execution/write checks; narrows shared write
+  setup to the project root and runtime SQLite/config/backup state rather than
+  recursively making the code/venv group-writable.
+- `README.md`: documents the dedicated service-account model and changes the
+  canonical install command to `sudo ./install-services.sh`.
+- `AI_HANDOFF.md`: records the new deployment identity and preflight behavior.
+
+### Behavior and Decisions
+
+- `mini-siem-listener`: `User=root`, `Group=minisiem`, TCP/UDP 514.
+- `mini-siem-dashboard`: `User=siem`, `Group=minisiem`, Waitress 8080 plus API
+  pollers.
+- `siem` is a system account with `nologin` (or `/bin/false` fallback), not an
+  interactive user. Existing interactive accounts named `siem` are rejected
+  rather than silently repurposed.
+- `uninstall` removes the systemd units but intentionally leaves the database,
+  shared group, and service account untouched to avoid destructive identity or
+  data changes.
+- Core SIEM routes, detection behavior, poller flow, and DB schema are unchanged.
+
+### Validation
+
+- `bash -n` passes for every shell script; all `*.sh` files are Unix LF with no
+  CRLF line endings.
+- `python3 -m compileall -q .` passes.
+- `security_static_scan.py` reports 0 findings (HIGH=0, MED=0, LOW=0, INFO=0).
+- Installer static checks confirm no `DASH_USER`/`SUDO_USER` dependency remains,
+  the dashboard unit uses `User=siem`, the listener remains `User=root`, and
+  service-account execution/write preflights run before unit installation.
+- Full live `useradd`/systemd/SELinux execution remains environment-dependent;
+  the installer preserves the previously added CentOS/RHEL `restorecon` logic.
