@@ -151,7 +151,7 @@ class _PollerThread:
             params["cursor"] = cursor
         else:
             lookback = int(row.get("initial_lookback_seconds") or 86400)
-            params["from"] = int(time.time()) - lookback
+            params["from_date"] = int(time.time()) - lookback
         url = self._resolve_events_url(row)
         if params:
             url = url + ("&" if "?" in url else "?") + urllib.parse.urlencode(params)

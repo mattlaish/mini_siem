@@ -278,6 +278,14 @@ scheduled **weekly/monthly** — the scheduler runs inside the SIEM
 process, no cron needed. Findings include the matched groups and each
 playbook's response steps.
 
+**Current scheduled-playbook behavior:** scheduled findings are stored as
+reports only. The current `ReportScheduler` is not wired with an `on_report`
+callback, so a scheduled finding does **not** currently create an alert, enter
+LLM triage, or create a ticket. The intended future contract is deliberately
+separate from AI triage: scheduled playbook finding -> alert -> ticket pipeline
+(subject to the configured ticket severity threshold), while the playbook alert
+itself should skip LLM analysis unless that behavior is explicitly redesigned.
+
 
 The dashboard has a second page at `http://127.0.0.1:8080/correlate`
 for retrospective correlation over stored events — unlike `rules.py`,
@@ -318,6 +326,12 @@ never echoed back), and a JSON body template with placeholders
 alert once, records the returned ticket key on the alert, retries on
 failure, and there's a "Send test ticket" button. Note: this makes
 outbound HTTP calls from the SIEM to your ticket API.
+
+The ticket worker consumes the `alerts` table directly; it does not require an
+LLM result. Therefore, once scheduled playbook findings are wired to create
+alerts, those alerts can create tickets without first entering LLM triage. That
+scheduled-playbook -> alert wiring is **not implemented yet** in the current
+runtime, so scheduled reports alone do not currently create tickets.
 
 ## 6b. Message normalization (log search)
 
@@ -474,8 +488,8 @@ Ships with:
   IP within 60s → warning alert
 - **repeated_login_failures** — 8+ generic login/access failures from
   the same IP within 120s → warning alert
-- **high_severity_event** — any single log at emergency/alert/critical
-  syslog severity → immediate critical alert
+- **high_severity_event** — any single log at warning/error/critical/alert/emergency
+  severity → immediate alert that preserves the event's actual severity
 
 Add your own by subclassing `Rule` (or reusing `ThresholdRule`) in
 `rules.py` and appending it to `RuleEngine.rules`.
@@ -496,9 +510,21 @@ Setup:
 3. Click **Test connection**. Save.
 
 What it does:
-- **Automatic triage (proactive)** — when enabled, every new alert is
+- **Automatic triage (proactive)** — when enabled, every eligible new alert is
   sent to the model *as it fires* and its analysis is attached to the
-  alert automatically. Runs in a background worker, off the ingest path,
+  alert automatically. Trigger policy is source-specific: NXLog Windows JSON
+  events at `warning` or above create the dedicated `nxlog_severity_event`
+  trigger, while `notice` and `informational` NXLog events are context-only.
+  Firewall detections keep their existing rules and do **not** inherit the
+  NXLog warning/error trigger policy. The pre-existing generic device-severity
+  trigger remains limited to `critical`/`alert`/`emergency` for non-NXLog data.
+  Once an alert is selected for LLM triage, trigger policy no longer limits
+  evidence: the SIEM resolves the trigger IP and includes up to 40 recent
+  matching events across NXLog, firewall/CEF, API/pollers (including indexed
+  `endpoint_ip`), and other sources where that IP appears as source,
+  destination, peer, or an indexed source/destination field. Related evidence
+  is not severity-filtered, so informational/notice events are available to the
+  model alongside warning/error events. Runs in a background worker, off the ingest path,
   so it never slows log collection: the listener raises the alert
   instantly (marked `pending`) and the worker drains pending alerts to
   the LLM one at a time. If the LLM is off or unreachable, alerts wait
@@ -506,7 +532,7 @@ What it does:
   `error`). Toggle it and set a minimum severity on the AI page. The
   main alert feed shows a "✓ analysis" button on triaged alerts.
 - **Triage an alert (manual)** — pick a recent alert; the server gathers the
-  triggering events plus that source's history and asks the model for a
+  triggering events plus cross-source related history for the resolved trigger IP and asks the model for a
   structured assessment (summary, true/false-positive call with
   confidence, severity view, recommended actions, what to check next).
 - **Ask about your logs** — a chat box; the server retrieves relevant

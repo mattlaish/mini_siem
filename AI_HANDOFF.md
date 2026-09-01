@@ -139,6 +139,13 @@ Never:
   events. It was not independently revalidated during this local baseline.
 - TCP ingestion assumes newline-delimited messages rather than RFC6587
   octet-counted framing.
+- Scheduled playbook findings currently stop at the `reports` table. The
+  dashboard starts `workers.ReportScheduler(...)` without an `on_report`
+  callback, so scheduled findings do not currently raise alerts or create
+  tickets. This is a documented implementation gap, not an LLM requirement.
+  Intended future contract: scheduled playbook finding -> alert -> ticket
+  pipeline (subject to ticket minimum severity), while the playbook-generated
+  alert skips LLM triage unless that policy is explicitly changed.
 
 ## Deployment Update — 2026-08-31
 - Production Linux deployment now prefers `install-services.sh`: the syslog
@@ -271,3 +278,23 @@ work, run the Flask-dependent smoke checks (`dashboard.py`/`siem.py --help`,
   roadmap, and next-step guidance refreshed and merged with `main`.
 - Sophos portable bundle: 2026-08-28. Two offline mocked-flow tests passed;
   Python AST and JSON parsing passed; no external API was contacted.
+
+### 2026-09-01 AI triage trigger/context contract — SUPERSEDED
+- Warning-or-higher log severity (`warning`, `error`, `critical`, `alert`, `emergency`) is now a generic severity-alert trigger.
+- Severity-triggered alerts preserve the original normalized event severity.
+- `notice`/`informational` do not trigger AI triage on their own. Once a warning-or-higher alert exists for a `source_ip`, `ai_soc.gather_alert_context()` supplies up to 40 recent events from that same source without filtering by severity, so lower-severity events become LLM evidence/context.
+- Do not change the Sophos OAuth -> Whoami -> regional SIEM flow casually. Initial `/siem/v1/events` uses `from_date`; continuation uses `cursor`. Its regression test is a protected contract.
+- GitHub Actions workflow is intentionally read-only (`permissions: contents: read`).
+
+### 2026-09-01 AI source-context threshold semantics — SUPERSEDED
+`high_severity_event` is a protected source-context trigger: warning-or-higher events always reach auto-triage when AI auto-triage is enabled, regardless of `ai_auto_triage_min_severity`. The configured minimum severity continues to filter ordinary alerts. `gather_alert_context()` intentionally includes same-source lower-severity notice/informational events so the LLM studies surrounding activity rather than only the trigger row.
+
+
+### 2026-09-01 corrected trigger vs related-evidence contract (supersedes the two temporary AI trigger/context notes above)
+- **Trigger and related evidence are separate concerns.** Do not apply evidence filters as trigger rules or vice versa.
+- NXLog Windows JSON is identified narrowly by JSON format plus `EventID` and `Channel=Security|System`, matching the shipped NXLog `to_json()` configuration. NXLog `warning`, `error`, `critical`, `alert`, and `emergency` create `nxlog_severity_event`; NXLog `notice`/`informational` do not trigger on their own.
+- `nxlog_severity_event` bypasses `ai_auto_triage_min_severity`, so an operator setting `error` does not suppress an NXLog `warning` trigger.
+- Firewall/CEF does **not** inherit the NXLog warning/error trigger. Existing firewall/correlation triggers remain unchanged. The pre-existing non-NXLog generic severity trigger remains `critical`/`alert`/`emergency` only.
+- After any eligible alert is selected for LLM triage, related evidence is cross-source and severity-agnostic. Resolve a trigger IP (alert source IP when it is an IP; otherwise linked-event/indexed fields such as API/poller `endpoint_ip`) and gather up to 40 recent logs where that IP appears as normalized `source_ip`, normalized `destination`, transport `peer_ip`, or indexed source/destination aliases.
+- Related evidence may therefore mix NXLog, FortiGate/CEF, Sophos/API/poller, and other products. An IP appearing as a firewall destination is intentionally related to an NXLog/API trigger for the same IP.
+- Sophos OAuth -> Whoami -> regional API flow remains protected; initial SIEM v1 events request uses `from_date`, continuation uses `cursor`.

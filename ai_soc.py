@@ -23,10 +23,11 @@ No third-party dependencies — uses urllib from the standard library.
 import json
 import urllib.request
 import urllib.error
+import ipaddress
 from collections import Counter
 
 import severity as severity_mod
-from sql_helpers import select_in
+from sql_helpers import placeholders, select_in
 
 # --------------------------------------------------------------------------
 # Bounds — keep prompts small enough for a 7B-class local model
@@ -100,11 +101,91 @@ def _trunc(msg: str) -> str:
     return msg if len(msg) <= MAX_MSG_LEN else msg[:MAX_MSG_LEN] + "…"
 
 
+def _row_get(row, key, default=""):
+    try:
+        value = row[key]
+    except (KeyError, IndexError, TypeError):
+        return default
+    return default if value is None else value
+
+
 def _fmt_event(r) -> str:
-    return (f"#{r['id']} {r['received_at']} src={r['source_ip'] or '-'} "
-            f"host={r['hostname'] or '-'} app={r['app_name'] or '-'} "
-            f"sev={severity_mod.normalize(r['severity']) or r['severity'] or '-'} "
-            f"| {_trunc(r['message'])}")
+    dst = _row_get(r, "destination")
+    dst_part = f" dst={dst}" if dst else ""
+    return (f"#{_row_get(r, 'id')} {_row_get(r, 'received_at')} "
+            f"src={_row_get(r, 'source_ip') or '-'}{dst_part} "
+            f"host={_row_get(r, 'hostname') or '-'} app={_row_get(r, 'app_name') or '-'} "
+            f"sev={severity_mod.normalize(_row_get(r, 'severity')) or _row_get(r, 'severity') or '-'} "
+            f"| {_trunc(_row_get(r, 'message'))}")
+
+
+_RELATED_IP_FIELDS = (
+    "endpoint_ip", "src", "srcip", "src_ip", "source_ip", "source",
+    "client_ip", "ip", "dst", "dstip", "dst_ip", "dest", "dest_ip",
+    "destination", "destination_ip", "target", "dhost",
+)
+
+
+def _valid_ip(value):
+    text = str(value or "").strip()
+    if not text or text in {"unknown", "-"}:
+        return ""
+    try:
+        ipaddress.ip_address(text)
+        return text
+    except ValueError:
+        return ""
+
+
+def _trigger_entity_ip(conn, alert, linked_rows, log_ids):
+    """Resolve the IP around which related evidence should be gathered.
+
+    Normal syslog/NXLog alerts already carry an IP in alerts.source_ip.
+    Poller/API alerts may instead carry a connector name (for example
+    ``sophos``); in that case recover the endpoint/source IP from the linked
+    trigger event or its indexed extracted fields.
+    """
+    entity = _valid_ip(alert["source_ip"])
+    if entity:
+        return entity
+    for row in linked_rows:
+        for key in ("source_ip", "destination"):
+            entity = _valid_ip(_row_get(row, key))
+            if entity:
+                return entity
+    if not log_ids:
+        return ""
+    field_ph = placeholders(len(_RELATED_IP_FIELDS))
+    id_ph = placeholders(len(log_ids))
+    sql = ("SELECT value FROM log_fields WHERE log_id IN (" + id_ph + ") "
+           "AND LOWER(field) IN (" + field_ph + ") ORDER BY id")
+    params = list(log_ids) + list(_RELATED_IP_FIELDS)
+    try:
+        rows = conn.execute(sql, params).fetchall()
+    except Exception:
+        rows = []
+    for row in rows:
+        entity = _valid_ip(row["value"])
+        if entity:
+            return entity
+    return ""
+
+
+def _related_ip_predicate(entity: str):
+    """SQL predicate + params matching an IP as source OR destination.
+
+    The base columns cover normalized syslog/firewall data. ``log_fields``
+    covers products whose IP remains under a source-specific key such as
+    Sophos ``endpoint_ip``. Severity and product/source are intentionally not
+    part of this predicate: once a trigger exists, all matching evidence is
+    relevant context.
+    """
+    field_ph = placeholders(len(_RELATED_IP_FIELDS))
+    sql = ("(l.source_ip=? OR l.destination=? OR l.peer_ip=? OR EXISTS ("
+           "SELECT 1 FROM log_fields lf WHERE lf.log_id=l.id "
+           "AND LOWER(lf.field) IN (" + field_ph + ") AND lf.value=?))")
+    params = [entity, entity, entity] + list(_RELATED_IP_FIELDS) + [entity]
+    return sql, params
 
 
 def gather_alert_context(conn, alert_id: int):
@@ -117,26 +198,36 @@ def gather_alert_context(conn, alert_id: int):
     if log_ids:
         related_sql, related_params = select_in(
             "logs",
-            "id, received_at, source_ip, hostname, app_name, severity, message",
+            "id, received_at, source_ip, peer_ip, destination, hostname, app_name, severity, message",
             "id", log_ids[:MAX_CONTEXT_EVENTS], suffix=" ORDER BY id")
         related = conn.execute(related_sql, related_params).fetchall()
 
-    src = alert["source_ip"]
-    src_history, src_sevs = [], []
-    if src and src not in ("unknown", "-"):
-        src_history = conn.execute(
-            """SELECT id, received_at, source_ip, hostname, app_name, severity, message
-               FROM logs WHERE source_ip=? ORDER BY id DESC LIMIT ?""",
-            (src, MAX_CONTEXT_EVENTS)).fetchall()
-        src_sevs = conn.execute(
-            """SELECT severity, COUNT(*) c FROM logs WHERE source_ip=?
-               GROUP BY severity""", (src,)).fetchall()
+    entity_ip = _trigger_entity_ip(conn, alert, related, log_ids)
+    related_history, related_sevs = [], []
+    if entity_ip:
+        pred_sql, pred_params = _related_ip_predicate(entity_ip)
+        history_sql = (
+            "SELECT l.id, l.received_at, l.source_ip, l.peer_ip, l.destination, "
+            "l.hostname, l.app_name, l.severity, l.message FROM logs l WHERE "
+            + pred_sql + " ORDER BY l.id DESC LIMIT ?")
+        related_history = conn.execute(
+            history_sql, pred_params + [MAX_CONTEXT_EVENTS]).fetchall()
+        summary_sql = (
+            "SELECT l.severity, COUNT(*) c FROM logs l WHERE " + pred_sql
+            + " GROUP BY l.severity")
+        related_sevs = conn.execute(summary_sql, pred_params).fetchall()
 
     sev_counter = Counter()
-    for row in src_sevs:
+    for row in related_sevs:
         sev_counter[severity_mod.normalize(row["severity"]) or "unknown"] += row["c"]
 
-    return {"alert": alert, "related": related, "src_history": src_history,
+    # Keep the historic src_* keys for custom templates/callers, but their
+    # semantics are now entity-wide related evidence (source + destination +
+    # indexed endpoint fields across NXLog, firewall, API/poller, etc.).
+    return {"alert": alert, "related": related, "entity_ip": entity_ip,
+            "related_history": related_history,
+            "related_sev_summary": dict(sev_counter),
+            "src_history": related_history,
             "src_sev_summary": dict(sev_counter)}
 
 
@@ -217,13 +308,15 @@ def build_triage_messages(ctx: dict, system_prompt: str = None, user_template: s
     ]
     lines += [_fmt_event(r) for r in ctx["related"]] or ["(none linked)"]
 
-    if ctx["src_sev_summary"]:
-        lines += ["", "=== ALL-TIME EVENT COUNT FROM THIS SOURCE, BY SEVERITY ==="]
-        lines += [f"{k}: {v}" for k, v in sorted(ctx["src_sev_summary"].items())]
+    entity_ip = ctx.get("entity_ip") or a["source_ip"] or "-"
+    if ctx.get("related_sev_summary"):
+        lines += ["", f"=== ALL-TIME RELATED EVENT COUNT FOR IP {entity_ip}, BY SEVERITY ==="]
+        lines += [f"{k}: {v}" for k, v in sorted(ctx["related_sev_summary"].items())]
 
-    if ctx["src_history"]:
-        lines += ["", "=== MOST RECENT EVENTS FROM THIS SOURCE ==="]
-        lines += [_fmt_event(r) for r in ctx["src_history"]]
+    if ctx.get("related_history"):
+        lines += ["", f"=== MOST RECENT RELATED EVENTS FOR IP {entity_ip} ===",
+                  "Matches may come from any log source where this IP is source, destination, peer, or an indexed endpoint field."]
+        lines += [_fmt_event(r) for r in ctx["related_history"]]
 
     evidence = "\n".join(lines)
     system = (system_prompt or "").strip() or TRIAGE_SYSTEM

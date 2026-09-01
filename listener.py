@@ -241,6 +241,7 @@ _WIN_EVENTID_SEVERITY = {
     4702: "notice",    # scheduled task updated
     4729: "notice",    # removed from global security group
     4733: "notice",    # removed from local security group
+    4738: "notice",    # user account changed
     4757: "notice",    # removed from universal security group
     4672: "notice",    # special privileges assigned (admin logon marker)
     7040: "notice",    # service start type changed

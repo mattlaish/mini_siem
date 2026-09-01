@@ -75,9 +75,55 @@ class ThresholdRule(Rule):
         return None
 
 
+def _is_nxlog_windows_event(event: dict) -> bool:
+    """Return True only for the Windows JSON shape emitted by nxlog.conf.
+
+    NXLog sends ``to_json()`` records with EventID plus Security/System
+    channel metadata.  Keeping this detector narrow is deliberate: firewall
+    syslog/CEF must not inherit the NXLog warning/error trigger policy.
+    """
+    if (event.get("format") or "").lower() != "json":
+        return False
+    obj = event.get("_json")
+    if not isinstance(obj, dict):
+        return False
+    eid = obj.get("EventID") or obj.get("event_id") or obj.get("EventId")
+    channel = str(obj.get("Channel") or "").strip().lower()
+    return eid not in (None, "") and channel in {"security", "system"}
+
+
+class NxlogSeverityRule(Rule):
+    """NXLog-only trigger: warning or more severe Windows events.
+
+    This rule controls only *when* a Windows/NXLog investigation starts.
+    Related evidence is gathered separately by ``ai_soc`` across all sources
+    and severities after the trigger fires.
+    """
+
+    TRIGGER_SEVERITIES = {"emergency", "alert", "critical", "error", "warning"}
+
+    def __init__(self, name="nxlog_severity_event", severity="warning"):
+        self.name = name
+        self.severity = severity
+
+    def evaluate(self, log_id: int, event: dict, storage):
+        if not _is_nxlog_windows_event(event):
+            return None
+        sev = severity_mod.normalize(event.get("severity"))
+        if sev not in self.TRIGGER_SEVERITIES:
+            return None
+        src = event.get("source_ip") or "unknown"
+        desc = f"NXLog Windows {sev} severity event: {event.get('message', '')[:200]}"
+        return src, desc, [log_id], sev
+
+
 class SeverityRule(Rule):
-    """Fires immediately on any event at or above a given syslog severity
-    (emergency/alert/critical/error), no threshold needed."""
+    """Preserve the pre-existing generic critical/alert/emergency trigger.
+
+    NXLog Windows records are excluded here so they have exactly one trigger
+    path (``NxlogSeverityRule``).  Non-NXLog sources, including firewall/API
+    sources, otherwise retain the original generic high-severity behavior.
+    """
 
     HIGH_SEVERITIES = {"emergency", "alert", "critical"}
 
@@ -86,10 +132,13 @@ class SeverityRule(Rule):
         self.severity = severity
 
     def evaluate(self, log_id: int, event: dict, storage):
+        if _is_nxlog_windows_event(event):
+            return None
         sev = severity_mod.normalize(event.get("severity"))
         if sev in self.HIGH_SEVERITIES:
             src = event.get("source_ip") or "unknown"
             desc = f"Device reported {sev} severity event: {event.get('message', '')[:200]}"
+            # Preserve the original generic-rule alert severity contract.
             return src, desc, [log_id]
         return None
 
@@ -122,6 +171,7 @@ class RuleEngine:
                 severity="warning",
                 description="Repeated login/access failures",
             ),
+            NxlogSeverityRule(name="nxlog_severity_event", severity="warning"),
             SeverityRule(name="high_severity_event", severity="critical"),
         ]
 
@@ -129,12 +179,16 @@ class RuleEngine:
         for rule in self.rules:
             result = rule.evaluate(log_id, event, self.storage)
             if result:
-                source_ip, description, log_ids = result
+                if len(result) == 4:
+                    source_ip, description, log_ids, alert_severity = result
+                else:
+                    source_ip, description, log_ids = result
+                    alert_severity = rule.severity
                 self.storage.insert_alert(
                     rule_name=rule.name,
-                    severity=rule.severity,
+                    severity=alert_severity,
                     source_ip=source_ip,
                     description=description,
                     log_ids=log_ids,
                 )
-                print(f"  [ALERT] {rule.name} ({rule.severity}) — {description}")
+                print(f"  [ALERT] {rule.name} ({alert_severity}) — {description}")

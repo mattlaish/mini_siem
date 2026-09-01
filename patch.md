@@ -475,3 +475,66 @@ Copy this section for every material change:
   service-account execution/write preflights run before unit installation.
 - Full live `useradd`/systemd/SELinux execution remains environment-dependent;
   the installer preserves the previously added CentOS/RHEL `restorecon` logic.
+
+## 2026-09-01 — Warning-triggered AI source context — SUPERSEDED by corrected trigger/related contract below
+
+- Generic severity alerts now trigger on `warning`, `error`, `critical`, `alert`, and `emergency` events.
+- The generated alert preserves the triggering event's actual normalized severity instead of labeling every severity-triggered alert as `critical`.
+- `notice` and `informational` events do not trigger LLM triage by themselves; when the same `source_ip` has a warning-or-higher alert, existing AI context gathering includes the source's recent events regardless of severity (up to `MAX_CONTEXT_EVENTS`, currently 40).
+- Restored the protected Sophos SIEM v1 first-request query parameter to `from_date`; the regression test remains unchanged.
+- GitHub Actions token permissions are explicitly read-only (`contents: read`).
+
+## 2026-09-01 — AI source-context trigger bypasses ordinary minimum severity — SUPERSEDED by corrected trigger/related contract below
+- `high_severity_event` warning-or-higher source-context alerts now bypass `ai_auto_triage_min_severity`.
+- Setting the UI threshold to `error` or `critical` no longer suppresses a warning source-context incident; the LLM still receives same-source notice/informational events as evidence.
+- The minimum-severity setting still applies to ordinary/non-source-context alerts.
+
+
+## 2026-09-01 — Corrected NXLog trigger / cross-source related evidence contract
+
+### Intent
+- Separate *what starts an investigation* from *what evidence the LLM receives*.
+- Make NXLog Windows warning/error events useful triggers without making firewall warning/error inherit the same trigger policy.
+- Once an alert is legitimately triggered, correlate the trigger IP across source and destination roles and across products.
+
+### Files Changed
+- `rules.py`: adds narrow `NxlogSeverityRule`; restores the generic non-NXLog severity trigger to its original `critical`/`alert`/`emergency` boundary and prevents duplicate generic firing for NXLog Windows JSON.
+- `ai_worker.py`: only the dedicated `nxlog_severity_event` bypasses the ordinary AI minimum-severity setting.
+- `ai_soc.py`: resolves an investigation IP and gathers bounded cross-source related evidence from `source_ip`, `destination`, `peer_ip`, and indexed source/destination fields such as Sophos `endpoint_ip`; no related-evidence severity filter is applied.
+- `listener.py`: explicitly maps Windows EventID 4738 to `notice`.
+- `tests/test_warning_ai_context.py`: regression coverage for trigger separation and cross-source/source+destination related evidence.
+- `templates/ai.html`, `README.md`, `AI_HANDOFF.md`: document the corrected contract.
+
+### Behavior
+- NXLog Windows `warning` and above -> `nxlog_severity_event` trigger.
+- NXLog `notice`/`informational` -> no standalone trigger, but eligible as related evidence.
+- Firewall `warning`/`error` -> no NXLog trigger. Existing firewall rules remain unchanged; the original generic non-NXLog critical/alert/emergency trigger remains.
+- Related evidence after a trigger may include NXLog, firewall, Sophos/API, and other logs, including cases where the trigger IP is the destination rather than the source.
+- `ai_auto_triage_min_severity=error|critical` does not suppress an NXLog warning trigger; it continues to apply to ordinary alerts.
+
+### Validation
+- Dedicated trigger/related regression suite: 10 passed.
+- Core DB/SQL/Sophos plus trigger/related tests: 18 passed.
+- `python3 -m compileall -q .`: passed.
+- `security_static_scan.py`: 0 findings.
+- Full pytest collection is blocked in the packaging environment because Flask is not installed; CI installs `requirements-dev.txt` and runs the full suite.
+
+## 2026-09-01 — Scheduled playbook alert/ticket behavior documented — DOCUMENTATION ONLY
+
+### Scope
+- Documentation-only correction; no runtime code, schema, worker, alert, AI, or ticket behavior changed.
+- `README.md` and `AI_HANDOFF.md` now distinguish the current implementation from the intended playbook automation contract.
+
+### Current Runtime Behavior
+- Scheduled playbook runs persist findings as reports.
+- `ReportScheduler` is currently started without an `on_report` callback.
+- Therefore scheduled findings do not currently create alerts.
+- Because no alert is created, the ticket worker has nothing to dispatch for that scheduled finding.
+- LLM triage is not required for ticket creation; the ticket worker consumes qualifying rows from the `alerts` table directly.
+
+### Intended Future Contract
+- Scheduled playbook finding -> alert.
+- The playbook-generated alert should skip LLM triage by default.
+- The alert should still flow to the existing ticket worker and create a ticket when it meets the configured ticket minimum severity.
+- This contract remains **planned/not implemented** until the scheduler is explicitly wired to create the alert.
+

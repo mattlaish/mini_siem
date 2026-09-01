@@ -180,7 +180,7 @@
           <input type="checkbox" id="autoTriage" style="width:auto;"> Automatically triage new alerts
         </label>
         <div class="fld" style="max-width:260px;">
-          <label style="font-size:12px;">Only auto-triage severity ≥</label>
+          <label style="font-size:12px;">Ordinary alert auto-triage severity ≥</label>
           <select id="autoMinSev">
             <option value="">All alerts</option>
             <option value="warning">warning and above</option>
@@ -199,7 +199,7 @@
           </select>
         </div>
       </div>
-      <p class="sub" style="margin-top:8px;">When on, every new alert is sent to the model as it fires (in the background, off the ingest path) and its analysis is attached to the alert automatically.</p>
+      <p class="sub" style="margin-top:8px;">When on, new alerts are triaged in the background. NXLog Windows warning-or-higher events are dedicated triggers and are always triaged even when this threshold is set to error or critical. Trigger policy and related evidence are separate: after any alert is selected for triage, the LLM context may include matching events from NXLog, firewall, API/pollers, and other sources where the trigger IP appears as source, destination, peer, or an indexed endpoint field, regardless of severity.</p>
       <div class="row" style="margin-top:12px;">
         <button id="saveCfg">Save</button>
         <button class="secondary" id="testCfg">Test connection</button>

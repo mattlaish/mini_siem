@@ -106,8 +106,13 @@ class TriageWorker:
                     except (TypeError, ValueError):
                         pass
 
-                # skip below-threshold alerts permanently
-                if min_idx is not None:
+                # Respect the configured minimum severity for ordinary alerts,
+                # but never suppress the dedicated NXLog warning/error trigger.
+                # The trigger threshold controls *when* analysis starts; once it
+                # starts, ai_soc gathers related evidence independently across all
+                # products/sources and severities for the trigger IP.
+                force_source_context = alert["rule_name"] == "nxlog_severity_event"
+                if min_idx is not None and not force_source_context:
                     a_idx = severity_mod.index_of(alert["severity"])
                     if a_idx > min_idx:
                         conn.execute(
