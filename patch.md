@@ -538,3 +538,50 @@ Copy this section for every material change:
 - The alert should still flow to the existing ticket worker and create a ticket when it meets the configured ticket minimum severity.
 - This contract remains **planned/not implemented** until the scheduler is explicitly wired to create the alert.
 
+
+## 2026-09-01 — Progressive related-investigation profiles documented — DOCUMENTATION ONLY (HISTORICAL; SUPERSEDED)
+
+### Scope
+
+- Added `DEVELOPMENT.md`, `OPERATION.md`, and `PRODUCT.md` as canonical design/operations/product documentation.
+- Updated `README.md` navigation and `AI_HANDOFF.md` handoff state.
+- No Python, shell, schema, service, rule, AI worker, playbook, ticket, or runtime behavior changed.
+
+### Planned Contract
+
+- Trigger policy remains source-specific and separate from related-evidence retrieval.
+- Related evidence remains cross-source, cross-severity, and source/destination/entity aware.
+- Investigation runs Short first and calls the LLM with Short evidence only.
+- Medium is retrieved/called only when Short finds no suspicious/relevant evidence or reports insufficient evidence.
+- Long is retrieved/called only when Medium also finds no suspicious/relevant evidence or remains insufficient.
+- Expansion stops as soon as suspicious/relevant evidence is found.
+- Medium is generally about 3x the Short investigation scope; Long is generally about 10x, with investigation-specific asymmetric defaults.
+- Long-profile evidence must be deduplicated/aggregated before LLM submission.
+
+### Runtime Status at the time of this documentation-only entry
+
+- At this point in history, the Short -> Medium -> Long state machine was not yet implemented.
+- This status is superseded by the later **Progressive AI investigation profiles implemented** entry below.
+
+## 2026-09-01 — Progressive AI investigation profiles implemented
+
+Runtime change (not documentation-only): added `investigation_profiles.py`; replaced generic latest-N AI related retrieval with profile-bounded Short/Medium/Long retrieval; added application-controlled LLM decisions (`SUSPICIOUS`, `NO_SUSPICIOUS`, `INSUFFICIENT`); added sequential escalation and stop rules; added Long repeated-pattern reduction/summaries; preserved NXLog/firewall trigger separation and cross-source related evidence. Added regression tests for profile classification, time-window expansion, escalation sequencing, missing-marker fail-open behavior, and Long reduction. Manual `/api/ai/triage` and background auto-triage now share the same state-machine implementation. Verification: 30 non-Flask tests passed, `compileall` passed, static security scan 0 findings, shell syntax/LF checks passed; Flask-dependent route/import tests could not be collected in the packaging environment because Flask was unavailable and pip had no network access.
+
+
+## 2026-09-01 — Progressive AI investigation runtime hardened
+
+### Runtime behavior
+- Short is always the first LLM investigation stage.
+- `SUSPICIOUS` stops widening immediately.
+- `NO_SUSPICIOUS` or `INSUFFICIENT` widens Short -> Medium -> Long sequentially; Long is terminal.
+- Missing/invalid decision markers fail open as `INSUFFICIENT` so the investigation widens rather than stopping prematurely.
+- Profile windows are investigation-specific and centered on linked trigger-event time when available, with `alert.created_at` as fallback.
+- Related evidence remains cross-source, cross-severity, and source/destination/peer/indexed-endpoint aware.
+- Long collapses repeated exact event shapes to representative first/closest/last rows and adds bounded pattern summaries.
+- Existing NXLog warning+ trigger behavior and independent firewall trigger behavior are preserved.
+
+### Validation
+- Progressive/NXLog/related/profile regression: 21 passed.
+- Additional DB/SQL/Sophos tests that do not import Flask pass; Flask-dependent full collection is not runnable in this packaging environment because Flask is absent.
+- `python -m compileall -q .`: passed.
+- `python security_static_scan.py`: 0 findings.

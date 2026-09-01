@@ -102,12 +102,37 @@ def api_ai_triage():
     if not _ai_enabled(): return jsonify({"error": "AI Analyst is turned off. Enable it on the AI page."}), 400
     body = request.get_json(force=True, silent=True) or {}; alert_id = body.get("alert_id")
     if not alert_id: return jsonify({"error": "alert_id is required"}), 400
-    conn = _svc.get_conn(); ctx = ai_soc.gather_alert_context(conn, int(alert_id))
-    if not ctx: return jsonify({"error": "alert not found"}), 404
-    cfg = _svc.get_ai_config(); messages = ai_soc.build_triage_messages(ctx, system_prompt=cfg.get("ai_system_prompt"), user_template=cfg.get("ai_user_template"))
-    try: answer = _svc.llm_from_config().chat(messages, max_tokens=int(cfg.get("ai_max_tokens", "900") or 900))
+    conn = _svc.get_conn()
+    alert = conn.execute("SELECT id, source_ip FROM alerts WHERE id=?", (int(alert_id),)).fetchone()
+    if not alert: return jsonify({"error": "alert not found"}), 404
+    cfg = _svc.get_ai_config()
+    try:
+        result = ai_soc.run_progressive_triage(
+            conn,
+            int(alert_id),
+            _svc.llm_from_config(),
+            max_tokens=int(cfg.get("ai_max_tokens", "900") or 900),
+            system_prompt=cfg.get("ai_system_prompt"),
+            user_template=cfg.get("ai_user_template"),
+        )
     except Exception as exc: return jsonify({"error": f"LLM call failed: {type(exc).__name__}: {exc}"}), 502
-    return jsonify({"answer": answer, "context_summary": {"related_events": len(ctx["related"]), "source_history_events": len(ctx["src_history"]), "source": ctx["alert"]["source_ip"]}})
+    stages = result["stages"]
+    final_ctx = result.get("final_context") or {}
+    return jsonify({
+        "answer": result["analysis"],
+        "context_summary": {
+            "source": alert["source_ip"],
+            "profile": stages[-1].get("profile") if stages else "",
+            "final_stage": stages[-1].get("stage") if stages else "",
+            "stages_run": [s.get("stage") for s in stages],
+            "candidate_events": stages[-1].get("candidate_count", 0) if stages else 0,
+            "evidence_events": stages[-1].get("evidence_count", 0) if stages else 0,
+            # Backward-compatible keys consumed by the existing AI page.
+            "related_events": len(final_ctx.get("related") or []),
+            "source_history_events": len(final_ctx.get("src_history") or []),
+            "entity_ip": final_ctx.get("entity_ip", ""),
+        },
+    })
 
 
 @bp.post("/api/ai/chat")

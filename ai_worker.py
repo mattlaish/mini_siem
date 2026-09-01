@@ -151,34 +151,42 @@ class TriageWorker:
                         processed += 1
                         continue
 
-                ctx = ai_soc.gather_alert_context(conn, alert_id)
-                if not ctx:
-                    conn.execute(
-                        "UPDATE alerts SET ai_status='error', ai_analysis=? WHERE id=?",
-                        ("context could not be gathered", alert_id))
-                    conn.commit()
-                    continue
-
-                messages = ai_soc.build_triage_messages(
-                    ctx, system_prompt=settings.get("system_prompt"),
-                    user_template=settings.get("user_template"))
                 try:
-                    answer = llm.chat(messages, max_tokens=int(settings.get("max_tokens") or 900))
+                    result = ai_soc.run_progressive_triage(
+                        conn,
+                        alert_id,
+                        llm,
+                        max_tokens=int(settings.get("max_tokens") or 900),
+                        system_prompt=settings.get("system_prompt"),
+                        user_template=settings.get("user_template"),
+                    )
+                    for stage_result in result["stages"]:
+                        print(
+                            f"[triage] alert #{alert_id} {stage_result['stage']} "
+                            f"profile={stage_result.get('profile')} "
+                            f"decision={stage_result.get('decision')} "
+                            f"candidates={stage_result.get('candidate_count', 0)} "
+                            f"evidence={stage_result.get('evidence_count', 0)}"
+                        )
                     conn.execute(
                         """UPDATE alerts
                            SET ai_status='done', ai_analysis=?, ai_triaged_at=?
                            WHERE id=?""",
-                        (answer, datetime.now(timezone.utc).isoformat(), alert_id))
+                        (result["analysis"], datetime.now(timezone.utc).isoformat(), alert_id))
                     conn.commit()
                     processed += 1
-                    print(f"[triage] analyzed alert #{alert_id} ({alert['rule_name']})")
+                    final_stage = result["stages"][-1]["stage"] if result["stages"] else "none"
+                    print(
+                        f"[triage] analyzed alert #{alert_id} ({alert['rule_name']}) "
+                        f"through {final_stage}"
+                    )
                 except Exception as exc:
                     attempts = (alert["ai_attempts"] or 0) + 1
                     status = "error" if attempts >= self.max_attempts else "pending"
                     conn.execute(
                         "UPDATE alerts SET ai_attempts=?, ai_status=?, ai_analysis=? WHERE id=?",
                         (attempts, status,
-                         f"LLM call failed ({type(exc).__name__}): {exc}", alert_id))
+                         f"LLM/progressive triage failed ({type(exc).__name__}): {exc}", alert_id))
                     conn.commit()
                     print(f"[triage] alert #{alert_id} attempt {attempts} failed: {exc}")
                     # LLM likely unreachable — stop this cycle, retry next tick

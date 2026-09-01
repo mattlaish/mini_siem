@@ -1,5 +1,12 @@
 # mini-SIEM
 
+## Design and operating documents
+
+- `DEVELOPMENT.md` — engineering contract, implementation state, and active Short/Medium/Long investigation state machine.
+- `OPERATION.md` — SOC operating model for triggers, related evidence, progressive LLM escalation, and evidence handling.
+- `PRODUCT.md` — product behavior and user-facing progressive investigation semantics.
+
+
 A small self-contained SIEM: a syslog receiver on port 514 (UDP + TCP),
 a parser for RFC3164 and RFC5424 formats, SQLite storage, a
 correlation/alerting rule engine, and a web dashboard.
@@ -519,20 +526,24 @@ What it does:
   NXLog warning/error trigger policy. The pre-existing generic device-severity
   trigger remains limited to `critical`/`alert`/`emergency` for non-NXLog data.
   Once an alert is selected for LLM triage, trigger policy no longer limits
-  evidence: the SIEM resolves the trigger IP and includes up to 40 recent
-  matching events across NXLog, firewall/CEF, API/pollers (including indexed
-  `endpoint_ip`), and other sources where that IP appears as source,
-  destination, peer, or an indexed source/destination field. Related evidence
-  is not severity-filtered, so informational/notice events are available to the
-  model alongside warning/error events. Runs in a background worker, off the ingest path,
+  evidence. The SIEM resolves the investigation IP and runs the implemented
+  progressive related-evidence workflow: **Short first**, then Medium only when
+  the Short LLM result is `NO_SUSPICIOUS`/`INSUFFICIENT`, then Long only when
+  Medium returns the same. `SUSPICIOUS` stops widening immediately. Each stage
+  searches its investigation-specific time window across NXLog, firewall/CEF,
+  API/pollers (including indexed `endpoint_ip`), and other sources where the IP
+  appears as source, destination, peer, or an indexed source/destination field.
+  Related evidence is not severity-filtered. Long reduces repetitive raw events
+  and supplies bounded pattern summaries. Runs in a background worker, off the ingest path,
   so it never slows log collection: the listener raises the alert
   instantly (marked `pending`) and the worker drains pending alerts to
   the LLM one at a time. If the LLM is off or unreachable, alerts wait
   and get analyzed once it's back (failed calls retry, then mark
   `error`). Toggle it and set a minimum severity on the AI page. The
   main alert feed shows a "✓ analysis" button on triaged alerts.
-- **Triage an alert (manual)** — pick a recent alert; the server gathers the
-  triggering events plus cross-source related history for the resolved trigger IP and asks the model for a
+- **Triage an alert (manual)** — pick a recent alert; manual triage uses the
+  same progressive Short -> Medium -> Long state machine as automatic triage,
+  with cross-source related history for the resolved investigation IP, and asks the model for a
   structured assessment (summary, true/false-positive call with
   confidence, severity view, recommended actions, what to check next).
 - **Ask about your logs** — a chat box; the server retrieves relevant

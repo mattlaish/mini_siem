@@ -282,7 +282,7 @@ work, run the Flask-dependent smoke checks (`dashboard.py`/`siem.py --help`,
 ### 2026-09-01 AI triage trigger/context contract — SUPERSEDED
 - Warning-or-higher log severity (`warning`, `error`, `critical`, `alert`, `emergency`) is now a generic severity-alert trigger.
 - Severity-triggered alerts preserve the original normalized event severity.
-- `notice`/`informational` do not trigger AI triage on their own. Once a warning-or-higher alert exists for a `source_ip`, `ai_soc.gather_alert_context()` supplies up to 40 recent events from that same source without filtering by severity, so lower-severity events become LLM evidence/context.
+- Historical behavior at this superseded stage: `notice`/`informational` did not trigger AI triage on their own and context used a same-source latest-40 model. **Do not use this as the current contract**; the later corrected trigger/related and progressive-profile entries supersede it.
 - Do not change the Sophos OAuth -> Whoami -> regional SIEM flow casually. Initial `/siem/v1/events` uses `from_date`; continuation uses `cursor`. Its regression test is a protected contract.
 - GitHub Actions workflow is intentionally read-only (`permissions: contents: read`).
 
@@ -295,6 +295,28 @@ work, run the Flask-dependent smoke checks (`dashboard.py`/`siem.py --help`,
 - NXLog Windows JSON is identified narrowly by JSON format plus `EventID` and `Channel=Security|System`, matching the shipped NXLog `to_json()` configuration. NXLog `warning`, `error`, `critical`, `alert`, and `emergency` create `nxlog_severity_event`; NXLog `notice`/`informational` do not trigger on their own.
 - `nxlog_severity_event` bypasses `ai_auto_triage_min_severity`, so an operator setting `error` does not suppress an NXLog `warning` trigger.
 - Firewall/CEF does **not** inherit the NXLog warning/error trigger. Existing firewall/correlation triggers remain unchanged. The pre-existing non-NXLog generic severity trigger remains `critical`/`alert`/`emergency` only.
-- After any eligible alert is selected for LLM triage, related evidence is cross-source and severity-agnostic. Resolve a trigger IP (alert source IP when it is an IP; otherwise linked-event/indexed fields such as API/poller `endpoint_ip`) and gather up to 40 recent logs where that IP appears as normalized `source_ip`, normalized `destination`, transport `peer_ip`, or indexed source/destination aliases.
+- After any eligible alert is selected for LLM triage, related evidence is cross-source and severity-agnostic. Resolve a trigger IP (alert source IP when it is an IP; IOC IP for an IP IOC hit; otherwise linked-event/indexed fields such as API/poller `endpoint_ip`) and retrieve profile-bounded related logs where that IP appears as normalized `source_ip`, normalized `destination`, transport `peer_ip`, or indexed source/destination aliases.
 - Related evidence may therefore mix NXLog, FortiGate/CEF, Sophos/API/poller, and other products. An IP appearing as a firewall destination is intentionally related to an NXLog/API trigger for the same IP.
 - Sophos OAuth -> Whoami -> regional API flow remains protected; initial SIEM v1 events request uses `from_date`, continuation uses `cursor`.
+
+### 2026-09-01 progressive related-investigation profiles — HISTORICAL DESIGN, SUPERSEDED BY RUNTIME IMPLEMENTATION BELOW
+
+- Added canonical `DEVELOPMENT.md`, `OPERATION.md`, and `PRODUCT.md` documentation for a three-stage related-evidence investigation model.
+- Trigger and related evidence remain separate concepts: source-specific trigger rules decide when to investigate; related evidence remains cross-source, cross-severity, and source/destination aware.
+- Planned profile progression is strictly sequential: run Short and ask the LLM first; expand to Medium only when Short reports no suspicious/relevant evidence or insufficient evidence; expand to Long only when Medium reports the same. Stop widening immediately when suspicious/relevant evidence is found.
+- Initial profile defaults are investigation-specific rather than one global window. Medium is generally about 3x Short; Long is generally about 10x Short, with asymmetric windows where the investigation type requires them.
+- Long evidence must be reduced/aggregated before LLM submission; repeated network events should be summarized rather than dumped raw.
+- Historical note: this was documentation-only at the time; it is superseded by the runtime implementation entry immediately below.
+
+## 2026-09-01 progressive AI investigation runtime
+
+- Short -> Medium -> Long profile escalation is IMPLEMENTED in runtime, not documentation-only.
+- New `investigation_profiles.py` defines auth anomaly, malware/Sophos, IOC hit, account/privilege, firewall C2/beaconing, and conservative generic fallback windows/budgets.
+- `ai_soc.gather_alert_context(..., stage=...)` performs stage-bounded, cross-source/cross-severity related-IP retrieval across source/destination/peer/indexed endpoint fields.
+- Profile timing is anchored on linked trigger-event timestamps when available (important for delayed/API ingestion), with `alert.created_at` only as fallback.
+- `ai_worker.TriageWorker` calls the LLM at Short first and widens only on `NO_SUSPICIOUS` or `INSUFFICIENT`; `SUSPICIOUS` stops immediately. Missing decision markers fail open to wider scope.
+- Long reduces repeated exact event shapes to representative rows and supplies count/first/last/median-interval summaries.
+- Regression coverage proves Short stop, Short->Medium escalation, Short->Medium->Long escalation, missing-marker fail-open behavior, trigger-event anchoring, Long raw-evidence reduction, and preservation of NXLog/firewall trigger separation.
+- Stage provenance is stored in `alerts.ai_analysis`; dedicated UI transition fields are not yet implemented.
+- Auto-triage is immediate, so future portions of after-trigger windows are capped at current time.
+- Verification for this slice: 30 non-Flask tests passed (`test_db`, `test_sql_helpers`, `test_investigation_profiles`, `test_warning_ai_context`, Sophos bundle); `compileall` passed; static security scan reported 0 findings; shell syntax/LF checks passed. Full Flask route/import collection remains NOT RUN in this packaging environment because Flask is not installed and outbound pip installation is unavailable. GitHub Actions is expected to run the complete requirements-backed suite.

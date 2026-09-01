@@ -369,7 +369,7 @@ $('triageBtn').addEventListener('click', async () => {
     const c = d.context_summary;
     window._lastTriageAnswer = d.answer;
     box.innerHTML = `<div style="display:flex;justify-content:space-between;align-items:center;margin-top:12px;margin-bottom:-6px;">
-        <span class="ctx-note" style="margin:0;">context: ${c.related_events} triggering event(s), ${c.source_history_events} from source ${esc(c.source||'-')}</span>
+        <span class="ctx-note" style="margin:0;">profile: ${esc(c.profile||'-')} · stages: ${esc((c.stages_run||[]).join(' → ')||'-')} · context: ${c.related_events} trigger event(s), ${c.evidence_events ?? c.source_history_events} related evidence for ${esc(c.entity_ip||c.source||'-')}</span>
         <button type="button" id="expandTriage" class="secondary" style="font-size:11px;padding:3px 10px;">⤢ Expand</button>
       </div>
       <div class="answer">${esc(d.answer)}</div>`;
