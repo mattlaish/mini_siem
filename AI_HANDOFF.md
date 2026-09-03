@@ -320,3 +320,56 @@ work, run the Flask-dependent smoke checks (`dashboard.py`/`siem.py --help`,
 - Stage provenance is stored in `alerts.ai_analysis`; dedicated UI transition fields are not yet implemented.
 - Auto-triage is immediate, so future portions of after-trigger windows are capped at current time.
 - Verification for this slice: 30 non-Flask tests passed (`test_db`, `test_sql_helpers`, `test_investigation_profiles`, `test_warning_ai_context`, Sophos bundle); `compileall` passed; static security scan reported 0 findings; shell syntax/LF checks passed. Full Flask route/import collection remains NOT RUN in this packaging environment because Flask is not installed and outbound pip installation is unavailable. GitHub Actions is expected to run the complete requirements-backed suite.
+
+## 2026-09-03 ingest performance hardening
+
+Implemented in the current working tree:
+
+- Removed the per-event normalized-field commit that defeated Storage batching.
+  `Storage.insert_log(..., fields=...)` now writes the log and all extracted
+  fields atomically under one storage lock and one commit-batch unit.
+- Added `Connection.executemany()` and converted normalized-field inserts plus
+  re-index/backfill row writes to batch execution.
+- Added bounded receive/processing separation via `IngestPipeline` with
+  configurable worker count/queue capacity, receive-boundary timestamps,
+  explicit UDP/non-UDP drop counters, high-water metrics, worker failure counts,
+  and queue draining on shutdown.
+- Added a bounded asynchronous `ForwarderManager` queue and dedicated sender
+  thread so network I/O is no longer on the ingest path; forwarding queue drops
+  and high-water state are visible.
+- Made mutable RuleEngine threshold state thread-safe for parallel workers and
+  made FieldIndexer/IOC reload loops stoppable for clean shutdown.
+- Existing SQLite FTS5 message indexing was retained rather than duplicated.
+  Database initialization/search now probes availability, rolls back a failed
+  FTS setup cleanly, and falls back to `LIKE`; PostgreSQL query construction no
+  longer assumes the SQLite FTS table exists.
+- Runtime defaults surfaced in `db-config.json`: commit batch 100, max delay
+  100 ms, 4 ingest workers, 10,000-event ingest queue, 10,000-event forwarding
+  queue.
+
+Verification in the packaging environment:
+
+- New targeted ingest/indexing suite: **6 passed**. It covers atomic batched
+  log+field visibility, single-call field `executemany`, batched re-index,
+  visible UDP queue overflow/drain behavior, non-blocking forwarding enqueue,
+  and FTS5 trigger synchronization/capability probing.
+- Broader non-Flask regression: **34 passed** (`test_db`, `test_sql_helpers`,
+  `test_investigation_profiles`, `test_warning_ai_context`, and the new ingest
+  performance suite).
+- `python3 -m compileall -q .`: PASS.
+- `python3 security_static_scan.py`: PASS, 21 files scanned / 0 findings.
+- Final bounded local stress check accepted/persisted **5,000/5,000** events and
+  **15,000** field rows with zero ingest/forward drops or processing failures at
+  about **6,934 events/s** on a temporary local SQLite filesystem. This is an
+  engineering smoke measurement, not a production throughput claim.
+- Full `python3 -m pytest -q` collection is blocked in this environment because
+  Flask is absent: `tests/test_dashboard_routes.py` fails import with
+  `ModuleNotFoundError: No module named 'flask'`. Do not treat that environment
+  gap as a passing full-suite result.
+
+Next recommended step: run the complete requirements-backed suite in CI and a
+representative sustained/burst soak on the actual deployment filesystem and
+forwarding destinations. For PostgreSQL deployments, add a real-PostgreSQL
+concurrency/transaction test; for very high forwarding volume, consider one
+sender queue per destination so a slow destination does not head-of-line block
+other forwarders (it already cannot block ingestion).

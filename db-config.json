@@ -1,5 +1,10 @@
 {
   "backend": "sqlite",
+  "commit_batch_size": 100,
+  "commit_max_delay_ms": 100,
+  "ingest_workers": 4,
+  "ingest_queue_size": 10000,
+  "forward_queue_size": 10000,
   "sqlite": {
     "path": "siem.db"
   },

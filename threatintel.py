@@ -66,19 +66,24 @@ class IOCMatcher:
         self._urls = {}
         self._hashes = {}
         self._count = 0
+        self._stop = threading.Event()
         self._reload()
-        t = threading.Thread(target=self._loop, daemon=True)
-        t.start()
+        self._thread = threading.Thread(target=self._loop, daemon=True, name="ioc-reload")
+        self._thread.start()
 
     # -- reload ------------------------------------------------------------
 
     def _loop(self):
-        while True:
-            time.sleep(self.reload_interval)
+        while not self._stop.wait(self.reload_interval):
             try:
                 self._reload()
             except Exception as exc:
                 print(f"[ti] IOC reload failed: {exc}")
+
+    def stop(self):
+        self._stop.set()
+        if self._thread.is_alive():
+            self._thread.join(timeout=2)
 
     def _reload(self):
         with self.storage.lock:
@@ -162,16 +167,20 @@ class IOCMatcher:
     def _record(self, log_id: int, event: dict, ioc: dict):
         threat = ioc.get("threat") or ioc.get("source") or "IOC hit"
         with self.storage.lock:
-            self.storage.conn.execute(
-                """INSERT INTO ioc_matches
-                   (matched_at, ioc_id, ioc_type, ioc_value, threat, log_id,
-                    source_ip, hostname, message)
-                   VALUES (?,?,?,?,?,?,?,?,?)""",
-                (datetime.now(timezone.utc).isoformat(), ioc.get("id"),
-                 ioc.get("ioc_type"), ioc.get("value"), threat, log_id,
-                 event.get("source_ip"), event.get("hostname"),
-                 (event.get("message") or "")[:500]))
-            self.storage.conn.commit()
+            try:
+                self.storage.conn.execute(
+                    """INSERT INTO ioc_matches
+                       (matched_at, ioc_id, ioc_type, ioc_value, threat, log_id,
+                        source_ip, hostname, message)
+                       VALUES (?,?,?,?,?,?,?,?,?)""",
+                    (datetime.now(timezone.utc).isoformat(), ioc.get("id"),
+                     ioc.get("ioc_type"), ioc.get("value"), threat, log_id,
+                     event.get("source_ip"), event.get("hostname"),
+                     (event.get("message") or "")[:500]))
+                self.storage.commit_locked()
+            except Exception:
+                self.storage.rollback_locked()
+                raise
         self.storage.insert_alert(
             rule_name="threat_intel_match",
             severity=ioc.get("severity") or "warning",

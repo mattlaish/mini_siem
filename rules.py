@@ -11,6 +11,7 @@ RuleEngine.rules in __init__.
 """
 
 import re
+import threading
 import time
 from collections import defaultdict, deque
 
@@ -146,6 +147,7 @@ class SeverityRule(Rule):
 class RuleEngine:
     def __init__(self, storage):
         self.storage = storage
+        self._lock = threading.Lock()
         self.rules = [
             ThresholdRule(
                 name="ssh_bruteforce",
@@ -176,19 +178,25 @@ class RuleEngine:
         ]
 
     def process(self, log_id: int, event: dict):
-        for rule in self.rules:
-            result = rule.evaluate(log_id, event, self.storage)
-            if result:
-                if len(result) == 4:
-                    source_ip, description, log_ids, alert_severity = result
-                else:
-                    source_ip, description, log_ids = result
-                    alert_severity = rule.severity
-                self.storage.insert_alert(
-                    rule_name=rule.name,
-                    severity=alert_severity,
-                    source_ip=source_ip,
-                    description=description,
-                    log_ids=log_ids,
-                )
-                print(f"  [ALERT] {rule.name} ({alert_severity}) — {description}")
+        # Worker-pool ingestion can call process concurrently. Protect mutable
+        # threshold deques, but keep DB writes outside the rule-state lock.
+        fired = []
+        with self._lock:
+            for rule in self.rules:
+                result = rule.evaluate(log_id, event, self.storage)
+                if result:
+                    if len(result) == 4:
+                        source_ip, description, log_ids, alert_severity = result
+                    else:
+                        source_ip, description, log_ids = result
+                        alert_severity = rule.severity
+                    fired.append((rule.name, alert_severity, source_ip, description, log_ids))
+        for rule_name, alert_severity, source_ip, description, log_ids in fired:
+            self.storage.insert_alert(
+                rule_name=rule_name,
+                severity=alert_severity,
+                source_ip=source_ip,
+                description=description,
+                log_ids=log_ids,
+            )
+            print(f"  [ALERT] {rule_name} ({alert_severity}) — {description}")

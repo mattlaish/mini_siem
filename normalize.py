@@ -82,13 +82,22 @@ def load_patterns_from_conn(conn) -> list:
     return []
 
 
+def field_rows(log_id: int, fields: dict):
+    """Return normalized DB rows for one log's extracted fields."""
+    return [(log_id, k[:60], str(v)[:300]) for k, v in fields.items()]
+
+
 def write_fields(conn, log_id: int, fields: dict):
-    """Insert extracted fields for one log (caller holds any needed
-    lock and commits)."""
-    for k, v in fields.items():
-        conn.execute(
-            "INSERT INTO log_fields (log_id, field, value) VALUES (?,?,?)",
-            (log_id, k[:60], str(v)[:300]))
+    """Insert extracted fields for one log with one driver call.
+
+    The caller owns transaction/locking semantics. Using ``executemany`` here
+    avoids one Python/driver round-trip per extracted field.
+    """
+    rows = field_rows(log_id, fields)
+    if rows:
+        conn.executemany(
+            "INSERT INTO log_fields (log_id, field, value) VALUES (?,?,?)", rows)
+    return len(rows)
 
 
 class FieldIndexer:
@@ -100,17 +109,31 @@ class FieldIndexer:
         self.storage = storage
         self.reload_interval = reload_interval
         self._patterns = []
+        self._stop = threading.Event()
         self._reload()
-        t = threading.Thread(target=self._loop, daemon=True)
-        t.start()
+        self._thread = threading.Thread(target=self._loop, daemon=True, name="field-index-reload")
+        self._thread.start()
 
     def _loop(self):
-        while True:
-            time.sleep(self.reload_interval)
+        while not self._stop.wait(self.reload_interval):
             try:
                 self._reload()
             except Exception as exc:
                 print(f"[fields] pattern reload failed: {exc}")
+
+    def stop(self):
+        self._stop.set()
+        if self._thread.is_alive():
+            self._thread.join(timeout=2)
+
+    def extract(self, event: dict) -> dict:
+        """Extract fields without taking the storage lock.
+
+        The listener uses this before persistence so the log row and its field
+        rows can be written atomically under one storage-lock acquisition.
+        """
+        patterns = self._patterns
+        return extract_fields(event.get("message"), patterns, json_obj=event.get("_json"))
 
     def _reload(self):
         with self.storage.lock:
@@ -126,22 +149,24 @@ class FieldIndexer:
                 print(f"[profiles] reload failed: {exc}")
 
     def process(self, log_id: int, event: dict) -> int:
-        """Extract and store fields for one event. Returns field count."""
-        fields = extract_fields(event.get("message"), self._patterns,
-                                json_obj=event.get("_json"))
-        # Capture "unidentified" JSON events — ones that matched no source
-        # profile or mapped poorly (blank host/message) — so the UI can show
-        # the operator a raw sample that needs a mapping profile.
+        """Extract and store fields for one event. Returns field count.
+
+        Kept for callers outside the main listener pipeline. Field writes use
+        Storage's batched-commit path; this method never commits per event.
+        """
+        fields = self.extract(event)
         try:
-            self._maybe_capture_unidentified(log_id, event, len(fields))
+            self.capture_unidentified(log_id, event, len(fields))
         except Exception:
             pass
         if not fields:
             return 0
-        with self.storage.lock:
-            write_fields(self.storage.conn, log_id, fields)
-            self.storage.conn.commit()
+        self.storage.write_log_fields(log_id, fields)
         return len(fields)
+
+    def capture_unidentified(self, log_id: int, event: dict, field_count: int):
+        """Public wrapper used when fields were persisted atomically with log."""
+        return self._maybe_capture_unidentified(log_id, event, field_count)
 
     def _maybe_capture_unidentified(self, log_id, event, field_count):
         """Record the most recent poorly-mapped JSON event in app_config under
@@ -175,12 +200,12 @@ class FieldIndexer:
             "keys": sorted(list(event.get("_json", {}).keys()))
                     if isinstance(event.get("_json"), dict) else [],
         }
-        with self.storage.lock:
-            self.storage.conn.execute(
-                "INSERT INTO app_config(key,value) VALUES('last_unidentified_log',?) "
-                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                (_json.dumps(payload, ensure_ascii=False),))
-            self.storage.conn.commit()
+        sql = (
+            "INSERT INTO app_config(key,value) VALUES('last_unidentified_log',?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value"
+        )
+        params = (_json.dumps(payload, ensure_ascii=False),)
+        self.storage.execute_batched(sql, params)
 
 
 def reindex(conn, batch_size: int = 500, progress=None):
@@ -197,14 +222,24 @@ def reindex(conn, batch_size: int = 500, progress=None):
             (last_id, batch_size)).fetchall()
         if not rows:
             break
+        delete_rows = []
+        insert_rows = []
         for r in rows:
             last_id = r["id"]
-            conn.execute("DELETE FROM log_fields WHERE log_id=?", (r["id"],))
+            delete_rows.append((r["id"],))
             fields = extract_fields(r["message"], patterns)
             if fields:
-                write_fields(conn, r["id"], fields)
-                done_fields += len(fields)
+                new_rows = field_rows(r["id"], fields)
+                insert_rows.extend(new_rows)
+                done_fields += len(new_rows)
             done_logs += 1
+        if delete_rows:
+            conn.executemany("DELETE FROM log_fields WHERE log_id=?", delete_rows)
+        if insert_rows:
+            conn.executemany(
+                "INSERT INTO log_fields (log_id, field, value) VALUES (?,?,?)",
+                insert_rows,
+            )
         conn.commit()
         if progress:
             progress(done_logs, last_id, max_id)

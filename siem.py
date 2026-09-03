@@ -30,7 +30,7 @@ import sys
 import threading
 import time
 
-from listener import Storage, parse_syslog, tcp_listener, udp_listener
+from listener import IngestPipeline, Storage, tcp_listener, udp_listener
 from rules import RuleEngine
 from forwarder import ForwarderManager
 from threatintel import IOCMatcher
@@ -74,28 +74,28 @@ def main():
     print(f"[listen] syslog ports: {', '.join(map(str, ports))}")
     storage = Storage(db_config=db_cfg)
     engine = RuleEngine(storage)
-    forwarders = ForwarderManager(storage, listen_port=ports[0])
+    forwarders = ForwarderManager(
+        storage, listen_port=ports[0],
+        queue_size=int(db_cfg.get("forward_queue_size", 10000)),
+    )
     ioc = IOCMatcher(storage)
     fields = FieldIndexer(storage)
-
-    def on_message(raw: str, source_ip: str):
-        event = parse_syslog(raw, source_ip)
-        log_id = storage.insert_log(event)
-        engine.process(log_id, event)
-        ioc.process(log_id, event)
-        fields.process(log_id, event)
-        forwarders.forward(event)
-        sev = event["severity"] or "-"
-        print(f"[{event['received_at']}] {source_ip} [{sev}] {event['message'][:120]}")
+    pipeline = IngestPipeline(
+        storage, engine, ioc, fields, forwarders,
+        worker_count=int(db_cfg.get("ingest_workers", 4)),
+        queue_size=int(db_cfg.get("ingest_queue_size", 10000)),
+    )
 
     threads = []
     for p in ports:
         if args.protocol in ("udp", "both"):
+            on_udp = lambda raw, source_ip: pipeline.submit(raw, source_ip, transport="udp")
             threads.append(threading.Thread(
-                target=udp_listener, args=(args.host, p, on_message), daemon=True))
+                target=udp_listener, args=(args.host, p, on_udp), daemon=True))
         if args.protocol in ("tcp", "both"):
+            on_tcp = lambda raw, source_ip: pipeline.submit(raw, source_ip, transport="tcp")
             threads.append(threading.Thread(
-                target=tcp_listener, args=(args.host, p, on_message), daemon=True))
+                target=tcp_listener, args=(args.host, p, on_tcp), daemon=True))
 
     if not args.no_dashboard:
         dashboard.DB_CONFIG = db_cfg
@@ -103,7 +103,7 @@ def main():
         # Let the dashboard's HTTP API receiver push logs through the SAME
         # pipeline the syslog listener uses (parse->store->rules->ioc->fields->
         # forward), so API-ingested logs are processed identically.
-        dashboard.set_ingest_hook(on_message, storage)
+        dashboard.set_ingest_hook(pipeline.submit, storage)
         dashboard.start_triage_worker()
         dashboard.start_automation_workers()
         def run_dashboard():
@@ -126,6 +126,13 @@ def main():
             time.sleep(1)
     except KeyboardInterrupt:
         print("\nShutting down.")
+        pipeline.stop(drain=True)
+        forwarders.stop(drain=True)
+        fields.stop()
+        ioc.stop()
+        storage.close()
+        print(f"[ingest] final stats: {pipeline.stats()}")
+        print(f"[forwarder] final stats: {forwarders.stats()}")
         sys.exit(0)
 
 

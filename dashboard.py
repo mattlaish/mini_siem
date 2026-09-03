@@ -259,8 +259,8 @@ def set_ingest_hook(on_message, storage):
 def _ingest_raw(raw_line: str, source_ip: str):
     """Push one raw syslog-format line through the pipeline."""
     if _INGEST_HOOK is not None:
-        _INGEST_HOOK(raw_line, source_ip)
-        return True
+        result = _INGEST_HOOK(raw_line, source_ip)
+        return True if result is None else bool(result)
     try:
         import listener as _listener
         import normalize as _normalize
@@ -841,7 +841,7 @@ def _concept_clause(column, concept, term, negate):
 
 
 
-def _build_log_query(args, select_cols):
+def _build_log_query(args, select_cols, use_fts=True):
     """Shared WHERE builder for log search + export. Supports q, source_ip,
     hostname, severity (synonym-aware), time range (from/to ISO), and ids."""
     q = args.get("q", "").strip()
@@ -860,33 +860,27 @@ def _build_log_query(args, select_cols):
             clauses.append(f"id IN ({','.join('?' * len(id_list))})")
             params.extend(id_list)
     if q:
-        # Message search via FTS5 (fast, indexed) instead of leading-wildcard
-        # LIKE scans. Preserves the existing syntax:
-        #   error                 -> message contains the word "error"
-        #   !tasklist             -> excludes "tasklist"
-        #   error, !tasklist      -> has "error" AND not "tasklist"
-        # Terms are comma-separated. Each term becomes a prefix token match
-        # (term*) so "fort" still finds "fortigate"; excluded terms become
-        # FTS NOT clauses. If a term can't be expressed in FTS (empty after
-        # cleaning), it's skipped. The whole thing is one MATCH subquery.
-        include, exclude = [], []
+        # SQLite FTS5 is preferred when available; PostgreSQL and SQLite builds
+        # without FTS5 transparently keep the legacy LIKE semantics.
         terms = [t.strip() for t in q.split(",")] if "," in q else [q.strip()]
-        for term in terms:
-            if not term:
-                continue
-            neg = term.startswith("!=") or term.startswith("!")
-            needle = (term[2:] if term.startswith("!=") else term[1:]).strip() if neg else term
-            tok = _fts_token(needle)
-            if not tok:
-                continue
-            (exclude if neg else include).append(tok)
-        match_expr = _fts_build_match(include, exclude)
-        if match_expr:
-            clauses.append("id IN (SELECT rowid FROM logs_fts WHERE logs_fts MATCH ?)")
-            params.append(match_expr)
-        else:
-            # nothing expressible in FTS (e.g. only punctuation) — fall back to
-            # a LIKE on the single term so the search still does something.
+        used_fts = False
+        if use_fts:
+            include, exclude = [], []
+            for term in terms:
+                if not term:
+                    continue
+                neg = term.startswith("!=") or term.startswith("!")
+                needle = (term[2:] if term.startswith("!=") else term[1:]).strip() if neg else term
+                tok = _fts_token(needle)
+                if not tok:
+                    continue
+                (exclude if neg else include).append(tok)
+            match_expr = _fts_build_match(include, exclude)
+            if match_expr:
+                clauses.append("id IN (SELECT rowid FROM logs_fts WHERE logs_fts MATCH ?)")
+                params.append(match_expr)
+                used_fts = True
+        if not used_fts:
             for term in terms:
                 t = term.strip()
                 if not t:
@@ -1040,8 +1034,9 @@ def _query_logs_extracted(args, limit, select_cols, sort_cap=100000):
     fields, filters, sort, direction = _extraction_args(args)
     needs = bool(fields or filters or sort.startswith("x_"))
 
-    base_sql, base_params = _build_log_query(args, select_cols)
     conn = get_conn()
+    base_sql, base_params = _build_log_query(
+        args, select_cols, use_fts=dbmod.fts5_available(conn))
     try:
         if not needs:
             limited_sql = base_sql + " LIMIT ?"
@@ -1988,7 +1983,8 @@ def start_poller_manager():
         if isinstance(payload, dict) and event.get("_endpoint_ip"):
             payload = dict(payload)
             payload.setdefault("endpoint_ip", event["_endpoint_ip"])
-        _ingest_raw(_json.dumps(payload, ensure_ascii=False), connector)
+        if not _ingest_raw(_json.dumps(payload, ensure_ascii=False), connector):
+            raise RuntimeError("ingest queue full")
 
     _POLLER_MANAGER = _api_poller.PollerManager(
         conn_factory=get_conn,
@@ -2652,6 +2648,7 @@ def api_ingest():
     src = src.split(",")[0].strip()
     ctype = (request.content_type or "").lower()
     count = 0
+    dropped = 0
     try:
         if "application/json" in ctype:
             payload = request.get_json(force=True, silent=True)
@@ -2673,17 +2670,22 @@ def api_ingest():
                     line = _json_to_syslog_line(obj)
                 else:
                     line = str(obj)
-                _ingest_raw(line, src)
-                count += 1
+                if _ingest_raw(line, src):
+                    count += 1
+                else:
+                    dropped += 1
         else:
             body = request.get_data(as_text=True) or ""
             for line in body.splitlines():
                 if line.strip():
-                    _ingest_raw(line, src)
-                    count += 1
+                    if _ingest_raw(line, src):
+                        count += 1
+                    else:
+                        dropped += 1
     except Exception as exc:
         return jsonify({"error": f"ingest failed: {type(exc).__name__}"}), 500
-    return jsonify({"ok": True, "ingested": count})
+    status = 200 if dropped == 0 else (503 if count == 0 else 202)
+    return jsonify({"ok": dropped == 0, "ingested": count, "dropped": dropped}), status
 
 
 

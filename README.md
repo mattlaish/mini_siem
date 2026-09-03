@@ -76,6 +76,50 @@ PostgreSQL path is implemented through the same abstraction and verified
 by construction; test it against your Postgres with `configure-db.py`
 (which runs a real connect + table create) before relying on it.
 
+### Ingest throughput and burst controls
+
+The collector now separates socket receive, event processing, database commit,
+and downstream forwarding. The default runtime controls are top-level keys in
+`db-config.json`:
+
+```json
+{
+  "commit_batch_size": 100,
+  "commit_max_delay_ms": 100,
+  "ingest_workers": 4,
+  "ingest_queue_size": 10000,
+  "forward_queue_size": 10000
+}
+```
+
+- `commit_batch_size` / `commit_max_delay_ms`: log rows and normalized field
+  rows share one transaction/lock acquisition and are committed after 100
+  pending write units or 100 ms by default. Set `1` / `0` for immediate
+  per-event commits when that durability policy is more important than ingest
+  throughput. Batched commits intentionally create a bounded process/power-loss
+  exposure equal to the uncommitted batch/window.
+- `ingest_workers`: worker threads that run parse -> persist -> rules -> IOC ->
+  field metadata -> forwarding enqueue. UDP/TCP receive threads only timestamp
+  and enqueue raw messages, so they return to draining sockets quickly.
+- `ingest_queue_size`: bounded raw-message queue. UDP never waits on a full
+  queue and increments explicit drop counters; TCP/API producers wait briefly
+  for backpressure and reject/count the event if the queue remains full.
+- `forward_queue_size`: bounded forwarding queue. Network sends run on a
+  dedicated sender thread, so a slow downstream destination no longer blocks
+  collection. Queue overflow is counted and reported.
+
+Shutdown drains the ingest queue first and the forwarding queue second, then
+flushes pending database commits. Final queue/drop/failure counters are printed
+for operational visibility. Because processing is parallel, events received in
+a tight burst may complete in a slightly different order; threshold-rule
+sliding-window state is protected by a lock so rule state itself remains safe.
+
+SQLite message search uses the existing FTS5 mirror and synchronization
+triggers when FTS5 is available. Startup and dashboard search now probe for
+FTS5 and gracefully fall back to `LIKE` when it is unavailable; PostgreSQL also
+uses the fallback today. FTS5 provides token/prefix search rather than arbitrary
+mid-token substring indexing.
+
 ## 1c. Authentication (login on the dashboard)
 
 The dashboard now requires a login. Three methods, set in

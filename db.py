@@ -32,6 +32,13 @@ from sql_helpers import sqlite_integrity_pragma
 
 DEFAULT_CONFIG = {
     "backend": "sqlite",
+    # Runtime defaults favor burst tolerance while bounding crash-loss exposure
+    # to the max-delay window. Operators can override all four in db-config.json.
+    "commit_batch_size": 100,
+    "commit_max_delay_ms": 100,
+    "ingest_workers": 4,
+    "ingest_queue_size": 10000,
+    "forward_queue_size": 10000,
     "sqlite": {"path": "siem.db"},
     "postgres": {
         "host": "localhost",
@@ -116,6 +123,15 @@ class Connection:
             return cur
         return self.raw.execute(sql, params)
 
+    def executemany(self, sql: str, seq_of_params):
+        """Execute one statement for many parameter rows on either backend."""
+        sql = self._sql(sql)
+        if self.backend == "postgres":
+            cur = self.raw.cursor()
+            cur.executemany(sql, seq_of_params)
+            return cur
+        return self.raw.executemany(sql, seq_of_params)
+
     def insert_returning_id(self, sql: str, params=()):
         """Run an INSERT and return the new row's integer id."""
         if self.backend == "postgres":
@@ -129,6 +145,9 @@ class Connection:
 
     def commit(self):
         self.raw.commit()
+
+    def rollback(self):
+        self.raw.rollback()
 
     def close(self):
         if self._closed:
@@ -339,29 +358,40 @@ def _schema_statements(backend: str):
         )""",
         "CREATE INDEX IF NOT EXISTS idx_apikeys_hash ON api_keys(key_hash)",
     ]
-    if backend != "postgres":
-        # FTS5 full-text index over message text for fast search (replaces
-        # slow leading-wildcard LIKE scans). sqlite-only; Postgres would use
-        # tsvector/GIN instead. 'content' is unindexed external-content style:
-        # we store message text keyed by the log id (rowid) so MATCH is fast
-        # and we can join back to logs.
-        stmts.append(
-            "CREATE VIRTUAL TABLE IF NOT EXISTS logs_fts USING fts5("
-            "message, content='logs', content_rowid='id', tokenize='unicode61')")
-        # keep the FTS index in sync with the logs table
-        stmts.append(
-            "CREATE TRIGGER IF NOT EXISTS logs_ai AFTER INSERT ON logs BEGIN "
-            "INSERT INTO logs_fts(rowid, message) VALUES (new.id, new.message); END")
-        stmts.append(
-            "CREATE TRIGGER IF NOT EXISTS logs_ad AFTER DELETE ON logs BEGIN "
-            "INSERT INTO logs_fts(logs_fts, rowid, message) "
-            "VALUES('delete', old.id, old.message); END")
-        stmts.append(
-            "CREATE TRIGGER IF NOT EXISTS logs_au AFTER UPDATE ON logs BEGIN "
-            "INSERT INTO logs_fts(logs_fts, rowid, message) "
-            "VALUES('delete', old.id, old.message); "
-            "INSERT INTO logs_fts(rowid, message) VALUES (new.id, new.message); END")
     return stmts
+
+
+def _fts_schema_statements():
+    """SQLite-only FTS5 objects. Kept separate so builds without FTS5 can
+    still initialize and transparently fall back to LIKE message search."""
+    return [
+        "CREATE VIRTUAL TABLE IF NOT EXISTS logs_fts USING fts5("
+        "message, content='logs', content_rowid='id', tokenize='unicode61')",
+        "CREATE TRIGGER IF NOT EXISTS logs_ai AFTER INSERT ON logs BEGIN "
+        "INSERT INTO logs_fts(rowid, message) VALUES (new.id, new.message); END",
+        "CREATE TRIGGER IF NOT EXISTS logs_ad AFTER DELETE ON logs BEGIN "
+        "INSERT INTO logs_fts(logs_fts, rowid, message) "
+        "VALUES('delete', old.id, old.message); END",
+        "CREATE TRIGGER IF NOT EXISTS logs_au AFTER UPDATE ON logs BEGIN "
+        "INSERT INTO logs_fts(logs_fts, rowid, message) "
+        "VALUES('delete', old.id, old.message); "
+        "INSERT INTO logs_fts(rowid, message) VALUES (new.id, new.message); END",
+    ]
+
+
+def fts5_available(conn) -> bool:
+    """Return True when this connection can query the mini-SIEM FTS5 index.
+
+    PostgreSQL deliberately returns False here; its current query path uses the
+    portable LIKE fallback until a native tsvector/GIN implementation exists.
+    """
+    if getattr(conn, "backend", "sqlite") != "sqlite":
+        return False
+    try:
+        conn.execute("SELECT rowid FROM logs_fts WHERE logs_fts MATCH ? LIMIT 1", ("__fts_probe__",)).fetchone()
+        return True
+    except Exception:
+        return False
 
 
 # --------------------------------------------------------------------------
@@ -488,6 +518,18 @@ def initialize(config: dict):
         for stmt in _schema_statements(config.get("backend", "sqlite")):
             conn.execute(stmt)
         conn.commit()
+        if config.get("backend") != "postgres":
+            try:
+                for stmt in _fts_schema_statements():
+                    conn.execute(stmt)
+                conn.commit()
+            except Exception:
+                # Some SQLite builds omit FTS5. Core logging must still start;
+                # dashboard message search will detect this and use LIKE.
+                try:
+                    conn.raw.rollback()
+                except Exception:
+                    pass
         for stmt in _migrations():
             try:
                 conn.execute(stmt)
@@ -509,7 +551,7 @@ def initialize(config: dict):
         # search works on historical rows. Uses the internal 'docsize' shadow
         # table to detect a truly-empty index (external-content FTS otherwise
         # reflects the content table and looks non-empty).
-        if config.get("backend") != "postgres":
+        if config.get("backend") != "postgres" and fts5_available(conn):
             try:
                 have_logs = conn.execute("SELECT 1 FROM logs LIMIT 1").fetchone()
                 indexed = 0
@@ -541,6 +583,8 @@ def rebuild_fts(config: dict, progress=None):
         return 0
     conn = connect(config)
     try:
+        if not fts5_available(conn):
+            return 0
         # 'rebuild' repopulates an external-content FTS table from its source
         try:
             conn.execute("INSERT INTO logs_fts(logs_fts) VALUES('rebuild')")

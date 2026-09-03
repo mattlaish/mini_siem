@@ -585,3 +585,40 @@ Runtime change (not documentation-only): added `investigation_profiles.py`; repl
 - Additional DB/SQL/Sophos tests that do not import Flask pass; Flask-dependent full collection is not runnable in this packaging environment because Flask is absent.
 - `python -m compileall -q .`: passed.
 - `python security_static_scan.py`: 0 findings.
+
+## 2026-09-03 — Ingest batching, worker queue, asynchronous forwarding, and FTS fallback
+
+### Runtime changes
+- Removed `FieldIndexer.process()`'s per-event commit; log and normalized fields
+  now share one Storage lock/transaction batch.
+- Added batched field `executemany()` writes and batched re-index/backfill
+  transactions.
+- Added a bounded raw ingest queue plus configurable worker pool. Socket receive
+  threads now timestamp/enqueue raw messages instead of parsing/writing/running
+  rules inline. Queue saturation produces explicit drop counters.
+- Moved forwarding network sends onto a dedicated bounded queue/sender thread.
+- Added RuleEngine synchronization required by parallel ingest workers and clean
+  stop/join behavior for indexing/IOC helper threads.
+- Retained the existing SQLite FTS5 `logs_fts` mirror/triggers, added FTS5
+  availability probing and graceful `LIKE` fallback, and prevented PostgreSQL
+  searches from referencing the SQLite FTS table.
+- Added rollback/reset handling for batched Storage transactions after write
+  failures.
+
+### Configuration
+- Default commit batch: 100 write units.
+- Default commit max delay: 100 ms.
+- Default ingest workers: 4.
+- Default ingest queue: 10,000.
+- Default forwarding queue: 10,000.
+
+### Validation
+- Targeted ingest/indexing tests: 6 passed.
+- Broader selected non-Flask regression: 34 passed.
+- `compileall`: passed.
+- Static security scan: 21 files / 0 findings.
+- Bounded local SQLite stress: 5,000/5,000 events and 15,000 field rows
+  persisted, zero ingest/forward drops or processing failures, about 6,934
+  events/s. This is not a production benchmark.
+- Full pytest collection is blocked because Flask is not installed in the
+  packaging environment (`ModuleNotFoundError: flask`).

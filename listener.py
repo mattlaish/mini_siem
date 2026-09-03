@@ -20,6 +20,7 @@ and forward 514 -> it. Details in README.md.
 
 import argparse
 import json
+import queue
 import re
 import socket
 import sqlite3
@@ -50,7 +51,7 @@ def _get_profiles():
         return list(_PROFILES)
 from rules import RuleEngine
 from threatintel import IOCMatcher
-from normalize import FieldIndexer
+from normalize import FieldIndexer, write_fields
 import severity as severity_mod
 import db as dbmod
 
@@ -415,93 +416,305 @@ class Storage:
 
         # --- Commit batching (defends slow-disk servers against per-event
         # fsync cost). Insert stays synchronous so log_id is available for
-        # rules/IOC/field extraction; only the COMMIT is batched. Defaults
-        # (size=1, delay=0) reproduce the original commit-every-event
-        # behavior, so nothing changes until tuned in db-config.json:
-        #   "commit_batch_size":  N   -> commit after N pending inserts
+        # rules/IOC/field extraction; only the COMMIT is batched. Runtime
+        # defaults are 100 events / 100 ms via db.DEFAULT_CONFIG. Operators
+        # can tune these in db-config.json; use size=1, delay=0 only when
+        # immediate per-event durability is worth the throughput cost:
+        #   "commit_batch_size":  N   -> commit after N pending write units
         #   "commit_max_delay_ms": T  -> or after T ms, whichever comes first
-        # On fast NVMe leave defaults; on HDD/RAID servers raise both.
         sqlite_cfg = cfg.get("sqlite", {}) if isinstance(cfg, dict) else {}
         try:
             self._commit_batch_size = max(1, int(cfg.get("commit_batch_size",
-                                          sqlite_cfg.get("commit_batch_size", 1))))
+                                          sqlite_cfg.get("commit_batch_size", dbmod.DEFAULT_CONFIG["commit_batch_size"]))))
         except (ValueError, TypeError):
-            self._commit_batch_size = 1
+            self._commit_batch_size = dbmod.DEFAULT_CONFIG["commit_batch_size"]
         try:
             self._commit_max_delay_ms = max(0, int(cfg.get("commit_max_delay_ms",
-                                            sqlite_cfg.get("commit_max_delay_ms", 0))))
+                                            sqlite_cfg.get("commit_max_delay_ms", dbmod.DEFAULT_CONFIG["commit_max_delay_ms"]))))
         except (ValueError, TypeError):
-            self._commit_max_delay_ms = 0
+            self._commit_max_delay_ms = dbmod.DEFAULT_CONFIG["commit_max_delay_ms"]
         self._pending = 0
         self._last_commit = time.time()
+        self._stop = threading.Event()
+        self._flush_thread = None
         # background flusher only needed when batching is enabled
         if self._commit_batch_size > 1 or self._commit_max_delay_ms > 0:
-            t = threading.Thread(target=self._flush_loop, daemon=True)
-            t.start()
+            self._flush_thread = threading.Thread(
+                target=self._flush_loop, daemon=True, name="storage-commit-flush")
+            self._flush_thread.start()
 
     def _flush_loop(self):
         """Commit any pending writes once they've waited longer than the
         max delay — so a low-traffic tail isn't left uncommitted."""
-        while True:
+        while not self._stop.is_set():
             delay = self._commit_max_delay_ms or 1000
-            time.sleep(max(0.05, delay / 1000.0))
+            if self._stop.wait(max(0.05, delay / 1000.0)):
+                break
             with self.lock:
                 if self._pending > 0:
                     due = (self._commit_max_delay_ms == 0 or
                            (time.time() - self._last_commit) * 1000 >= self._commit_max_delay_ms)
                     if due:
-                        self.conn.commit()
-                        self._pending = 0
-                        self._last_commit = time.time()
+                        self.commit_locked()
 
     def _maybe_commit_locked(self):
         """Called with self.lock held after an insert. Commits now if the
         batch is full or the max delay has elapsed; otherwise defers."""
         self._pending += 1
         if self._commit_batch_size <= 1 and self._commit_max_delay_ms <= 0:
-            self.conn.commit()
-            self._pending = 0
-            self._last_commit = time.time()
+            self.commit_locked()
             return
         size_due = self._pending >= self._commit_batch_size
         time_due = (self._commit_max_delay_ms > 0 and
                     (time.time() - self._last_commit) * 1000 >= self._commit_max_delay_ms)
         if size_due or time_due:
-            self.conn.commit()
-            self._pending = 0
-            self._last_commit = time.time()
+            self.commit_locked()
 
-    def insert_log(self, event: dict) -> int:
+    def commit_locked(self):
+        """Commit the shared connection and reset the batch accounting.
+
+        Caller must hold ``storage.lock``. Auxiliary writers use this instead
+        of committing the connection directly, so they cannot leave stale
+        pending counters behind.
+        """
+        self.conn.commit()
+        self._pending = 0
+        self._last_commit = time.time()
+
+    def rollback_locked(self):
+        """Abort the current transaction and reset batch accounting.
+
+        A database write failure invalidates the in-flight batch (especially on
+        PostgreSQL), so recovery is fail-closed rather than later committing a
+        partial event.
+        """
+        self.conn.rollback()
+        self._pending = 0
+        self._last_commit = time.time()
+
+    def insert_log(self, event: dict, fields: dict = None) -> int:
+        """Persist one log and, when supplied, its normalized fields atomically.
+
+        Both writes share one storage-lock acquisition and one commit-batch unit,
+        eliminating the former second lock + per-event field commit.
+        """
         with self.lock:
-            new_id = self.conn.insert_returning_id(
-                """INSERT INTO logs
-                   (received_at, source_ip, peer_ip, format, priority, facility, severity,
-                    device_timestamp, hostname, destination, app_name, proc_id, msg_id, message, raw)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (
-                    event["received_at"], event["source_ip"], event.get("peer_ip", ""),
-                    event["format"], event["priority"],
-                    event["facility"], event["severity"], event["device_timestamp"],
-                    event["hostname"], event.get("destination", ""), event["app_name"],
-                    event["proc_id"], event["msg_id"], event["message"], event["raw"],
-                ),
-            )
-            self._maybe_commit_locked()
-            return new_id
+            try:
+                new_id = self.conn.insert_returning_id(
+                    """INSERT INTO logs
+                       (received_at, source_ip, peer_ip, format, priority, facility, severity,
+                        device_timestamp, hostname, destination, app_name, proc_id, msg_id, message, raw)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (
+                        event["received_at"], event["source_ip"], event.get("peer_ip", ""),
+                        event["format"], event["priority"],
+                        event["facility"], event["severity"], event["device_timestamp"],
+                        event["hostname"], event.get("destination", ""), event["app_name"],
+                        event["proc_id"], event["msg_id"], event["message"], event["raw"],
+                    ),
+                )
+                if fields:
+                    write_fields(self.conn, new_id, fields)
+                self._maybe_commit_locked()
+                return new_id
+            except Exception:
+                self.rollback_locked()
+                raise
+
+    def write_log_fields(self, log_id: int, fields: dict) -> int:
+        """Compatibility path for field writes outside atomic insert_log()."""
+        if not fields:
+            return 0
+        with self.lock:
+            try:
+                count = write_fields(self.conn, log_id, fields)
+                self._maybe_commit_locked()
+                return count
+            except Exception:
+                self.rollback_locked()
+                raise
+
+    def execute_batched(self, sql: str, params=()):
+        """Run one auxiliary write through the same commit-batching policy."""
+        with self.lock:
+            try:
+                cur = self.conn.execute(sql, params)
+                self._maybe_commit_locked()
+                return cur
+            except Exception:
+                self.rollback_locked()
+                raise
+
+    def flush(self):
+        """Commit pending batched writes immediately."""
+        with self.lock:
+            if self._pending > 0:
+                self.commit_locked()
+
+    def close(self):
+        """Stop the commit flusher, persist the low-traffic tail, and close."""
+        self._stop.set()
+        if self._flush_thread is not None and self._flush_thread.is_alive():
+            self._flush_thread.join(timeout=2)
+        self.flush()
+        with self.lock:
+            self.conn.close()
 
     def insert_alert(self, rule_name: str, severity: str, source_ip: str,
                       description: str, log_ids: list) -> int:
         with self.lock:
-            new_id = self.conn.insert_returning_id(
-                """INSERT INTO alerts (created_at, rule_name, severity, source_ip, description, log_ids)
-                   VALUES (?,?,?,?,?,?)""",
-                (
-                    datetime.now(timezone.utc).isoformat(), rule_name, severity,
-                    source_ip, description, ",".join(str(i) for i in log_ids),
-                ),
-            )
-            self.conn.commit()
-            return new_id
+            try:
+                new_id = self.conn.insert_returning_id(
+                    """INSERT INTO alerts (created_at, rule_name, severity, source_ip, description, log_ids)
+                       VALUES (?,?,?,?,?,?)""",
+                    (
+                        datetime.now(timezone.utc).isoformat(), rule_name, severity,
+                        source_ip, description, ",".join(str(i) for i in log_ids),
+                    ),
+                )
+                self.commit_locked()
+                return new_id
+            except Exception:
+                self.rollback_locked()
+                raise
+
+
+# --------------------------------------------------------------------------
+# Bounded ingest pipeline
+# --------------------------------------------------------------------------
+
+class IngestPipeline:
+    """Bounded receive queue + worker pool for the full event pipeline.
+
+    Socket threads only enqueue raw payloads. UDP uses non-blocking enqueue so
+    the socket can keep draining; queue overflow becomes an explicit counter.
+    TCP/API producers may wait briefly, allowing natural backpressure before a
+    message is dropped.
+    """
+
+    _SENTINEL = object()
+
+    def __init__(self, storage, engine, ioc, fields, forwarders,
+                 worker_count: int = 4, queue_size: int = 10000):
+        self.storage = storage
+        self.engine = engine
+        self.ioc = ioc
+        self.fields = fields
+        self.forwarders = forwarders
+        self.worker_count = max(1, int(worker_count))
+        self.queue_size = max(1, int(queue_size))
+        self._queue = queue.Queue(maxsize=self.queue_size)
+        self._stats_lock = threading.Lock()
+        self._accepting = True
+        self._received = 0
+        self._enqueued = 0
+        self._processed = 0
+        self._failed = 0
+        self._dropped = 0
+        self._dropped_udp = 0
+        self._dropped_other = 0
+        self._high_water = 0
+        self._workers = []
+        for idx in range(self.worker_count):
+            t = threading.Thread(target=self._worker_loop, daemon=True,
+                                 name=f"ingest-worker-{idx + 1}")
+            t.start()
+            self._workers.append(t)
+
+    def submit(self, raw, source_ip: str, transport: str = "api", received_at: str = None):
+        if not self._accepting:
+            return False
+        item = (raw, source_ip, received_at or datetime.now(timezone.utc).isoformat(), transport)
+        with self._stats_lock:
+            self._received += 1
+        try:
+            if transport == "udp":
+                self._queue.put_nowait(item)
+            else:
+                self._queue.put(item, timeout=0.10)
+        except queue.Full:
+            with self._stats_lock:
+                self._dropped += 1
+                if transport == "udp":
+                    self._dropped_udp += 1
+                else:
+                    self._dropped_other += 1
+                dropped = self._dropped
+            if dropped == 1 or dropped % 100 == 0:
+                print(f"[ingest] queue full: dropped={dropped} transport={transport} "
+                      f"capacity={self.queue_size}", file=sys.stderr)
+            return False
+        with self._stats_lock:
+            self._enqueued += 1
+            self._high_water = max(self._high_water, self._queue.qsize())
+        return True
+
+    def stats(self):
+        with self._stats_lock:
+            return {
+                "received": self._received,
+                "enqueued": self._enqueued,
+                "processed": self._processed,
+                "failed": self._failed,
+                "dropped": self._dropped,
+                "dropped_udp": self._dropped_udp,
+                "dropped_other": self._dropped_other,
+                "queue_depth": self._queue.qsize(),
+                "queue_capacity": self.queue_size,
+                "queue_high_water": self._high_water,
+                "workers": self.worker_count,
+            }
+
+    def _worker_loop(self):
+        while True:
+            item = self._queue.get()
+            try:
+                if item is self._SENTINEL:
+                    return
+                raw, source_ip, received_at, _transport = item
+                if isinstance(raw, bytes):
+                    raw = raw.decode("utf-8", errors="replace")
+                else:
+                    raw = str(raw)
+                event = parse_syslog(raw, source_ip)
+                # Timestamp receipt at the socket/API boundary, not after queue wait.
+                event["received_at"] = received_at
+                extracted = self.fields.extract(event)
+                log_id = self.storage.insert_log(event, fields=extracted)
+                self.engine.process(log_id, event)
+                self.ioc.process(log_id, event)
+                try:
+                    self.fields.capture_unidentified(log_id, event, len(extracted))
+                except Exception:
+                    pass
+                self.forwarders.forward(event)
+                sev = event["severity"] or "-"
+                print(f"[{event['received_at']}] {source_ip} [{sev}] {event['message'][:120]}")
+                with self._stats_lock:
+                    self._processed += 1
+            except Exception as exc:
+                with self._stats_lock:
+                    self._failed += 1
+                print(f"[ingest] processing failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+            finally:
+                self._queue.task_done()
+
+    def stop(self, drain: bool = True):
+        self._accepting = False
+        if drain:
+            self._queue.join()
+        else:
+            while True:
+                try:
+                    self._queue.get_nowait()
+                    self._queue.task_done()
+                except queue.Empty:
+                    break
+        for _ in self._workers:
+            self._queue.put(self._SENTINEL)
+        self._queue.join()
+        for t in self._workers:
+            t.join(timeout=2)
 
 
 # --------------------------------------------------------------------------
@@ -516,7 +729,7 @@ def udp_listener(host: str, port: int, on_message):
     while True:
         try:
             data, addr = sock.recvfrom(65535)
-            on_message(data.decode("utf-8", errors="replace"), addr[0])
+            on_message(data, addr[0])
         except Exception as exc:
             print(f"[udp] error: {exc}", file=sys.stderr)
 
@@ -539,7 +752,7 @@ def _handle_tcp_client(conn: socket.socket, addr, on_message):
             while b"\n" in buf:
                 line, buf = buf.split(b"\n", 1)
                 if line.strip():
-                    on_message(line.decode("utf-8", errors="replace"), addr[0])
+                    on_message(line, addr[0])
 
 
 def tcp_listener(host: str, port: int, on_message):
@@ -587,26 +800,26 @@ def main():
 
     storage = Storage(db_config=db_cfg)
     engine = RuleEngine(storage)
-    forwarders = ForwarderManager(storage, listen_port=ports[0])
+    forwarders = ForwarderManager(
+        storage, listen_port=ports[0],
+        queue_size=int(db_cfg.get("forward_queue_size", 10000)),
+    )
     ioc = IOCMatcher(storage)
     fields = FieldIndexer(storage)
-
-    def on_message(raw: str, source_ip: str):
-        event = parse_syslog(raw, source_ip)
-        log_id = storage.insert_log(event)
-        engine.process(log_id, event)
-        ioc.process(log_id, event)
-        fields.process(log_id, event)
-        forwarders.forward(event)  # relay the original raw message downstream
-        sev = event["severity"] or "-"
-        print(f"[{event['received_at']}] {source_ip} [{sev}] {event['message'][:120]}")
+    pipeline = IngestPipeline(
+        storage, engine, ioc, fields, forwarders,
+        worker_count=int(db_cfg.get("ingest_workers", 4)),
+        queue_size=int(db_cfg.get("ingest_queue_size", 10000)),
+    )
 
     threads = []
     for p in ports:
         if args.protocol in ("udp", "both"):
-            threads.append(threading.Thread(target=udp_listener, args=(args.host, p, on_message), daemon=True))
+            on_udp = lambda raw, source_ip: pipeline.submit(raw, source_ip, transport="udp")
+            threads.append(threading.Thread(target=udp_listener, args=(args.host, p, on_udp), daemon=True))
         if args.protocol in ("tcp", "both"):
-            threads.append(threading.Thread(target=tcp_listener, args=(args.host, p, on_message), daemon=True))
+            on_tcp = lambda raw, source_ip: pipeline.submit(raw, source_ip, transport="tcp")
+            threads.append(threading.Thread(target=tcp_listener, args=(args.host, p, on_tcp), daemon=True))
 
     if not threads:
         print("No protocol selected.", file=sys.stderr)
@@ -621,6 +834,13 @@ def main():
             time.sleep(1)
     except KeyboardInterrupt:
         print("\nShutting down.")
+        pipeline.stop(drain=True)
+        forwarders.stop(drain=True)
+        fields.stop()
+        ioc.stop()
+        storage.close()
+        print(f"[ingest] final stats: {pipeline.stats()}")
+        print(f"[forwarder] final stats: {forwarders.stats()}")
 
 
 if __name__ == "__main__":

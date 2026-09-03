@@ -1,5 +1,45 @@
 # Development Contract
 
+## 2026-09-03 — Ingest concurrency and indexing performance hardening
+
+Implemented performance/runtime changes:
+
+- Socket receive no longer executes the full ingest pipeline inline. UDP/TCP
+  listeners timestamp raw input and submit it to a bounded `IngestPipeline`; a
+  configurable worker pool performs parsing, persistence, detection, IOC
+  matching, normalized-field handling, and forwarding enqueue. Queue saturation
+  is explicit through accepted/dropped counters rather than silent user-space
+  loss. UDP uses non-blocking enqueue; TCP/API use a short bounded wait.
+- `Storage.insert_log(event, fields=...)` persists the log plus normalized field
+  rows under one `storage.lock` acquisition and one transaction batch unit.
+  Field indexing no longer commits each event independently. The default commit
+  policy is 100 write units or 100 ms, with final shutdown flush.
+- Normalized field writes use `executemany`; re-index/backfill groups deletes and
+  inserts into batched transactions rather than committing each row/event.
+- Forwarding is isolated behind its own bounded queue and sender thread. Slow
+  network destinations can grow/drop that forwarding queue, but they do not run
+  on the collector ingest workers.
+- RuleEngine mutable threshold-window state is synchronized for the new worker
+  model. Auxiliary IOC/forwarder writes use Storage commit/rollback accounting.
+- SQLite FTS5 message indexing already existed in the repository. This slice
+  preserves its triggers/backfill and adds capability probing plus graceful
+  `LIKE` fallback when FTS5 is unavailable; PostgreSQL does not reference the
+  SQLite FTS virtual table.
+
+Operational tradeoffs/invariants:
+
+- A batched commit creates a bounded durability window: a process/host failure
+  can lose the current uncommitted batch. Operators needing per-event commit can
+  set `commit_batch_size=1` and `commit_max_delay_ms=0`.
+- Log + normalized-field persistence is atomic within the same database
+  transaction. Rules/IOC processing occurs only after the insert has produced a
+  log ID, but the commit may still be deferred by the batching policy.
+- Parallel workers may change completion ordering for burst events. Receive
+  timestamps are captured at the socket/API boundary and preserved.
+- Bounded queues do not make overload disappear; they make overload explicit
+  and measurable. Production sizing must be validated with representative
+  message rates, disk latency, forwarder latency, and PostgreSQL where used.
+
 ## Purpose
 
 This document is the canonical engineering description of mini-SIEM investigation behavior that is planned or implemented across detection triggers, related-evidence retrieval, and LLM analysis. It intentionally separates **trigger logic** from **related evidence** so that source-specific severity rules do not accidentally redefine cross-source investigation context.
