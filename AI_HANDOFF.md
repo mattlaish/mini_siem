@@ -149,6 +149,7 @@ Never:
 
 ## Deployment Update — 2026-08-31
 - Production Linux deployment now prefers `install-services.sh`: the syslog
+  Canonical operator installation instructions are in `INSTALLATION.md`.
   listener runs as root only for TCP/UDP 514, while the Waitress dashboard and
   API pollers run as the dedicated non-login system account `siem`. The
   installer creates `siem` automatically; no personal username/UID argument is
@@ -373,3 +374,52 @@ forwarding destinations. For PostgreSQL deployments, add a real-PostgreSQL
 concurrency/transaction test; for very high forwarding volume, consider one
 sender queue per destination so a slow destination does not head-of-line block
 other forwarders (it already cannot block ingestion).
+
+## 2026-09-03 dashboard search boolean controls + cascade timeline
+
+Current dashboard behavior now includes scoped boolean controls for Log Search:
+Source, Host, and Destination each support comma-separated terms with AND/OR;
+field query-builder chips also support AND/OR using repeated `fc=field=value`
+parameters, including multiple values for the same field. Operators are scoped
+to their own positive term group; all filter families remain ANDed and
+exclusions always apply. Message FTS/LIKE text search and field filters are
+therefore simultaneously effective in one query.
+
+The Log Search toolbar also has a Cascade Timeline button beside Export filtered.
+It reuses the same current filters, retrieves up to 500 events chronologically,
+and displays browser-local `Mon D YYYY HH:MM` timestamps, actual range, compact
+source -> destination/host routing, first-sentence/clause message summaries, and
+recognized Event IDs. The timeline is an `aria-modal` overlay above the dashboard
+rather than an inline panel; close via the top-right `×`, `Esc`, or shaded
+backdrop. Background scrolling is locked while open, focus is contained/restored,
+and the underlying Log Search filters/table state are preserved.
+
+Validation performed without Flask installed: Python compile passed; inline JS
+`node --check` passed; an exact-function SQLite harness passed 11 boolean/search
+composition cases; a separate exact-function FTS5 harness proved message text +
+field filtering together with FTS enabled; timeline helper checks passed. A new
+`tests/test_log_search_logic.py` covers the same backend contracts for normal
+requirements-backed CI, but that pytest file was not executed in this packaging
+environment because Flask/Werkzeug are absent.
+The overlay follow-up passed `compileall`, dashboard inline-JS `node --check`,
+static structural modal checks, and the static security scanner (0 findings / 21
+files). The non-Flask regression selection has 34 passes; 2 import tests remain
+blocked solely by the missing Flask dependency.
+
+
+## 2026-09-03 native Cascade Timeline dialog update
+
+Cascade Timeline is now implemented with a native HTML `<dialog>` rather than a
+custom fixed-position overlay. `showModal()` provides top-layer modal behavior,
+background inertness/focus handling, and native Esc cancellation. Desktop sizing
+is ~90vw x 85vh (max 1600px wide), while <=700px is full-screen. The internal
+timeline remains horizontally scrollable. The top-right `×` and backdrop close
+paths remain. Clicking a timeline card closes the dialog and scrolls/highlights
+the corresponding main-table row; if that row is not in the normal 200-row page,
+the dashboard issues an exact-ID lookup combined with the same current filters,
+adds the row to the table, and then locates it without changing filter state.
+Validation: compileall and inline-JavaScript `node --check` pass; 37 selected
+non-Flask tests pass (34 existing + 3 native-dialog structural/navigation tests);
+static security scan reports 0 findings / 21 files. Full pytest remains blocked
+only at the two Flask-dependent collection points because Flask is absent from
+the packaging environment, so those are explicitly not counted as passes.

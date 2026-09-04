@@ -841,6 +841,39 @@ def _concept_clause(column, concept, term, negate):
 
 
 
+def _concept_filter_terms(raw_value, column, concept, operator):
+    """Build clauses for comma-separated source/host/destination terms.
+
+    Positive terms use AND by default or a single OR group when operator=or.
+    Negated terms always remain conjunctive exclusions so selecting OR cannot
+    accidentally broaden the query past an explicit !term.
+    """
+    terms = [t.strip() for t in (raw_value or "").split(",") if t.strip()]
+    positive, negative = [], []
+    for term in terms:
+        negate = term.startswith("!=") or term.startswith("!")
+        needle = (term[2:] if term.startswith("!=") else term[1:]).strip() if negate else term
+        if not needle:
+            continue
+        sql, params = _concept_clause(column, concept, needle, negate)
+        (negative if negate else positive).append((sql, params))
+
+    clauses, params = [], []
+    if positive:
+        if (operator or "").strip().lower() == "or" and len(positive) > 1:
+            clauses.append("(" + " OR ".join(sql for sql, _ in positive) + ")")
+            for _, sp in positive:
+                params.extend(sp)
+        else:
+            for sql, sp in positive:
+                clauses.append(sql)
+                params.extend(sp)
+    for sql, sp in negative:
+        clauses.append(sql)
+        params.extend(sp)
+    return clauses, params
+
+
 def _build_log_query(args, select_cols, use_fts=True):
     """Shared WHERE builder for log search + export. Supports q, source_ip,
     hostname, severity (synonym-aware), time range (from/to ISO), and ids."""
@@ -891,53 +924,23 @@ def _build_log_query(args, select_cols, use_fts=True):
                     clauses.append("message NOT LIKE ?" if neg else "message LIKE ?")
                     params.append(f"%{needle}%")
     if source_ip:
-        # Supports exclusion (!term), partial match, subnet (CIDR or dotted
-        # prefix like 192.168.1.0), comma-separated:
-        #   sophos-central     -> source contains it
-        #   192.168.1.0/24     -> any IP in that subnet
-        #   192.168.1.0        -> treated as the /24
-        #   !10.0.0.0/8        -> exclude that subnet
-        # Also matches the "source" concept's configured alias fields (Setup
-        # -> Search field aliases), so an IP that lives in a different field
-        # per source — Fortigate's src= vs Sophos's endpoint_ip — is
-        # findable with ONE search regardless of which source it came from.
-        for term in ([t.strip() for t in source_ip.split(",")] if "," in source_ip else [source_ip]):
-            if not term:
-                continue
-            negate = term.startswith("!=") or term.startswith("!")
-            needle = (term[2:] if term.startswith("!=") else term[1:]).strip() if negate else term
-            if not needle:
-                continue
-            sql, sp = _concept_clause("source_ip", "source", needle, negate)
-            clauses.append(sql)
-            params.extend(sp)
+        # Source/Host/Destination each support comma-separated values plus an
+        # explicit AND/OR operator.  Cross-category composition stays AND.
+        cc, cp = _concept_filter_terms(
+            source_ip, "source_ip", "source", args.get("source_op", "and"))
+        clauses.extend(cc)
+        params.extend(cp)
     if hostname:
-        # Same inclusion/exclusion/partial/subnet semantics as source, and
-        # the same alias-fallback behavior via the "host" concept aliases.
-        for term in ([t.strip() for t in hostname.split(",")] if "," in hostname else [hostname]):
-            if not term:
-                continue
-            negate = term.startswith("!=") or term.startswith("!")
-            needle = (term[2:] if term.startswith("!=") else term[1:]).strip() if negate else term
-            if not needle:
-                continue
-            sql, sp = _concept_clause("hostname", "host", needle, negate)
-            clauses.append(sql)
-            params.extend(sp)
+        cc, cp = _concept_filter_terms(
+            hostname, "hostname", "host", args.get("host_op", "and"))
+        clauses.extend(cc)
+        params.extend(cp)
     if destination:
-        # New: Destination previously had a column and a display, but no
-        # search box at all. Same semantics as source/host, via the
-        # "destination" concept aliases.
-        for term in ([t.strip() for t in destination.split(",")] if "," in destination else [destination]):
-            if not term:
-                continue
-            negate = term.startswith("!=") or term.startswith("!")
-            needle = (term[2:] if term.startswith("!=") else term[1:]).strip() if negate else term
-            if not needle:
-                continue
-            sql, sp = _concept_clause("destination", "destination", needle, negate)
-            clauses.append(sql)
-            params.extend(sp)
+        cc, cp = _concept_filter_terms(
+            destination, "destination", "destination",
+            args.get("destination_op", "and"))
+        clauses.extend(cc)
+        params.extend(cp)
     if severity:
         # Severity supports operators for richer filtering:
         #   informational        -> exactly that severity (synonym-aware)
@@ -1002,24 +1005,63 @@ def _build_log_query(args, select_cols, use_fts=True):
     return sql, params
 
 
+def _parse_field_filter(name, raw_value, group):
+    val = (raw_value or "").strip()
+    if not name or not val:
+        return None
+    negate = val.startswith("!=") or val.startswith("!")
+    if negate:
+        val = val[2:].strip() if val.startswith("!=") else val[1:].strip()
+    if not val:
+        return None
+    return {"field": name, "needle": val.lower(), "negate": negate,
+            "group": group}
+
+
 def _extraction_args(args):
-    """Parse extracted-field params: fields=user,action ; f_<name>=substr ;
-    sort=x_<name> ; dir=asc|desc. Returns (fields, filters, sort, direction)."""
+    """Parse extracted-field params.
+
+    f_<name>=substr remains the per-column/legacy filter contract.  New
+    repeated fc=field=value params preserve duplicate field names for the
+    query-builder (e.g. event_id=4624 OR event_id=4625).
+    """
     fields = [c.strip() for c in (args.get("fields") or "").split(",") if c.strip()][:8]
-    filters = {}
-    for k, v in args.items():
-        if k.startswith("f_") and v.strip():
-            name = k[2:].strip()
-            if name:
-                val = v.strip()
-                # a leading ! (or !=) means EXCLUDE this field=value.
-                negate = False
-                if val.startswith("!=") or val.startswith("!"):
-                    negate = True
-                    val = val[2:].strip() if val.startswith("!=") else val[1:].strip()
-                filters[name] = {"needle": val.lower(), "negate": negate}
+    filters = []
+
+    # MultiDict.lists() preserves repeated f_ values when available; plain
+    # dict-like test callers fall back to one value per key.
+    if hasattr(args, "lists"):
+        pairs = args.lists()
+    else:
+        pairs = ((k, [v]) for k, v in args.items())
+    for k, values in pairs:
+        if not k.startswith("f_"):
+            continue
+        name = k[2:].strip()
+        if not name:
+            continue
+        for raw in values:
+            spec = _parse_field_filter(name, raw, "column")
+            if spec:
+                filters.append(spec)
                 if name not in fields:
                     fields.append(name)
+
+    chip_values = args.getlist("fc") if hasattr(args, "getlist") else []
+    for raw in chip_values:
+        text = (raw or "").strip()
+        if not text or "=" not in text:
+            continue
+        name, value = text.split("=", 1)
+        name = name.strip().lower()
+        if not name or not all(ch.isalnum() or ch in "_.-" for ch in name):
+            continue
+        spec = _parse_field_filter(name, value, "chip")
+        if spec:
+            filters.append(spec)
+            if name not in fields:
+                fields.append(name)
+
     sort = (args.get("sort") or "").strip()
     direction = "desc" if (args.get("dir") or "").lower() == "desc" else "asc"
     return fields, filters, sort, direction
@@ -1051,52 +1093,38 @@ def _query_logs_extracted(args, limit, select_cols, sort_cap=100000):
         joins, join_params = [], []
         extra_where, extra_params = [], []
         ji = 0
-        # fc_op=or combines the POSITIVE field filters (the query-builder
-        # chips) with OR instead of the default AND. Negated filters (!term)
-        # always stay AND'd in regardless of this mode — "match ANY of these,
-        # but exclude that" is a coherent combination; OR-ing an exclusion
-        # in would defeat the purpose of excluding it. Default (no fc_op, or
-        # any value other than "or") is byte-identical to prior behavior, so
-        # every existing saved link/bookmark keeps working unchanged.
+        # fc_op only applies to explicit query-builder chips. Per-column f_
+        # filters remain ANDed with the rest of the query. For compatibility,
+        # an old URL with fc_op=or but no repeated fc= params keeps the former
+        # behavior and ORs its positive f_ filters. Negated filters always AND.
         or_mode = (args.get("fc_op") or "").strip().lower() == "or"
+        has_explicit_chips = any(spec.get("group") == "chip" for spec in filters)
         or_group, or_group_params = [], []
-        for name, spec in filters.items():
-            # tolerate the older shape (plain string) as an include filter
-            if isinstance(spec, dict):
-                needle, negate = spec.get("needle", ""), spec.get("negate", False)
-            else:
-                needle, negate = spec, False
+        for spec in filters:
+            name = spec.get("field", "")
+            needle = spec.get("needle", "")
+            negate = spec.get("negate", False)
+            group = spec.get("group", "column")
             if negate:
-                # EXCLUDE: no row for this field matching the value.
                 extra_where.append(
                     "NOT EXISTS (SELECT 1 FROM log_fields fx WHERE fx.log_id = l.id "
                     "AND fx.field = ? AND LOWER(fx.value) LIKE ?)")
                 extra_params.extend([name, f"%{needle}%"])
+                continue
+
+            belongs_to_or = or_mode and (group == "chip" or not has_explicit_chips)
+            if belongs_to_or:
+                or_group.append(
+                    "EXISTS (SELECT 1 FROM log_fields fo WHERE fo.log_id = l.id "
+                    "AND fo.field = ? AND LOWER(fo.value) LIKE ?)")
+                or_group_params.extend([name, f"%{needle}%"])
             else:
-                if or_mode:
-                    # kept in a SEPARATE accumulator (not extra_params) because
-                    # this clause is only appended to extra_where AFTER the
-                    # loop ends (it needs every chip collected first) — if its
-                    # params were interleaved into extra_params at loop time,
-                    # alongside negate params that DO land in extra_where
-                    # immediately, the final param list would be ordered by
-                    # "when appended" while the clause list is ordered by
-                    # "where appended", desyncing every ? placeholder after
-                    # the first negate+OR mix. Appending both the clause and
-                    # its params after the loop, together, keeps them aligned.
-                    or_group.append(
-                        "EXISTS (SELECT 1 FROM log_fields fo WHERE fo.log_id = l.id "
-                        "AND fo.field = ? AND LOWER(fo.value) LIKE ?)")
-                    or_group_params.extend([name, f"%{needle}%"])
-                else:
-                    joins.append(
-                        f"JOIN log_fields f{ji} ON f{ji}.log_id = l.id "
-                        f"AND f{ji}.field = ? AND LOWER(f{ji}.value) LIKE ?")
-                    join_params.extend([name, f"%{needle}%"])
-                    ji += 1
+                joins.append(
+                    f"JOIN log_fields f{ji} ON f{ji}.log_id = l.id "
+                    f"AND f{ji}.field = ? AND LOWER(f{ji}.value) LIKE ?")
+                join_params.extend([name, f"%{needle}%"])
+                ji += 1
         if or_group:
-            # single positive filter behaves the same whether "AND" or "OR"
-            # is selected, so this only changes behavior with 2+ chips.
             extra_where.append("(" + " OR ".join(or_group) + ")")
             extra_params.extend(or_group_params)
         # combine base WHERE with any exclusion clauses

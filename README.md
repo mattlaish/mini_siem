@@ -23,6 +23,8 @@ mini_siem/
   requirements.txt
 ```
 
+> **Production installation:** see [`INSTALLATION.md`](INSTALLATION.md) for the one-command systemd setup, including automatic creation of the `siem` service account and `minisiem` group.
+
 ## 1. Install dependencies
 
 ```bash
@@ -409,6 +411,28 @@ filters. SQLite now runs in WAL journal mode for much higher ingest
 throughput (~4,500 ev/s with indexing in testing); you'll see
 `siem.db-wal`/`siem.db-shm` files beside the DB — that's normal. Double-clicking an **alert** opens its related logs
 in the log search view.
+
+**Log Search boolean controls and timeline.** Source, Host, and Destination each
+accept comma-separated terms with a per-box AND/OR selector. The operator is
+scoped to positive terms inside that one box; exclusions (`!term`) always apply,
+and different filter families remain conjunctive. The direct `field=value`
+query-builder has the same AND/OR control and preserves repeated field names, so
+queries such as `event_id=4624 OR event_id=4625` are representable without one
+value overwriting the other. Message full-text search and field filters are
+executed together in the same query — field OR never turns them into a
+message-OR-field query. **Cascade timeline** reuses the exact active Log Search
+filters and opens in a native HTML `<dialog>` above the dashboard rather than
+inserting itself into the log table flow. On desktop the dialog is approximately
+90% of the viewport width and 85% of its height; on small screens it becomes
+full-screen. The timeline itself remains horizontally scrollable and renders up
+to 500 results chronologically, showing the displayed range,
+source-to-destination/host path, a compact first-sentence Message summary, and a
+recognized Event ID when present. Close it with the top-right `×`, `Esc`, or the
+shaded backdrop. Clicking an event closes the dialog and locates/highlights that
+log in the main table; if it is outside the current 200-row page, the dashboard
+fetches that exact ID under the same active filters and adds it to the current
+table before scrolling. Search filters are not changed. Timeline timestamps use
+the compact form `Jul 25 2011 23:15` in the browser's local time.
 
 ### How normalization works — the three layers
 

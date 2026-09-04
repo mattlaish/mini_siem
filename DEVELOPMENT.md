@@ -238,3 +238,94 @@ The configured windows include both before-trigger and after-trigger scope. Auto
 - Do not run all three profiles for every alert.
 - Do not dump an unbounded Long-profile raw event set into the LLM.
 - Do not allow the LLM to perform blocking enforcement actions; this design concerns investigation context and analysis only.
+
+
+## 2026-09-03 — Service-account installation documentation
+
+- Added `INSTALLATION.md` as the canonical Linux installation guide.
+- Documented the `install-services.sh` identity contract explicitly: dedicated non-login system account `siem`, primary group `minisiem`, home `/var/lib/mini-siem`, dashboard running as `siem:minisiem`, and listener running as `root:minisiem` only for privileged port 514.
+- Documented that operators do not create or substitute a personal user for `siem`; the installer creates/reconciles the service account and validates its runtime access.
+- Added install verification commands (`getent`, `id`, `systemctl`, `ss`, process ownership) plus upgrade guidance that preserves `.git/` and re-runs `install-services.sh` after application-file updates.
+- README now links directly to the canonical installation guide.
+
+## 2026-09-03 — Log Search scoped boolean filters and cascade timeline
+
+Implemented dashboard/query changes:
+
+- Source, Host, and Destination now expose explicit AND/OR selectors for their
+  comma-separated positive terms. OR is scoped to that one concept; other
+  filter families stay ANDed, and `!term`/`!=term` exclusions always stay
+  conjunctive.
+- Direct `field=value` filters now use repeated `fc=` query parameters rather
+  than overwriting `f_<field>` values in `URLSearchParams`. This preserves
+  duplicate field names such as `event_id=4624 OR event_id=4625`. Existing
+  `f_<field>` per-column filters remain supported, and old `fc_op=or` links
+  without explicit `fc=` parameters retain their legacy positive-filter OR
+  behavior.
+- The query builder keeps message text search in the base WHERE and composes
+  extracted-field joins/EXISTS predicates with that base WHERE using AND.
+  Therefore text search and field filtering are guaranteed to apply together;
+  `fc_op=or` only changes the positive field-chip subgroup.
+- Added a toggleable Cascade Timeline beside Export filtered. It reuses the
+  exact active Log Search parameters, overrides only sort/limit for a
+  chronological presentation, renders up to 500 events on a horizontally
+  scrollable time-proportional axis, and shows the actual displayed range,
+  source -> destination/host route, first meaningful Message sentence/clause,
+  and a recognized Event ID badge. Time labels use `Jul 25 2011 23:15` style in
+  browser-local time.
+- Added Help/README documentation for operator scoping and timeline behavior.
+- Follow-up UI patch: Cascade Timeline now opens as an `aria-modal` overlay above
+  the dashboard instead of expanding inline. It has a top-right `×`, supports
+  `Esc` and shaded-backdrop dismissal, locks background scrolling while open,
+  traps keyboard focus inside the dialog, restores focus on close, and preserves
+  the underlying Log Search filters/table state. Clicking a timeline card that
+  has a visible matching table row closes the overlay and scrolls to that row.
+
+Verification completed in the packaging environment:
+
+- `dashboard.py` and the new search-logic regression test compile successfully.
+- Dashboard inline JavaScript passes `node --check`.
+- Exact-function SQLite harness: 11 scoped boolean/filter-composition checks
+  passed, including duplicate-field OR, Source/Host/Destination OR, exclusion
+  behavior, and message-text + field-filter conjunction.
+- Exact-function SQLite FTS5 harness: text + field composition passed with FTS5
+  enabled as well as with the LIKE fallback harness.
+- Timeline helper checks passed for `Jul 25 2011 23:15` formatting, first-sentence
+  summary extraction, Event ID recognition, and route formatting.
+- Full Flask route pytest remains not runnable in this packaging environment
+  because Flask/Werkzeug are not installed; the added
+  `tests/test_log_search_logic.py` is intended for the normal requirements-backed
+  CI/runtime test environment and is not counted as passed here.
+- Overlay follow-up validation: `python -m compileall -q .` and dashboard inline
+  JavaScript `node --check` passed; structural assertions confirmed the modal,
+  close control, Escape/backdrop dismissal, body-scroll lock, focus restoration,
+  and removal of the old inline `timelinePanel`. The static security scan reports
+  0 findings across 21 files. The non-Flask regression selection reports 34
+  passed; its 2 import tests that transitively require `dashboard.py` fail only
+  because Flask is absent and are not counted as passes.
+
+
+## 2026-09-03 — Native dialog Cascade Timeline follow-up
+
+- Replaced the hand-built fixed overlay/focus trap with the browser-native HTML
+  `<dialog>` API (`showModal()` / `close()`). Native modal semantics now provide
+  top-layer rendering, background inertness, focus containment, and Escape
+  handling without duplicating those mechanisms in dashboard JavaScript.
+- Desktop sizing is approximately 90vw x 85vh (capped at 1600px wide). At
+  <=700px the dialog becomes full-screen using 100vw x 100dvh with a 100vh
+  fallback. The timeline content keeps its own horizontal scroller.
+- Preserved the explicit top-right `×` and shaded-backdrop close behaviors.
+- Timeline-card navigation now always attempts to return to the selected log in
+  the main table. If the selected timeline event is outside the normal 200-row
+  table page, `loadLogs({focusId})` performs an additional exact-ID request using
+  the same active filters, appends that matching row without altering the filter
+  state, scrolls it into view, and briefly highlights it.
+- Removed manual body-scroll locking and custom Tab focus trapping because native
+  modal dialog semantics own those responsibilities.
+- Verification for this follow-up: `python -m compileall -q .` passed; dashboard
+  inline JavaScript passed `node --check`; 37 selected non-Flask tests passed
+  (the previous 34 plus 3 native-dialog structural/navigation tests); static
+  security scan reported 0 findings across 21 files. Full pytest remains blocked
+  at collection for `test_dashboard_routes.py` and `test_log_search_logic.py`
+  because Flask is not installed in this packaging environment; those tests are
+  not counted as passed.

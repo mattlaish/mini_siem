@@ -113,16 +113,36 @@
       <h2>Log search</h2>
       <p>The <strong>message</strong> box does a full-text search of the log message (prefix-matching on word tokens,
         via FTS). <strong>Source</strong>, <strong>Host</strong>, and <strong>Destination</strong> each search their
-        base column plus any configured aliases (see below). All boxes support <span class="mono">!term</span> to
-        exclude, comma-separated terms, and — for the IP-bearing fields — subnet matching
-        (<span class="mono">192.168.1.0/24</span>, or a dotted prefix like <span class="mono">192.168.1</span>).</p>
+        base column plus any configured aliases (see below). Those three boxes accept comma-separated terms and now
+        have their own <strong>AND / OR</strong> selector. The selector only controls terms <em>inside that box</em>:
+        for example <span class="mono">sophos,firewall</span> with Source=OR matches either source. Different filter
+        families still combine with AND, so Source=OR cannot bypass a Host, Destination, message, field, severity,
+        or time filter. <span class="mono">!term</span> exclusions always remain mandatory. IP-bearing fields also
+        support subnet matching (<span class="mono">192.168.1.0/24</span>, or a dotted prefix such as
+        <span class="mono">192.168.1</span>).</p>
 
       <h3>Field filters &amp; columns</h3>
-      <p>Click any log row to expand it and see every extracted field with its exact name and value. Click a field
-        name to add it as a column; click the <span class="mono">+</span> (or drag it) to add it as a filter
-        condition. With two or more filter conditions, an <strong>AND / OR</strong> toggle appears to control how
-        they combine. Extracted fields are materialized at ingest into an indexed table, so filtering and sorting
-        search your entire history, not just the visible page.</p>
+      <p>Type <span class="mono">field=value</span> directly in the field box and press Enter, or expand any log row
+        and click/drag its <span class="mono">+</span>. The field box has the same <strong>AND / OR</strong> selector;
+        repeated names are preserved, so <span class="mono">event_id=4624</span> OR
+        <span class="mono">event_id=4625</span> works as expected. <span class="mono">field!=value</span> is an
+        exclusion and always remains mandatory. Message text and field filters are applied in the <strong>same
+        query</strong>: a text search plus a field chip must satisfy both; field OR only changes how the positive
+        field chips combine with each other. Click a field name to add it as a display column. Extracted fields are
+        materialized at ingest into an indexed table, so filtering and sorting search your entire history, not just
+        the visible page.</p>
+
+      <h3>Cascade timeline</h3>
+      <p><strong>Cascade timeline</strong> uses the exact current Log Search filters and opens in a native HTML
+        <span class="mono">&lt;dialog&gt;</span> above the dashboard, so it does not push the log table down or navigate
+        away from Log Search. On desktop it uses about 90% of the viewport width and 85% of the height; on small
+        screens it becomes full-screen. The timeline remains horizontally scrollable and renders up to 500 matching
+        events chronologically. Each card shows time in the form <span class="mono">Jul 25 2011 23:15</span>, a compact
+        source-to-destination/host path, the first meaningful sentence or clause from Message, and an Event ID badge
+        when one can be recognized. Close it with the top-right <strong>×</strong>, <span class="mono">Esc</span>, or
+        the shaded backdrop. Clicking a card closes the dialog and locates/highlights that event in the main log table;
+        if the row is outside the normal 200-row page, the dashboard fetches that exact ID under the same filters and
+        appends it before scrolling. The active search filters are not changed.</p>
     </div>
 
     <div class="panel" id="aliases">

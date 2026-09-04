@@ -47,6 +47,45 @@
   .sev-informational, .sev-notice, .sev-debug { background: var(--ok-soft); color: var(--ok); border-color: var(--ok); }
   .table-scroll { max-height: 480px; overflow-y: auto; }
   .muted { color: var(--ink-soft); font-size: 12px; }
+  .logic-filter { display:flex; flex:1; min-width:230px; align-items:stretch; }
+  .logic-filter input[type=text] { min-width:0; border-radius:6px 0 0 6px; }
+  .logic-filter select.logic-op { flex:0 0 64px; min-width:64px; padding:8px 5px; border-left:0; border-radius:0 6px 6px 0; font-family:var(--mono); font-size:10.5px; font-weight:700; background:#fff; color:var(--ink-soft); }
+  .logic-filter.field-logic { min-width:300px; }
+  #timelineBtn.active { background:var(--accent); color:#fff; border-color:var(--accent); }
+  .timeline-dialog { width:min(1600px,90vw); min-width:0; height:85vh; max-width:none; max-height:none; margin:auto; padding:0; background:linear-gradient(#fbfcfd,#f5f8fb); border:1px solid #aeb9c4; border-radius:10px; box-shadow:0 18px 60px rgba(0,0,0,.34); overflow:hidden; }
+  .timeline-dialog[open] { display:flex; flex-direction:column; }
+  .timeline-dialog::backdrop { background:rgba(16,25,36,.62); }
+  .timeline-head { display:flex; gap:12px; align-items:flex-start; justify-content:space-between; flex-wrap:nowrap; padding:13px 15px 11px; border-bottom:1px solid var(--line); background:#fff; }
+  .timeline-head-main { min-width:0; flex:1; }
+  .timeline-head-actions { display:flex; gap:12px; align-items:flex-start; flex:0 0 auto; }
+  .timeline-title { font-size:14px; font-weight:700; }
+  .timeline-meta { margin-top:3px; font-family:var(--mono); font-size:10.5px; color:var(--ink-soft); line-height:1.45; overflow-wrap:anywhere; }
+  .timeline-close { width:36px; height:36px; padding:0; border-radius:7px; border:1px solid var(--line); background:#fff; color:var(--ink); font-size:25px; line-height:1; font-weight:400; cursor:pointer; }
+  .timeline-close:hover { border-color:var(--accent); color:var(--accent); }
+  .timeline-close:focus-visible { outline:3px solid var(--accent-soft); outline-offset:2px; }
+  .timeline-scroll { flex:1 1 auto; min-height:0; overflow-x:auto; overflow-y:auto; padding:0; background:linear-gradient(#fbfcfd,#f5f8fb); scrollbar-gutter:stable; }
+  .timeline-canvas { position:relative; height:560px; min-width:100%; }
+  .timeline-focus-row { background:var(--accent-soft) !important; outline:2px solid var(--accent); outline-offset:-2px; }
+  @media (max-width:700px) {
+    .timeline-dialog { width:100vw; height:100vh; height:100dvh; margin:0; border:0; border-radius:0; }
+    .timeline-head { padding:10px; }
+    .timeline-head-actions { gap:7px; }
+    .timeline-meta { font-size:9.5px; }
+  }
+  .timeline-axis { position:absolute; height:2px; background:#708090; z-index:1; }
+  .timeline-axis:before, .timeline-axis:after { content:''; position:absolute; top:-3px; width:1px; height:8px; background:#708090; }
+  .timeline-axis:before { left:0; } .timeline-axis:after { right:0; }
+  .timeline-tick { position:absolute; width:1px; height:9px; background:#8a99a8; transform:translateX(-50%); }
+  .timeline-tick-label { position:absolute; transform:translateX(-50%); white-space:nowrap; font-family:var(--mono); font-size:9.5px; color:var(--ink-soft); }
+  .timeline-marker { position:absolute; top:0; width:0; height:100%; z-index:2; }
+  .timeline-dot { position:absolute; left:-5px; width:10px; height:10px; border-radius:50%; background:#fff; border:2px solid var(--accent); z-index:4; }
+  .timeline-stem { position:absolute; left:-1px; width:2px; background:#9aa7b4; z-index:1; }
+  .timeline-card { position:absolute; width:190px; left:-95px; min-height:70px; padding:7px 8px; background:#fff; border:1px solid #bfc9d3; border-radius:6px; box-shadow:0 2px 6px rgba(22,32,43,.15); z-index:3; }
+  .timeline-card-time { font-family:var(--mono); font-size:9.5px; color:var(--ink-soft); margin-bottom:3px; white-space:nowrap; }
+  .timeline-card-route { font-family:var(--mono); font-size:10px; color:var(--accent); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .timeline-card-summary { margin-top:3px; font-size:11px; font-weight:600; line-height:1.25; max-height:42px; overflow:hidden; }
+  .timeline-event-id { display:inline-block; margin-top:4px; padding:1px 5px; border-radius:10px; background:var(--accent-soft); color:var(--accent); font-family:var(--mono); font-size:9px; }
+  .timeline-empty { padding:28px; text-align:center; color:var(--ink-soft); font-size:12px; }
 </style>
 </head>
 <body>
@@ -110,11 +149,20 @@
     <h2>Log search</h2>
     <div class="toolbar">
       <input type="text" id="qBox" placeholder="Search message… (use !term to exclude, comma-separate)" title="Examples:&#10;  error           contains 'error'&#10;  !tasklist       excludes 'tasklist'&#10;  error, !debug   contains 'error' and not 'debug'&#10;  !tasklist, !conhost   excludes both">
-      <input list="srcList" type="text" id="ipBox" placeholder="Source…">
+      <div class="logic-filter" title="Comma-separated Source terms. AND = every positive term must match; OR = any positive term may match. !term exclusions always apply.">
+        <input list="srcList" type="text" id="ipBox" placeholder="Source…">
+        <select id="sourceOp" class="logic-op" aria-label="Source term operator"><option value="and">AND</option><option value="or">OR</option></select>
+      </div>
       <datalist id="srcList"></datalist>
-      <input list="hostList" type="text" id="hostBox" placeholder="Host…">
+      <div class="logic-filter" title="Comma-separated Host terms. AND = every positive term must match; OR = any positive term may match. !term exclusions always apply.">
+        <input list="hostList" type="text" id="hostBox" placeholder="Host…">
+        <select id="hostOp" class="logic-op" aria-label="Host term operator"><option value="and">AND</option><option value="or">OR</option></select>
+      </div>
       <datalist id="hostList"></datalist>
-      <input list="destList" type="text" id="destBox" placeholder="Destination…" title="Searches the Destination column, plus any configured destination aliases (Setup -> Search field aliases). Supports !term exclusion and comma-separated terms.">
+      <div class="logic-filter" title="Comma-separated Destination terms. AND = every positive term must match; OR = any positive term may match. !term exclusions always apply.">
+        <input list="destList" type="text" id="destBox" placeholder="Destination…" title="Searches the Destination column plus configured destination aliases.">
+        <select id="destinationOp" class="logic-op" aria-label="Destination term operator"><option value="and">AND</option><option value="or">OR</option></select>
+      </div>
       <datalist id="destList"></datalist>
       <select id="sevBox" title="Filter by severity. 'exactly' matches one level; 'and above' shows that level and anything more severe; 'exclude' hides that level.">
         <option value="">All severities</option>
@@ -134,7 +182,10 @@
           <option value="!=debug">not debug</option>
         </optgroup>
       </select>
-      <input type="text" id="fieldFilterBox" placeholder="field=value (e.g. action=accept)" title="Filter by any extracted field. Type field=value and press Enter — e.g. action=accept, user=matt. Works on any field, no need to add a column first." style="border-color:var(--accent);min-width:210px;">
+      <div class="logic-filter field-logic" title="Add multiple field=value filters with Enter. AND matches all positive field filters; OR matches any positive field filter. Text search and every other filter still apply at the same time.">
+        <input type="text" id="fieldFilterBox" placeholder="field=value (e.g. action=accept)" title="Type field=value and press Enter. field!=value is also accepted." style="border-color:var(--accent);">
+        <select id="fieldOp" class="logic-op" aria-label="Field filter operator"><option value="and">AND</option><option value="or">OR</option></select>
+      </div>
     </div>
     <div id="fieldChips" style="display:none;gap:6px;flex-wrap:wrap;align-items:center;margin-top:-4px;margin-bottom:8px;padding:4px;border-radius:6px;transition:background .1s,border-color .1s;border:1px dashed transparent;"></div>
     <div id="xfilterBar" class="toolbar" style="display:none;"></div>
@@ -150,11 +201,26 @@
         <option value="json">JSON</option>
       </select>
       <button id="exportBtn" style="background:#fff;color:var(--accent);border:1px solid var(--accent);">Export filtered</button>
+      <button id="timelineBtn" style="background:#fff;color:var(--accent);border:1px solid var(--accent);" title="Show the currently filtered events as a cascade timeline">Cascade timeline</button>
     </div>
     <div id="drillBanner" style="display:none;align-items:center;gap:10px;margin-bottom:10px;padding:8px 12px;border:1px solid var(--accent);background:var(--accent-soft);border-radius:6px;font-size:12.5px;">
       <span id="drillText"></span>
       <button id="drillClear" style="padding:3px 10px;font-size:11px;border:1px solid var(--accent);background:#fff;color:var(--accent);border-radius:6px;cursor:pointer;font-weight:600;">Show all logs</button>
     </div>
+    <dialog id="timelineDialog" class="timeline-dialog" aria-labelledby="timelineTitle">
+      <div class="timeline-head">
+        <div class="timeline-head-main">
+          <div id="timelineTitle" class="timeline-title">Cascade timeline</div>
+          <div id="timelineRange" class="timeline-meta"></div>
+          <div id="timelineFilters" class="timeline-meta"></div>
+        </div>
+        <div class="timeline-head-actions">
+          <span id="timelineCount" class="muted"></span>
+          <button id="timelineClose" class="timeline-close" type="button" aria-label="Close cascade timeline" title="Close timeline (Esc)">&times;</button>
+        </div>
+      </div>
+      <div id="timelineScroll" class="timeline-scroll"><div id="timelineCanvas" class="timeline-canvas"></div></div>
+    </dialog>
     <div class="table-scroll">
       <table>
         <thead><tr id="logsHead"><th>Time</th><th>Log source</th><th>Net source</th><th>Severity</th><th>Host</th><th>Destination</th><th>App</th><th>Message</th></tr></thead>
@@ -393,25 +459,43 @@ let xDir = 'asc';
 let baseSort = '';         // base column key (received_at, source_ip, …) or ''
 let baseDir = 'desc';
 let fieldChips = [];       // inline field=value filters, e.g. [{field:'action', value:'accept'}]
-let fieldChipOp = 'and';   // 'and' | 'or' — how multiple chips combine (only matters with 2+)
+let fieldChipOp = 'and';   // 'and' | 'or' — combines positive field chips only
+let timelineOpen = false;
+let timelinePreviousFocus = null;
+let timelineRestoreFocusOnClose = true;
+
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+function chipDisplay(c) {
+  const raw = String(c.value ?? '');
+  return raw.startsWith('!')
+    ? `${c.field}!=${raw.slice(1)}`
+    : `${c.field}=${raw}`;
+}
 
 function renderFieldChips() {
   const bar = document.getElementById('fieldChips');
+  const topOp = document.getElementById('fieldOp');
+  if (topOp && topOp.value !== fieldChipOp) topOp.value = fieldChipOp;
   bar.style.display = 'flex';
   if (!fieldChips.length) {
-    bar.innerHTML = '<span class="muted" style="font-size:11px;font-style:italic;">drag a field here, or click a field\'s + in an expanded row, to filter by it</span>';
+    bar.innerHTML = '<span class="muted" style="font-size:11px;font-style:italic;">type field=value above, drag a field here, or click a field\'s + in an expanded row</span>';
     return;
   }
   const opToggle = fieldChips.length > 1
     ? `<span style="display:inline-flex;border:1px solid var(--line);border-radius:6px;overflow:hidden;font-size:11px;">`
-      + `<span class="chip-op" data-op="and" style="padding:3px 8px;cursor:pointer;background:${fieldChipOp==='and'?'var(--accent)':'transparent'};color:${fieldChipOp==='and'?'#fff':'var(--ink-soft)'};" title="Match ALL chips">AND</span>`
-      + `<span class="chip-op" data-op="or" style="padding:3px 8px;cursor:pointer;background:${fieldChipOp==='or'?'var(--accent)':'transparent'};color:${fieldChipOp==='or'?'#fff':'var(--ink-soft)'};" title="Match ANY chip">OR</span>`
+      + `<span class="chip-op" data-op="and" style="padding:3px 8px;cursor:pointer;background:${fieldChipOp==='and'?'var(--accent)':'transparent'};color:${fieldChipOp==='and'?'#fff':'var(--ink-soft)'};" title="Match ALL positive field filters">AND</span>`
+      + `<span class="chip-op" data-op="or" style="padding:3px 8px;cursor:pointer;background:${fieldChipOp==='or'?'var(--accent)':'transparent'};color:${fieldChipOp==='or'?'#fff':'var(--ink-soft)'};" title="Match ANY positive field filter">OR</span>`
       + `</span>`
     : '';
   bar.innerHTML = '<span class="muted" style="font-size:11px;align-self:center;">field filters:</span>' + opToggle
     + fieldChips.map((c, i) =>
         `<span style="display:inline-flex;align-items:center;gap:6px;background:var(--accent-soft);color:var(--accent);font-size:12px;font-family:var(--mono);padding:3px 8px;border-radius:6px;">`
-        + `${c.field}=${c.value}`
+        + `${escapeHtml(chipDisplay(c))}`
         + `<span class="chip-del" data-i="${i}" style="cursor:pointer;font-weight:700;" title="Remove">×</span></span>`).join('');
   bar.querySelectorAll('.chip-del').forEach(el => el.addEventListener('click', () => {
     fieldChips.splice(parseInt(el.dataset.i), 1);
@@ -450,9 +534,13 @@ function renderFieldChips() {
 
 function addFieldChip(raw) {
   raw = String(raw || '').trim();
-  const m = raw.match(/^([A-Za-z][A-Za-z0-9_.\-]{0,40})\s*=\s*(.+)$/);
+  const m = raw.match(/^([A-Za-z][A-Za-z0-9_.\-]{0,40})\s*(!=|=)\s*(.+)$/);
   if (!m) { return false; }
-  const field = m[1].toLowerCase(), value = m[2].trim();
+  const field = m[1].toLowerCase();
+  const entered = m[3].trim();
+  if (!entered) return false;
+  // Keep negation encoded in the value so the wire format stays compact.
+  const value = (m[2] === '!=' ? '!' : '') + entered;
   if (!fieldChips.some(c => c.field === field && c.value === value)) {
     fieldChips.push({field, value});
     renderFieldChips();
@@ -574,20 +662,28 @@ function renderXColumns() {
 
 function currentFilterParams() {
   const params = new URLSearchParams();
-  // extracted columns + inline field-filter chips both need their fields extracted
+  // Extracted columns + inline field-filter chips both need their fields returned.
   const chipFields = fieldChips.map(c => c.field);
   const allFields = [...new Set([...xCols, ...chipFields])];
   if (allFields.length) params.set('fields', allFields.join(','));
-  // per-column filter boxes
+
+  // Per-column extracted-field filters are always conjunctive with the rest
+  // of the query. Query-builder chips use their own repeated fc= wire format
+  // so duplicate field names (e.g. event_id=4624 OR event_id=4625) are kept.
+  let hasXFilter = false;
   document.querySelectorAll('.xcol-filter').forEach(inp => {
-    if (inp.value.trim()) params.set('f_' + inp.dataset.col, inp.value.trim());
+    if (inp.value.trim()) {
+      params.append('f_' + inp.dataset.col, inp.value.trim());
+      hasXFilter = true;
+    }
   });
-  // inline field=value chips (same f_<field> mechanism)
-  fieldChips.forEach(c => params.set('f_' + c.field, c.value));
+  fieldChips.forEach(c => params.append('fc', `${c.field}=${c.value}`));
   if (fieldChips.length > 1 && fieldChipOp === 'or') params.set('fc_op', 'or');
-  // sort: extracted-field sort and base-column sort are mutually exclusive
+
+  // Sort: extracted-field sort and base-column sort are mutually exclusive.
   if (xSort) { params.set('sort', xSort); params.set('dir', xDir); }
   else if (baseSort) { params.set('sort', baseSort); params.set('dir', baseDir); }
+
   const q = document.getElementById('qBox').value.trim();
   const ip = document.getElementById('ipBox').value.trim();
   const host = document.getElementById('hostBox').value.trim();
@@ -595,12 +691,22 @@ function currentFilterParams() {
   const sev = document.getElementById('sevBox').value;
   const from = document.getElementById('fromBox').value;
   const to = document.getElementById('toBox').value;
-  const anyFilter = q || ip || host || dest || sev || from || to || fieldChips.length;
+  const anyFilter = q || ip || host || dest || sev || from || to || fieldChips.length || hasXFilter;
   if (urlIds && !anyFilter) params.set('ids', urlIds);  // drill-down until user filters
+
   if (q) params.set('q', q);
-  if (ip) params.set('source_ip', ip);
-  if (host) params.set('hostname', host);
-  if (dest) params.set('destination', dest);
+  if (ip) {
+    params.set('source_ip', ip);
+    if (document.getElementById('sourceOp').value === 'or') params.set('source_op', 'or');
+  }
+  if (host) {
+    params.set('hostname', host);
+    if (document.getElementById('hostOp').value === 'or') params.set('host_op', 'or');
+  }
+  if (dest) {
+    params.set('destination', dest);
+    if (document.getElementById('destinationOp').value === 'or') params.set('destination_op', 'or');
+  }
   if (sev) params.set('severity', sev);
   if (from) params.set('from', new Date(from).toISOString());
   if (to) params.set('to', new Date(to).toISOString());
@@ -616,15 +722,248 @@ async function loadFacets() {
   } catch (e) { /* non-fatal */ }
 }
 
-async function loadLogs() {
+const TIMELINE_LIMIT = 500;
+
+function formatTimelineDate(value) {
+  const d = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(d.getTime())) return 'unknown time';
+  const mon = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][d.getMonth()];
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  return `${mon} ${d.getDate()} ${d.getFullYear()} ${hh}:${mm}`;
+}
+
+function timelineEventId(message) {
+  const text = String(message || '');
+  const patterns = [
+    /\bEvent\s*ID\s*[:=]?\s*(\d{1,10})\b/i,
+    /\bEventID\s*[:=]\s*["']?(\d{1,10})\b/i,
+    /["']event_?id["']\s*:\s*["']?(\d{1,10})\b/i,
+    /<EventID[^>]*>(\d{1,10})<\/EventID>/i
+  ];
+  for (const re of patterns) {
+    const m = text.match(re);
+    if (m) return m[1];
+  }
+  return '';
+}
+
+function timelineSummary(message, fallback) {
+  const text = String(message || '').replace(/\s+/g, ' ').trim();
+  if (!text) return String(fallback || 'Log event');
+  // The first sentence/clause is intentionally preferred: event messages
+  // normally put the human-readable event meaning there, before attributes.
+  const first = text.match(/^(.{1,180}?)(?:[.!?](?=\s|$)|\s+[A-Za-z0-9_.-]+=|$)/);
+  let out = (first && first[1] ? first[1] : text.slice(0, 180)).trim();
+  if (out.length > 132) out = out.slice(0, 129).trimEnd() + '…';
+  return out || String(fallback || 'Log event');
+}
+
+function timelineRoute(row) {
+  const from = row.endpoint_ip || row.source_ip || row.peer_ip || row.hostname || 'unknown';
+  let to = row.destination || row.hostname || row.app_name || '';
+  if (to && String(to) === String(from)) to = row.app_name || '';
+  return to ? `${from} → ${to}` : String(from);
+}
+
+function currentFilterSummary() {
+  const parts = [];
+  const q = document.getElementById('qBox').value.trim();
+  const source = document.getElementById('ipBox').value.trim();
+  const host = document.getElementById('hostBox').value.trim();
+  const dest = document.getElementById('destBox').value.trim();
+  const sev = document.getElementById('sevBox').value;
+  if (q) parts.push(`text=${q}`);
+  if (source) parts.push(`source[${document.getElementById('sourceOp').value.toUpperCase()}]=${source}`);
+  if (host) parts.push(`host[${document.getElementById('hostOp').value.toUpperCase()}]=${host}`);
+  if (dest) parts.push(`destination[${document.getElementById('destinationOp').value.toUpperCase()}]=${dest}`);
+  if (sev) parts.push(`severity=${sev}`);
+  if (fieldChips.length) parts.push(`field[${fieldChipOp.toUpperCase()}]=${fieldChips.map(chipDisplay).join(', ')}`);
+  document.querySelectorAll('.xcol-filter').forEach(inp => {
+    if (inp.value.trim()) parts.push(`${inp.dataset.col}=${inp.value.trim()}`);
+  });
+  return parts.length ? parts.join(' AND ') : 'all logs';
+}
+
+function renderTimeline(rows) {
+  const canvas = document.getElementById('timelineCanvas');
+  const scroll = document.getElementById('timelineScroll');
+  const range = document.getElementById('timelineRange');
+  const filters = document.getElementById('timelineFilters');
+  const count = document.getElementById('timelineCount');
+  filters.textContent = 'Filters: ' + currentFilterSummary();
+  count.textContent = `${rows.length}${rows.length >= TIMELINE_LIMIT ? '+' : ''} event${rows.length === 1 ? '' : 's'}`;
+
+  if (!rows.length) {
+    const from = document.getElementById('fromBox').value;
+    const to = document.getElementById('toBox').value;
+    range.textContent = (from || to) ? `Selected range: ${from ? formatTimelineDate(from) : '…'} → ${to ? formatTimelineDate(to) : '…'}` : 'No matching event range';
+    canvas.style.width = '100%';
+    canvas.innerHTML = '<div class="timeline-empty">No matching events for the current filters.</div>';
+    return;
+  }
+
+  const ordered = rows.slice().sort((a,b) => new Date(a.received_at) - new Date(b.received_at));
+  const times = ordered.map(r => new Date(r.received_at).getTime());
+  const minT = Math.min(...times), maxT = Math.max(...times);
+  range.textContent = `Range: ${formatTimelineDate(minT)} → ${formatTimelineDate(maxT)}`;
+
+  const viewport = Math.max(scroll.clientWidth || 0, 960);
+  const width = Math.max(viewport, Math.min(60000, 260 + ordered.length * 145));
+  const leftPad = 110, rightPad = 110, usable = Math.max(1, width - leftPad - rightPad);
+  const axisY = 260;
+  const aboveY = [14, 91, 168];
+  const belowY = [286, 363, 440];
+  const lastX = [-Infinity,-Infinity,-Infinity,-Infinity,-Infinity,-Infinity];
+  const laneFor = (x, i) => {
+    const preferredSide = i % 2;
+    const candidates = preferredSide === 0 ? [0,1,2,3,4,5] : [3,4,5,0,1,2];
+    for (const lane of candidates) {
+      if (x - lastX[lane] >= 205) { lastX[lane] = x; return lane; }
+    }
+    let best = candidates[0];
+    for (const lane of candidates) if (lastX[lane] < lastX[best]) best = lane;
+    lastX[best] = x;
+    return best;
+  };
+
+  const posFor = (t, i) => {
+    if (maxT === minT) return leftPad + (ordered.length === 1 ? usable / 2 : (usable * i / Math.max(1, ordered.length - 1)));
+    return leftPad + usable * ((t - minT) / (maxT - minT));
+  };
+
+  let html = `<div class="timeline-axis" style="top:${axisY}px;left:${leftPad}px;width:${usable}px;"></div>`;
+  const tickCount = 7;
+  for (let i=0; i<tickCount; i++) {
+    const frac = i / (tickCount - 1);
+    const x = leftPad + usable * frac;
+    const t = minT + (maxT - minT) * frac;
+    html += `<div class="timeline-tick" style="left:${x}px;top:${axisY-4}px;"></div>`
+      + `<div class="timeline-tick-label" style="left:${x}px;top:${axisY+12}px;">${escapeHtml(formatTimelineDate(t))}</div>`;
+  }
+
+  ordered.forEach((row, i) => {
+    const t = times[i];
+    const x = posFor(t, i);
+    const lane = laneFor(x, i);
+    const above = lane < 3;
+    const cardY = above ? aboveY[lane] : belowY[lane - 3];
+    const cardAnchorY = above ? cardY + 70 : cardY;
+    const stemTop = Math.min(axisY, cardAnchorY);
+    const stemHeight = Math.max(8, Math.abs(axisY - cardAnchorY));
+    const summary = timelineSummary(row.message, row.app_name);
+    const eventId = timelineEventId(row.message);
+    html += `<div class="timeline-marker" style="left:${x}px;">`
+      + `<div class="timeline-stem" style="top:${stemTop}px;height:${stemHeight}px;"></div>`
+      + `<div class="timeline-dot" style="top:${axisY-4}px;"></div>`
+      + `<article class="timeline-card" data-log-id="${Number(row.id) || ''}" style="top:${cardY}px;" title="${escapeHtml(row.message || '')}">`
+      + `<div class="timeline-card-time">${escapeHtml(formatTimelineDate(row.received_at))}</div>`
+      + `<div class="timeline-card-route">${escapeHtml(timelineRoute(row))}</div>`
+      + `<div class="timeline-card-summary">${escapeHtml(summary)}</div>`
+      + (eventId ? `<span class="timeline-event-id">Event ID ${escapeHtml(eventId)}</span>` : '')
+      + `</article></div>`;
+  });
+  canvas.style.width = width + 'px';
+  canvas.innerHTML = html;
+  canvas.querySelectorAll('.timeline-card').forEach(card => card.addEventListener('click', () => {
+    focusTimelineLog(card.dataset.logId);
+  }));
+}
+
+async function focusTimelineLog(logId) {
+  const id = Number(logId);
+  if (!Number.isFinite(id) || id <= 0) return;
+  closeTimeline({restoreFocus:false});
+  await new Promise(resolve => requestAnimationFrame(resolve));
+  let row = document.querySelector(`.log-row[data-id="${id}"]`);
+  if (!row) {
+    await loadLogs({focusId:id});
+    row = document.querySelector(`.log-row[data-id="${id}"]`);
+  }
+  if (!row) return;
+  row.classList.add('timeline-focus-row');
+  row.scrollIntoView({behavior:'smooth', block:'center'});
+  window.setTimeout(() => row.classList.remove('timeline-focus-row'), 2200);
+}
+
+function finishTimelineClose() {
+  if (!timelineOpen) return;
+  timelineOpen = false;
+  const btn = document.getElementById('timelineBtn');
+  btn.classList.remove('active');
+  if (timelineRestoreFocusOnClose) {
+    const target = timelinePreviousFocus && typeof timelinePreviousFocus.focus === 'function'
+      ? timelinePreviousFocus : btn;
+    target.focus();
+  }
+  timelinePreviousFocus = null;
+  timelineRestoreFocusOnClose = true;
+}
+
+function openTimeline() {
+  const dialog = document.getElementById('timelineDialog');
+  if (timelineOpen || dialog.open) return;
+  timelineOpen = true;
+  timelineRestoreFocusOnClose = true;
+  timelinePreviousFocus = document.activeElement;
+  document.getElementById('timelineBtn').classList.add('active');
+  if (typeof dialog.showModal === 'function') dialog.showModal();
+  else dialog.setAttribute('open', '');
+  requestAnimationFrame(() => document.getElementById('timelineClose').focus());
+  loadTimeline();
+}
+
+function closeTimeline({restoreFocus=true} = {}) {
+  const dialog = document.getElementById('timelineDialog');
+  if (!timelineOpen && !dialog.open) return;
+  timelineRestoreFocusOnClose = restoreFocus;
+  if (typeof dialog.close === 'function' && dialog.open) dialog.close();
+  else {
+    dialog.removeAttribute('open');
+    finishTimelineClose();
+  }
+}
+
+async function loadTimeline() {
+  if (!timelineOpen) return;
+  const canvas = document.getElementById('timelineCanvas');
+  canvas.innerHTML = '<div class="timeline-empty">Loading filtered timeline…</div>';
+  try {
+    const params = currentFilterParams();
+    // Timeline is always chronological; it uses exactly the same filter set
+    // as Log Search and only overrides presentation sort/limit.
+    params.set('sort', 'received_at');
+    params.set('dir', 'asc');
+    params.set('limit', String(TIMELINE_LIMIT));
+    const r = await fetch('/api/logs?' + params.toString());
+    if (!r.ok) throw new Error('timeline query failed');
+    renderTimeline(await r.json());
+  } catch (e) {
+    canvas.innerHTML = '<div class="timeline-empty">Timeline could not be loaded.</div>';
+    document.getElementById('timelineCount').textContent = '';
+  }
+}
+
+async function loadLogs(options = {}) {
+  const focusId = Number(options && options.focusId) || 0;
   renderXColumns();  // redraw header so the active-sort triangle reflects current sort
   const params = currentFilterParams();
   params.set('limit', 200);
   const r = await fetch('/api/logs?' + params.toString());
-  const rows = await r.json();
+  let rows = await r.json();
+  if (focusId && !rows.some(row => Number(row.id) === focusId)) {
+    const focusedParams = currentFilterParams();
+    focusedParams.set('ids', String(focusId));
+    focusedParams.set('limit', '1');
+    const focusedResponse = await fetch('/api/logs?' + focusedParams.toString());
+    if (focusedResponse.ok) {
+      const focusedRows = await focusedResponse.json();
+      if (focusedRows.length) rows = rows.concat(focusedRows.slice(0, 1));
+    }
+  }
   const body = document.getElementById('logsBody');
   const ncols = 8 + xCols.length;
-  if (!rows.length) { body.innerHTML = `<tr><td colspan="${ncols}" class="muted">No matching events.</td></tr>`; return; }
+  if (!rows.length) { body.innerHTML = `<tr><td colspan="${ncols}" class="muted">No matching events.</td></tr>`; if (timelineOpen) loadTimeline(); return; }
   const xcells = l => xCols.map(c =>
     `<td class="mono" style="font-size:12px;">${String((l.extracted||{})[c] ?? '').replace(/</g,'&lt;') || '—'}</td>`).join('');
   body.innerHTML = rows.map(l => `
@@ -684,11 +1023,17 @@ async function loadLogs() {
       });
     } catch(e) { document.getElementById('norm-body-' + id).textContent = 'extraction failed'; }
   }));
+  if (timelineOpen) loadTimeline();
 }
 
 document.getElementById('refreshBtn').addEventListener('click', loadLogs);
-['qBox','ipBox','hostBox','destBox','sevBox','fromBox','toBox'].forEach(id =>
+['qBox','ipBox','hostBox','destBox','sevBox','fromBox','toBox','sourceOp','hostOp','destinationOp'].forEach(id =>
   document.getElementById(id).addEventListener('change', loadLogs));
+document.getElementById('fieldOp').addEventListener('change', (e) => {
+  fieldChipOp = e.target.value === 'or' ? 'or' : 'and';
+  renderFieldChips();
+  loadLogs();
+});
 // inline field=value box: Enter adds a chip
 document.getElementById('fieldFilterBox').addEventListener('keydown', (e) => {
   if (e.key === 'Enter') {
@@ -700,6 +1045,8 @@ document.getElementById('fieldFilterBox').addEventListener('keydown', (e) => {
 document.getElementById('clearBtn').addEventListener('click', () => {
   ['qBox','ipBox','hostBox','destBox','fromBox','toBox','fieldFilterBox'].forEach(id => document.getElementById(id).value = '');
   document.getElementById('sevBox').value = '';
+  ['sourceOp','hostOp','destinationOp','fieldOp'].forEach(id => document.getElementById(id).value = 'and');
+  fieldChipOp = 'and';
   urlIds = null;
   if (window.location.search) history.replaceState({}, '', window.location.pathname);
   updateDrillBanner();
@@ -713,6 +1060,18 @@ document.getElementById('exportBtn').addEventListener('click', () => {
   const params = currentFilterParams();
   params.set('format', document.getElementById('exportFmt').value);
   window.location = '/api/logs/export?' + params.toString();
+});
+document.getElementById('timelineBtn').addEventListener('click', openTimeline);
+document.getElementById('timelineClose').addEventListener('click', () => closeTimeline());
+const timelineDialogEl = document.getElementById('timelineDialog');
+timelineDialogEl.addEventListener('close', finishTimelineClose);
+timelineDialogEl.addEventListener('cancel', () => { timelineRestoreFocusOnClose = true; });
+timelineDialogEl.addEventListener('click', event => {
+  if (event.target !== timelineDialogEl) return;
+  const rect = timelineDialogEl.getBoundingClientRect();
+  const inside = event.clientX >= rect.left && event.clientX <= rect.right
+    && event.clientY >= rect.top && event.clientY <= rect.bottom;
+  if (!inside) closeTimeline();
 });
 document.getElementById('groupToggle').addEventListener('change', loadAlerts);
 document.getElementById('drillClear').addEventListener('click', () => document.getElementById('clearBtn').click());
