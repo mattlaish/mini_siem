@@ -142,14 +142,15 @@ Scope:
 - Add PostgreSQL-native `tsvector`/GIN search if warranted by measured load.
 - Record representative ingestion and search performance.
 
-### Slice 5 — Data retention — PLANNED
+### Slice 5 — Evidence archive lifecycle — IMPLEMENTED
 
 Scope:
 
-- Add disabled-by-default retention (`retention_days = 0`).
-- Provide dry-run counts and batched deletion.
-- Clean dependent fields/matches/FTS data without orphaning rows.
-- Keep SQLite and PostgreSQL maintenance paths separate.
+- No age-based evidence deletion. Archive is disabled by default.
+- Seal old hot evidence into checksummed SQLite archive segments.
+- Preserve every original occurrence ID/time while exact payloads/fields are content-deduplicated.
+- `mode=move` evicts only a verified hot copy; archived evidence remains searchable.
+- Keep SQLite live maintenance non-destructive and archive verification explicit.
 
 ### Slice 6 — Poller event idempotency — PLANNED
 
@@ -192,7 +193,7 @@ Scope:
 Scope:
 
 - Add tests for parsing, DB initialization, authentication, CSRF, throttling,
-  API-key ingestion, PostgreSQL query generation, retention, idempotency, and
+  API-key ingestion, PostgreSQL query generation, archive lifecycle, idempotency, and
   URL validation.
 - Use temporary databases and synthetic data only.
 - Never contact production Sophos or external providers from CI.
@@ -205,7 +206,7 @@ Scope:
 4. Slice 10 subset — regression tests for Slices 0–2.
 5. Slice 3 — PostgreSQL compatibility.
 6. Slice 4 — real PostgreSQL integration baseline.
-7. Slices 5–7 — retention, idempotency, feed limits.
+7. Slices 5–7 — archive lifecycle, idempotency, feed limits.
 8. Slices 8–9 — optional SSO/SSRF hardening.
 9. Complete Slice 10.
 

@@ -111,21 +111,47 @@
 
     <div class="panel" id="search">
       <h2>Log search</h2>
-      <p>The <strong>message</strong> box does a full-text search of the log message (prefix-matching on word tokens,
-        via FTS). <strong>Source</strong>, <strong>Host</strong>, and <strong>Destination</strong> each search their
+      <p>The <strong>message</strong> box uses the active database search engine shown directly below the filter bar.
+        With the recommended <span class="mono">text_search=auto</span>, SQLite prefers FTS5 and PostgreSQL prefers
+        indexed native FTS, with transparent LIKE/ILIKE fallback when an accelerator is unavailable.
+        <strong>Source</strong>, <strong>Host</strong>, and <strong>Destination</strong> each search their
         base column plus any configured aliases (see below). Those three boxes accept comma-separated terms and now
         have their own <strong>AND / OR</strong> selector. The selector only controls terms <em>inside that box</em>:
         for example <span class="mono">sophos,firewall</span> with Source=OR matches either source. Different filter
         families still combine with AND, so Source=OR cannot bypass a Host, Destination, message, field, severity,
-        or time filter. <span class="mono">!term</span> exclusions always remain mandatory. IP-bearing fields also
-        support subnet matching (<span class="mono">192.168.1.0/24</span>, or a dotted prefix such as
-        <span class="mono">192.168.1</span>).</p>
+        or time filter. <span class="mono">!term</span> exclusions always remain mandatory. Fast identity matching is
+        explicit: a full IP is exact, bare text is prefix, <span class="mono">=value</span> forces exact,
+        <span class="mono">value*</span> is prefix, and <span class="mono">*value*</span> requests contains.
+        IP-bearing fields also support subnet matching (<span class="mono">192.168.1.0/24</span>, or a dotted prefix
+        such as <span class="mono">192.168.1</span>).</p>
+
+      <h3>Live refresh behavior</h3>
+      <p>With Auto-refresh ON, Log Search polls every <strong>5 seconds</strong> and Stats every
+        <strong>15 seconds</strong>. Alerts and the AI queue are not background-polled; use the top-level manual
+        refresh or their explicit actions when you want fresh secondary-panel data. A background request is skipped
+        while the same endpoint is still in flight, stale user-driven log/stat requests are cancelled, and hidden
+        browser tabs pause live polling. In the normal recent-first view the 5-second poll sends the saved
+        <span class="mono">(received_at,id)</span> cursor and asks only for chronologically newer rows. Unchanged rows
+        are not transferred or rebuilt; only unseen rows are prepended, the visible window stays bounded at 200, and
+        one delegated click handler serves the table instead of rebinding hundreds of row handlers. History clients can
+        use the matching older cursor instead of large SQL OFFSETs.</p>
+
+      <h3>Ingest / DB telemetry</h3>
+      <p>The small telemetry line beside the refresh controls comes from the listener through the database, not from
+        browser guesses. It shows recent ingest rate, receive and DB-writer queue depth, average DB micro-batch size,
+        rolling commit p95, and drops. The listener owns one bounded database-writer queue and commits up to 100 prepared
+        events or roughly 75 ms of work per transaction by default. Rules and IOC checks run only after that transaction
+        has produced a durable log ID. Total-event, hourly severity, and source-last-seen rollups are updated in the same
+        log transaction so the 15-second Stats request does not repeatedly aggregate the full log table.</p>
 
       <h3>Field filters &amp; columns</h3>
       <p>Type <span class="mono">field=value</span> directly in the field box and press Enter, or expand any log row
         and click/drag its <span class="mono">+</span>. The field box has the same <strong>AND / OR</strong> selector;
         repeated names are preserved, so <span class="mono">event_id=4624</span> OR
-        <span class="mono">event_id=4625</span> works as expected. <span class="mono">field!=value</span> is an
+        <span class="mono">event_id=4625</span> works as expected. Plain <span class="mono">field=value</span> is an
+        indexed exact lookup; append <span class="mono">*</span> for prefix, or use
+        <span class="mono">field=*value*</span> when a contains scan is really needed.
+        <span class="mono">field!=value</span> is an
         exclusion and always remains mandatory. Message text and field filters are applied in the <strong>same
         query</strong>: a text search plus a field chip must satisfy both; field OR only changes how the positive
         field chips combine with each other. Click a field name to add it as a display column. Extracted fields are
@@ -136,13 +162,19 @@
       <p><strong>Cascade timeline</strong> uses the exact current Log Search filters and opens in a native HTML
         <span class="mono">&lt;dialog&gt;</span> above the dashboard, so it does not push the log table down or navigate
         away from Log Search. On desktop it uses about 90% of the viewport width and 85% of the height; on small
-        screens it becomes full-screen. The timeline remains horizontally scrollable and renders up to 500 matching
-        events chronologically. Each card shows time in the form <span class="mono">Jul 25 2011 23:15</span>, a compact
+        screens it becomes full-screen. The first load takes the most recent 500 matching events and displays them
+        chronologically. Refresh uses the timeline's own cursor and asks only for newer events. The logical timeline can
+        grow while only cards near the visible horizontal viewport are mounted in the DOM (plus a small buffer), so
+        opening or refreshing a long timeline does not permanently create thousands of card nodes. The client keeps the
+        latest 5,000 loaded events per open timeline. Each card shows time in the form <span class="mono">Jul 25 2011 23:15</span>, a compact
         source-to-destination/host path, the first meaningful sentence or clause from Message, and an Event ID badge
         when one can be recognized. Close it with the top-right <strong>×</strong>, <span class="mono">Esc</span>, or
         the shaded backdrop. Clicking a card closes the dialog and locates/highlights that event in the main log table;
         if the row is outside the normal 200-row page, the dashboard fetches that exact ID under the same filters and
-        appends it before scrolling. The active search filters are not changed.</p>
+        appends it before scrolling. The active search filters are not changed. Timeline is intentionally
+        <strong>on-demand</strong>: opening the dialog loads it once, and its own <strong>Refresh</strong> button fetches
+        only events after the saved timeline cursor. The 5-second Log Search auto-refresh does not rebuild the timeline
+        in the background.</p>
     </div>
 
     <div class="panel" id="aliases">
@@ -197,6 +229,41 @@
         engine resolves identity through the same Search field aliases as log search — so a poller source whose
         <span class="mono">source_ip</span> column holds a connector name (e.g. "sophos") still correlates by the
         real per-endpoint IP, not the shared connector name.</p>
+    </div>
+
+    <div class="panel" id="performance">
+      <h2>Performance, archive &amp; health</h2>
+      <p>The status strip above Log Search shows current ingest queue depth, DB-writer
+        queue depth, micro-batch size, commit p95, query latency, and an overall
+        <strong>HEALTHY / DEGRADED / OVERLOADED</strong> state. The state is based on
+        current queue pressure and recent interval drops/failures; an old historical
+        drop counter does not leave the system permanently overloaded.</p>
+      <p>Query telemetry stores only coarse classes and timings — never your search
+        text, field values, IP filters, usernames, or other query content. The default
+        slow-query threshold is <span class="mono">250 ms</span>.</p>
+      <h3>Archive &amp; lossless deduplication</h3>
+      <p>mini-SIEM does <strong>not</strong> age-delete evidence. Archive is OFF by default.
+        When enabled, old hot rows are copied into immutable, checksummed SQLite archive
+        segments. <span class="mono">mode=copy</span> keeps both copies;
+        <span class="mono">mode=move</span> evicts the hot copy only after the archive
+        segment is committed, compacted, checksummed, cataloged, reopened, and verified.</p>
+      <p>Archive deduplication is exact and evidence-preserving. Every occurrence keeps its
+        original log ID and receive time, while byte-equivalent event payloads and extracted
+        fields are stored once per segment. Similar-but-not-identical events are never
+        collapsed, because repetition itself can be security evidence. Normal Log Search,
+        field filters, Timeline, and row expansion include sealed archive evidence; an
+        unreadable expected segment returns an explicit archive error instead of a false
+        empty result.</p>
+      <p>SQLite maintenance never runs a live full VACUUM. It uses bounded PASSIVE WAL
+        checkpoints, incremental free-page reclamation only with
+        <span class="mono">auto_vacuum=INCREMENTAL</span>, <span class="mono">PRAGMA optimize</span>,
+        and a rate-limited <span class="mono">quick_check</span>. Query telemetry remains
+        observation-only: telemetry failure cannot alter the real Log Search WHERE clause or
+        suppress rows.</p>
+      <h3>IOC architecture</h3>
+      <p>The existing IOC matcher remains available, but this evidence-lifecycle phase does
+        not make a new IOC architecture decision. Whether IOC matching stays embedded or
+        moves to a separate enrichment service is intentionally left open.</p>
     </div>
 
     <div class="panel" id="selfmon">

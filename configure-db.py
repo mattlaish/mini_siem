@@ -63,15 +63,13 @@ def main():
             print("  (config not written)")
             sys.exit(1)
 
-        print("Testing connection and creating tables...")
+        print("Testing connection...")
         ok, detail = dbmod.test_connection(cfg)
         if not ok:
             print(f"  FAILED: {detail}")
             print("  Fix the connection details / Postgres server, then re-run. (config not written)")
             sys.exit(1)
         print(f"  {detail}")
-        dbmod.initialize(cfg)
-        print("  Tables created / verified.")
     else:
         path = ask("SQLite file path", "siem.db")
         cfg = {
@@ -80,8 +78,57 @@ def main():
             "postgres": {"host": "localhost", "port": 5432,
                          "dbname": "minisiem", "user": "minisiem", "password": ""},
         }
-        dbmod.initialize(cfg)
-        print(f"  SQLite ready at {path} (tables created / verified).")
+        print(f"  SQLite target: {path}")
+
+    # Persist the performance defaults visibly instead of relying only on
+    # load_config()'s merge, so operators can discover/tune them in the file.
+    for key in ("commit_batch_size", "commit_max_delay_ms", "ingest_workers",
+                "ingest_queue_size", "db_writer_queue_size", "db_writer_batch_size",
+                "db_writer_max_delay_ms", "forward_queue_size",
+                "ingest_event_logging", "ingest_stats_interval_seconds"):
+        cfg.setdefault(key, dbmod.DEFAULT_CONFIG[key])
+    sqlite_defaults = dict(dbmod.DEFAULT_CONFIG["sqlite"])
+    sqlite_defaults.update(cfg.get("sqlite") or {})
+    cfg["sqlite"] = sqlite_defaults
+    postgres_defaults = dict(dbmod.DEFAULT_CONFIG["postgres"])
+    postgres_defaults.update(cfg.get("postgres") or {})
+    cfg["postgres"] = postgres_defaults
+    cfg["query_telemetry"] = dict(dbmod.DEFAULT_CONFIG["query_telemetry"])
+    cfg["overload"] = dict(dbmod.DEFAULT_CONFIG["overload"])
+    cfg["maintenance"] = dict(dbmod.DEFAULT_CONFIG["maintenance"])
+
+    # --- archive / evidence lifecycle ----------------------------------
+    print("\nArchive / evidence lifecycle")
+    print("  mini-SIEM does not age-delete evidence. Archive is OFF by default.")
+    print("  copy = keep hot rows + sealed archive copy; move = evict hot copies only after verified archive seal.")
+    archive = dict(dbmod.DEFAULT_CONFIG["archive"])
+    archive["enabled"] = ask("Enable evidence archiving? (y/N)", "N").lower() in ("y", "yes")
+    if archive["enabled"]:
+        archive["directory"] = ask("Archive directory", "archive")
+        try:
+            archive["hot_days"] = max(1, min(int(ask("Keep events hot for days", "30")), 3650))
+        except ValueError:
+            archive["hot_days"] = 30
+        mode = ask("Archive mode (copy/move)", "copy").strip().lower()
+        archive["mode"] = mode if mode in ("copy", "move") else "copy"
+    cfg["archive"] = archive
+
+    # --- message-search engine -----------------------------------------
+    print("\nMessage search")
+    print("  auto     = SQLite FTS5 when available; PostgreSQL native FTS/GIN")
+    print("             when indexed; otherwise a safe LIKE/ILIKE fallback")
+    print("  fts      = prefer full-text semantics")
+    print("  trigram  = PostgreSQL pg_trgm substring search (SQLite falls back)")
+    print("  like     = force portable LIKE/ILIKE")
+    search_mode = ask("Text search mode (auto/fts/trigram/like)", "auto").lower()
+    if search_mode not in ("auto", "fts", "trigram", "like"):
+        print(f"  '{search_mode}' isn't valid; defaulting to auto.")
+        search_mode = "auto"
+    cfg["text_search"] = search_mode
+
+    print("Creating/verifying tables and search indexes...")
+    dbmod.initialize(cfg)
+    print("  Tables / selected search indexes created or verified.")
 
     # --- syslog listen ports -------------------------------------------
     # Ask which port(s) the syslog listener should bind. Persisted into the

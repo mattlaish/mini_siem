@@ -189,6 +189,11 @@ chgrp -R "${SHARED_GROUP}" "${SCRIPT_DIR}"
 chmod -R g+rX "${SCRIPT_DIR}"
 chmod 2775 "${SCRIPT_DIR}"
 
+# Default evidence archive path. The listener may run as root to bind 514,
+# while the dashboard runs as siem:minisiem and needs read/traverse access.
+# setgid keeps newly sealed segment files in the shared minisiem group.
+install -d -o root -g "${SHARED_GROUP}" -m 2750 "${SCRIPT_DIR}/archive"
+
 for f in "${SCRIPT_DIR}/db-config.json" "${SCRIPT_DIR}/siem.db" "${SCRIPT_DIR}/siem.db-wal" "${SCRIPT_DIR}/siem.db-shm"; do
     if [[ -e "${f}" ]]; then
         chgrp "${SHARED_GROUP}" "${f}"

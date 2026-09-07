@@ -423,3 +423,170 @@ non-Flask tests pass (34 existing + 3 native-dialog structural/navigation tests)
 static security scan reports 0 findings / 21 files. Full pytest remains blocked
 only at the two Flask-dependent collection points because Flask is absent from
 the packaging environment, so those are explicitly not counted as passes.
+
+## 2026-09-04 live-refresh / text-search performance update
+
+Dashboard auto-refresh is now endpoint-specific rather than one 5-second
+`refreshAll`: `/api/logs` runs every 5 seconds and `/api/stats` every 15 seconds;
+Alerts and AI queue are initial/manual/on-demand only. Stats/log requests use
+per-endpoint `AbortController` coordination, background overlap is skipped,
+user/filter actions cancel stale requests, hidden tabs pause polling, and
+background calls keep `X-Background-Poll`. Cascade Timeline is on-demand only
+and has an explicit Refresh button; normal log polling never reconstructs its
+500-event DOM.
+
+Database message search now has one operator control: top-level
+`text_search=auto|fts|trigram|like`, with `MINISIEM_TEXT_SEARCH` as a runtime
+query override. Provisioning follows the persisted config mode, not the
+per-process environment override. SQLite auto uses FTS5 when queryable and otherwise LIKE. PostgreSQL setup is mode-aware: auto attempts `idx_logs_message_fts` as a native
+simple-configuration tsvector GIN expression index plus optional `pg_trgm` /
+`idx_logs_message_trgm`; fts only attempts the FTS index; trigram only attempts
+the extension/trigram index; like skips search-index DDL. PostgreSQL auto prefers
+indexed FTS, then indexed trigram, then ILIKE. Extension/index failures are non-fatal.
+Search capability probes are cached on the hot path and refreshed by Stats. `/api/stats` returns
+non-secret search status and the Log Search UI displays it. The common query
+builder preserves TEXT AND source/host/destination AND field AND severity/time
+semantics on every engine.
+
+Testing truth boundary: the new source has selected non-Flask/unit/static
+coverage, but live PostgreSQL index creation/query-plan validation is still
+DEFERRED/NOT_RUN. Do not claim pg_trgm installation or GIN use on a deployment
+until its dashboard status or direct PostgreSQL validation confirms it. A stats
+rollup table was intentionally deferred pending measured `/api/stats` latency.
+
+
+## 2026-09-04 Performance Phase 3
+
+The current performance line additionally implements five requested optimizations:
+(1) Log Search incremental DOM refresh plus event delegation; (2) per-event listener
+stdout off by default with 10-second aggregate ingest metrics; (3) normalized
+`log_fields.value_norm` with exact/prefix covering indexes and explicit contains
+syntax; (4) indexed Source/Host/Destination exact/prefix semantics with composite
+time-aware indexes and alias lookups through `value_norm`; and (5) bounded SQLite
+busy/cache/temp/mmap/WAL-checkpoint/rate-limited-optimize tuning. The structured
+filter syntax is: identity full-IP exact / bare-text prefix / `=value` exact /
+`value*` prefix / `*value*` contains; fields use `field=value` exact,
+`field=value*` prefix, `field=*value*` contains. Existing cross-family AND and
+per-family AND/OR semantics remain unchanged.
+
+SQLite migration is additive: `value_norm` is added if missing, historical field rows
+are lowercased into it once, then the new covering index is created. New ingest and
+reindex writes populate display and normalized values together. Real PostgreSQL
+validation of the new lower()/text_pattern_ops identity indexes and field
+text_pattern_ops index is still DEFERRED/NOT_RUN.
+Packaging-environment verification for this phase: 56 selected non-Flask tests
+passed, Python compileall and dashboard JavaScript syntax passed, and the static
+security scanner reports 0 findings across 21 Python files. Flask-dependent tests
+remain unrun here because Flask is absent. Local SQLite EXPLAIN confirmed the new
+field exact/prefix and hostname prefix indexes are actually selected; real PostgreSQL
+EXPLAIN/ANALYZE remains deferred.
+
+## 2026-09-04 Performance Phase 4
+
+Current performance architecture is now receive queue -> parser/extraction pool ->
+bounded dedicated `DBWriter` -> bounded post-persist pool -> asynchronous forwarding.
+The main log path uses `db_writer_queue_size=20000`, `db_writer_batch_size=100`, and
+`db_writer_max_delay_ms=75` by default. The former `commit_batch_size` /
+`commit_max_delay_ms` settings remain for lower-volume compatibility/auxiliary
+Storage writes; they are no longer the main socket-ingest batching mechanism.
+
+The DB writer commits log + `log_fields` + total/hourly/source rollups in one
+transaction, then releases the durable `log_id` to RuleEngine/IOC processing.
+Post-processing cannot intentionally create an alert for a failed log batch.
+Dashboard telemetry is cross-process via `runtime_stats.ingest_telemetry` and includes
+receive/DB/post queue data, drops/failures, ingest rate, average batch size, and rolling
+commit avg/p50/p95. Rollup tables are `runtime_stats`, `hourly_log_stats`, and
+`source_last_seen`; existing installs get a one-time totals/source bootstrap and only
+14 days of hourly historical bootstrap. The Dashboard's 24-hour log count remains
+exact by combining whole-hour rollups with at most two indexed partial-hour raw
+ranges. DB-writer shutdown also flushes a partial tail immediately via its queued
+sentinel instead of waiting out the configured max-delay.
+
+`/api/logs?envelope=1` returns `rows`, `newest_cursor`, `oldest_cursor`, and
+`maybe_more`. `after_cursor` is chronologically newer and `before_cursor` older using
+the `(received_at,id)` tuple; the supported cursor sort is default/recent-first or
+explicit `received_at`. Dashboard background Log Search uses the cursor and fetches
+only new rows, while manual/filter/sort changes full-refresh. The legacy array API is
+preserved when `envelope` is omitted.
+
+Cascade Timeline remains a native `<dialog>` but is now incremental and virtualized:
+initial latest-500 load, own `after_cursor` on Refresh, latest-5,000 in-memory bound,
+and only viewport-near cards mounted in DOM. Clicking a timeline card still closes the
+dialog and focuses/fetches the exact log under the unchanged active filters.
+
+Live PostgreSQL Phase-4 planner validation is still **DEFERRED/NOT_RUN** in the current
+packaging environment because neither a PostgreSQL instance nor psycopg2 is available.
+Use `tools/postgres_phase4_validation.py` only against a disposable test/bench/dev DB;
+it provisions the current schema/indexes and records real `EXPLAIN (ANALYZE, BUFFERS)`
+evidence for every important query shape. Do not claim GIN/pg_trgm/query-plan success
+until that harness passes on the target PostgreSQL family.
+
+Next performance candidates after Phase 4 are IOC domain/URL matcher scaling,
+retention/lifecycle maintenance (including decrement/rebuild semantics for rollups),
+and PostgreSQL partitioning/horizontal ingest only after measured data volume justifies
+them.
+Final Phase-4 release verification: **64 non-Flask tests passed**, including **8/8** dedicated Phase-4 tests. `compileall`, Dashboard JavaScript syntax, and the static security scan passed (21 Python files, 0 findings). A 5,000-event bounded SQLite smoke persisted and post-processed every accepted event, wrote 15,000 normalized field rows, updated rollups for all 5,000 events, used 50 DB batches averaging 100 events, and recorded zero drops/failures. The observed ~15,287 events/s and commit latency figures are temporary-filesystem engineering smoke data only. Full Flask-dependent collection remains BLOCKED/NOT_RUN because Flask is unavailable and outbound package installation is unavailable. Live PostgreSQL planner validation remains DEFERRED/NOT_RUN. The final release archive must remain cache/.git-free and be re-extracted for artifact verification.
+
+
+## Performance Phase 5 Update — 2026-09-04
+
+- Phase 5 builds on the verified Phase-4 pipeline without changing existing search or
+  AND/OR semantics. The main additions are opt-in bounded retention, scalable domain/URL
+  IOC matching, privacy-preserving query latency telemetry, explicit overload health,
+  conservative SQLite lifecycle maintenance, and bounded PostgreSQL session/pool policy.
+- `maintenance.py` owns background retention/SQLite housekeeping and deliberately shares
+  the listener Storage connection/lock. Retention is OFF by default. If enabled, raw
+  logs, `log_fields`, and `ioc_matches` age out in bounded batches; alerts remain as
+  detection records. Do not change this to an unbounded delete or online full `VACUUM`.
+- `telemetry.py` is the canonical performance/health helper. Query samples are bounded
+  and labelled only by coarse class; do not add raw text, filter values, IPs, usernames,
+  SQL parameter values, or other sensitive/high-cardinality labels to telemetry.
+- IOC matching now uses direct maps for IP/hash, extracted suffix lookup for domains, and
+  `MultiPatternMatcher` (Aho-Corasick) for URL substrings. Preserve the existing semantic
+  contract when optimizing further; avoid returning to event×IOC nested substring loops.
+- Operational health is current-state oriented. It uses queue utilization plus recent
+  interval drops/failures and latency thresholds, rather than cumulative historical drop
+  counters. The Dashboard and Health page surface `HEALTHY`, `DEGRADED`, or `OVERLOADED`
+  with reasons.
+- PostgreSQL live plan validation is still required on a real disposable server. Run
+  `tools/postgres_phase5_validation.py` with a test/dev/bench database and retain the
+  JSON EXPLAIN evidence. Do not mark PostgreSQL production readiness complete from the
+  existence of the harness alone.
+- Canonical deployment identity is unchanged: `install-services.sh` creates the `siem`
+  non-login system account and `minisiem` group; dashboard runs `siem:minisiem`, listener
+  remains `root:minisiem` only because it binds privileged syslog port 514.
+- See `TESTING.md` for exact final Phase-5 executable evidence and all DEFERRED/NOT_RUN
+  gates. Keep README, INSTALLATION, DEVELOPMENT, AI_HANDOFF, TESTING, Help, and OPERATION
+  synchronized if retention/maintenance/health behavior changes later.
+
+## Performance Phase 6 Update — 2026-09-04
+
+- The canonical lifecycle is now **archive-first, never age-delete**. Do not reintroduce automatic `DELETE ... WHERE received_at < ...` retention. Legacy `retention` config keys are compatibility debris only and are ignored by the new maintenance path.
+- `archive.py` is the archive authority. It creates sealed SQLite segments with `archive_payloads` (exact content-addressed payload), `archive_occurrences` (one original global log ID + receive time per event), `archive_payload_fields`, compatible `logs`/`log_fields` views, and payload-level FTS5 where available. Raw evidence is zlib-compressed once per exact payload.
+- Main-DB tables `archive_segments` and `archive_occurrence_catalog` are the catalog. Copy mode is idempotent because an already-cataloged log ID is not archived again. Move mode may remove only the hot `logs`/`log_fields` copy after segment commit + offline compaction + SHA-256 + manifest + catalog + reopen verification. It does not decrement `total_logs` or historical rollups and it does not delete IOC/alert evidence.
+- Normal `/api/logs` search merges archive evidence when required and deduplicates hot/archive overlap by original ID. `purpose=live`/`after_cursor` remains hot-only for efficiency. Text search, Source/Host/Destination AND/OR, severity/time filters, extracted-field exact/prefix/contains filters, cursor semantics, Timeline, and row field expansion must continue to mean the same thing in both tiers.
+- **Never silently skip a required archive segment.** Archive read/query failure is a 503 availability error so analysts cannot confuse an unavailable segment with zero matching logs. This truth boundary is more important than returning partial results.
+- Query telemetry is non-authoritative and fail-open. `_record_query_telemetry_safe` exists specifically so telemetry failures cannot break or alter real Log Search. Do not add a telemetry cache/result shortcut into the data path.
+- `maintenance.py` now performs archive orchestration plus non-destructive SQLite housekeeping only: PASSIVE checkpoint, incremental vacuum/free-page reclamation when already supported, optimize, and rate-limited quick_check. Full live VACUUM and age-delete are prohibited.
+- Operational health exposes queue signals/thresholds and remains observation-only. No adaptive dropping/throttling has been authorized.
+- IOC architecture is deliberately undecided after Phase 6. Preserve the existing matcher until a separate product decision chooses embedded IOC versus a distinct enrichment service.
+- Service identity remains unchanged: `install-services.sh` creates non-login `siem` + `minisiem`; dashboard runs `siem:minisiem`; listener remains `root:minisiem` when binding privileged 514. Default archive permissions are root:`minisiem` 2750 directory and 0640 segment/manifest files.
+- Keep README.md, INSTALLATION.md, OPERATION.md, DEVELOPMENT.md, AI_HANDOFF.md, TESTING.md and Dashboard Help synchronized with this evidence-lifecycle truth boundary.
+
+### Phase 6 final release evidence — 2026-09-04
+
+The Phase-6 closeout gate has executable evidence: **81 selected non-Flask tests pass**,
+including **7/7 archive/evidence lifecycle tests**. Python compileall, Dashboard/Health
+JavaScript syntax, shell syntax, and the static security scan pass; the scanner reports
+**0 findings across 24 Python files**. A 5,000-event bounded ingest smoke persisted and
+post-processed every accepted event with 15,000 field rows, 5,000 rollup events,
+50 DB batches averaging 100, and zero drops/failures. A separate 20,000-occurrence
+archive smoke produced one verified sealed segment with 100 exact unique payloads and
+19,900 storage-deduplicated duplicate occurrences while preserving every occurrence ID
+and receive time; copy mode retained all hot copies. See `TESTING.md` for exact commands,
+measurements, and truth boundaries.
+
+Full Flask-dependent collection is still **BLOCKED / NOT RUN** in the packaging
+container because Flask is absent. Live PostgreSQL remains **DEFERRED / NOT RUN** because
+no PostgreSQL instance/client or psycopg2 is available. Never promote either gate to
+PASS without real execution evidence.

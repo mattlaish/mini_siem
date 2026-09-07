@@ -84,6 +84,11 @@ def main():
         storage, engine, ioc, fields, forwarders,
         worker_count=int(db_cfg.get("ingest_workers", 4)),
         queue_size=int(db_cfg.get("ingest_queue_size", 10000)),
+        db_writer_queue_size=int(db_cfg.get("db_writer_queue_size", 20000)),
+        db_writer_batch_size=int(db_cfg.get("db_writer_batch_size", 100)),
+        db_writer_max_delay_ms=int(db_cfg.get("db_writer_max_delay_ms", 75)),
+        event_logging=bool(db_cfg.get("ingest_event_logging", False)),
+        stats_interval_seconds=int(db_cfg.get("ingest_stats_interval_seconds", 10)),
     )
 
     threads = []

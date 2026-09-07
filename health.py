@@ -11,10 +11,15 @@ rather than failing.
 Everything here is read-only and cheap.
 """
 
+import json
 import os
 import shutil
 import time
 from datetime import datetime, timedelta, timezone
+
+import db as dbmod
+import archive as archive_mod
+import telemetry as telemetry_mod
 
 try:
     import psutil  # optional, only for disk/net I/O rates
@@ -182,15 +187,21 @@ def siem_metrics(conn, db_config):
     min_cut = (now - timedelta(minutes=1)).isoformat()
     hour_cut = (now - timedelta(hours=1)).isoformat()
 
-    total = conn.execute("SELECT COUNT(*) AS c FROM logs").fetchone()
-    total = total["c"] if isinstance(total, dict) else total[0]
-    alerts = conn.execute("SELECT COUNT(*) AS c FROM alerts").fetchone()
-    alerts = alerts["c"] if isinstance(alerts, dict) else alerts[0]
+    try:
+        runtime = dbmod.read_runtime_stats(conn, ["total_logs", "total_alerts", "ingest_telemetry", "maintenance_status"])
+    except Exception:
+        runtime = {}
+    total = int((runtime.get("total_logs") or {}).get("value_num") or 0)
+    alerts = int((runtime.get("total_alerts") or {}).get("value_num") or 0)
+    if "total_logs" not in runtime:
+        row = conn.execute("SELECT COUNT(*) AS c FROM logs").fetchone(); total = int(row["c"] if isinstance(row, dict) else row[0])
+    if "total_alerts" not in runtime:
+        row = conn.execute("SELECT COUNT(*) AS c FROM alerts").fetchone(); alerts = int(row["c"] if isinstance(row, dict) else row[0])
 
+    # These are bounded received_at-index range counts, not full-table scans.
     last_min = _count_since(conn, min_cut)
     last_hour = _count_since(conn, hour_cut)
 
-    # DB size
     db_size = None
     backend = db_config.get("backend", "sqlite")
     if backend == "sqlite":
@@ -204,6 +215,18 @@ def siem_metrics(conn, db_config):
             db_size = row["s"] if isinstance(row, dict) else row[0]
         except Exception:
             db_size = None
+    try:
+        ingest = json.loads((runtime.get("ingest_telemetry") or {}).get("value_text") or "{}")
+    except Exception:
+        ingest = {}
+    try:
+        maintenance = json.loads((runtime.get("maintenance_status") or {}).get("value_text") or "{}")
+    except Exception:
+        maintenance = {}
+    try:
+        archive_summary = archive_mod.archive_summary(conn)
+    except Exception:
+        archive_summary = {}
 
     return {
         "backend": backend,
@@ -213,11 +236,18 @@ def siem_metrics(conn, db_config):
         "events_last_hour": last_hour,
         "events_per_sec_1m": round(last_min / 60.0, 2),
         "db_size_bytes": db_size,
+        "ingest": ingest,
+        "maintenance": maintenance,
+        "archive": archive_summary,
+        "database_file": dbmod.db_file_info(db_config),
     }
 
 
-def collect(conn, db_config):
+def collect(conn, db_config, query_stats=None):
     """One-shot snapshot of everything for the /api/health endpoint."""
+    siem = siem_metrics(conn, db_config)
+    query_stats = query_stats or {}
+    operational = telemetry_mod.derive_operational_health(siem.get("ingest"), query_stats, db_config)
     return {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "cpu": cpu_percent(),
@@ -227,6 +257,8 @@ def collect(conn, db_config):
             db_config["sqlite"]["path"] if db_config.get("backend") == "sqlite" else "."),
         "io": io_rates(),
         "udp": udp_stats(),
-        "siem": siem_metrics(conn, db_config),
+        "siem": siem,
+        "query_telemetry": query_stats,
+        "operational_health": operational,
         "has_psutil": _HAS_PSUTIL,
     }

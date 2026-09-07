@@ -6,8 +6,9 @@ materializes extracted fields into the `log_fields` table so searching,
 filtering, and sorting by extracted fields uses indexed lookups instead
 of re-running regex over message text at query time.
 
-log_fields rows: (log_id, field, value) — indexed on (field, value)
-and on log_id. One row per extracted field per log. Same database as
+log_fields rows: (log_id, field, value, value_norm). ``value`` preserves
+display text while lowercase ``value_norm`` serves exact/prefix indexed filters.
+One row per extracted field per log. Same database as
 everything else (SQLite or PostgreSQL) — no second DB required.
 
 Extraction sources (same as the on-demand normalizer):
@@ -83,8 +84,12 @@ def load_patterns_from_conn(conn) -> list:
 
 
 def field_rows(log_id: int, fields: dict):
-    """Return normalized DB rows for one log's extracted fields."""
-    return [(log_id, k[:60], str(v)[:300]) for k, v in fields.items()]
+    """Return display + normalized DB rows for one log's extracted fields."""
+    rows = []
+    for k, v in fields.items():
+        value = str(v)[:300]
+        rows.append((log_id, k[:60], value, value.lower()))
+    return rows
 
 
 def write_fields(conn, log_id: int, fields: dict):
@@ -96,7 +101,7 @@ def write_fields(conn, log_id: int, fields: dict):
     rows = field_rows(log_id, fields)
     if rows:
         conn.executemany(
-            "INSERT INTO log_fields (log_id, field, value) VALUES (?,?,?)", rows)
+            "INSERT INTO log_fields (log_id, field, value, value_norm) VALUES (?,?,?,?)", rows)
     return len(rows)
 
 
@@ -237,7 +242,7 @@ def reindex(conn, batch_size: int = 500, progress=None):
             conn.executemany("DELETE FROM log_fields WHERE log_id=?", delete_rows)
         if insert_rows:
             conn.executemany(
-                "INSERT INTO log_fields (log_id, field, value) VALUES (?,?,?)",
+                "INSERT INTO log_fields (log_id, field, value, value_norm) VALUES (?,?,?,?)",
                 insert_rows,
             )
         conn.commit()

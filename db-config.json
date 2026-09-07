@@ -6,13 +6,59 @@
   "ingest_queue_size": 10000,
   "forward_queue_size": 10000,
   "sqlite": {
-    "path": "siem.db"
+    "path": "siem.db",
+    "busy_timeout_ms": 5000,
+    "cache_size_kib": 32768,
+    "temp_store_memory": true,
+    "mmap_size_mb": 128,
+    "wal_autocheckpoint_pages": 1000,
+    "optimize_interval_seconds": 3600,
+    "auto_vacuum_incremental": true
   },
   "postgres": {
     "host": "localhost",
     "port": 5432,
     "dbname": "minisiem",
     "user": "minisiem",
-    "password": ""
+    "password": "",
+    "pool_min": 1,
+    "pool_max": 10,
+    "connect_timeout_seconds": 5,
+    "statement_timeout_ms": 15000,
+    "lock_timeout_ms": 3000,
+    "idle_in_transaction_session_timeout_ms": 30000,
+    "application_name": "mini-siem"
+  },
+  "text_search": "auto",
+  "ingest_event_logging": false,
+  "ingest_stats_interval_seconds": 10,
+  "db_writer_queue_size": 20000,
+  "db_writer_batch_size": 100,
+  "db_writer_max_delay_ms": 75,
+  "query_telemetry": {
+    "max_samples": 512,
+    "slow_ms": 250
+  },
+  "overload": {
+    "queue_warn_percent": 80,
+    "queue_overload_percent": 95,
+    "commit_p95_warn_ms": 50,
+    "query_p95_warn_ms": 250,
+    "telemetry_stale_seconds": 30
+  },
+  "archive": {
+    "enabled": false,
+    "directory": "archive",
+    "hot_days": 30,
+    "mode": "copy",
+    "batch_rows": 500,
+    "max_batches_per_cycle": 20,
+    "run_interval_seconds": 3600,
+    "verify_on_create": true
+  },
+  "maintenance": {
+    "wal_checkpoint_mb": 256,
+    "incremental_vacuum_pages": 2000,
+    "quick_check_interval_seconds": 86400
   }
 }

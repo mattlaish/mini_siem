@@ -58,6 +58,15 @@ def not_in_clause(column: str, values, *, allowed_columns=None):
     return f"{col} NOT IN ({placeholders(len(vals))})", vals
 
 
+def delete_in(table: str, column: str, values) -> tuple[str, list]:
+    """Build a DELETE with one parameterized IN predicate."""
+    safe_table = identifier(table)
+    safe_column = identifier(column)
+    vals = list(values)
+    return ("DELETE FROM " + safe_table + " WHERE " + safe_column
+            + " IN (" + placeholders(len(vals)) + ")", vals)
+
+
 def where_clause(clauses) -> str:
     parts = [str(c).strip() for c in clauses if str(c).strip()]
     return "WHERE " + " AND ".join(parts) if parts else ""

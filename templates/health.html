@@ -169,6 +169,25 @@ async function load(){
     ['Backend', s.backend || '—'],
     ['Database size', bytes(s.db_size_bytes)],
   ]));
+  const oh = d.operational_health || {state:'HEALTHY',reasons:[]};
+  const hcls = String(oh.state||'').toUpperCase()==='HEALTHY' ? 'ok' : 'warn';
+  siem.push(`<div class="card"><h3>Operational state</h3><div class="metric"><span class="pill ${hcls}">${oh.state||'UNKNOWN'}</span></div><div class="sub">${(oh.reasons||[]).join(' · ') || 'No overload indicators detected.'}</div></div>`);
+  const mt = s.maintenance || {};
+  const ac = mt.archive || {};
+  const asum = s.archive || mt.archive_summary || {};
+  siem.push(kvCard('Archive / maintenance', [
+    ['Archive', ac.enabled ? `${String(ac.mode||'copy').toUpperCase()} · hot ${ac.hot_days||'?'}d` : 'OFF'],
+    ['Sealed segments', (asum.segments||0).toLocaleString()],
+    ['Archived events', (asum.archived_events||0).toLocaleString()],
+    ['Exact dedup occurrences', (asum.duplicate_occurrences||0).toLocaleString()],
+    ['Archive size', bytes(asum.bytes)],
+    ['Oldest hot log', mt.oldest_hot_log ? new Date(mt.oldest_hot_log).toLocaleString() : '—'],
+    ['Next run', mt.next_run_at ? new Date(mt.next_run_at).toLocaleString() : '—'],
+  ]));
+  const qt = d.query_telemetry || {};
+  const qrows = Object.entries(qt).sort((a,b)=>Number(b[1].p95_ms||0)-Number(a[1].p95_ms||0)).slice(0,5)
+    .map(([n,v])=>[n, `p95 ${Number(v.p95_ms||0).toFixed(1)} ms`]);
+  if(qrows.length) siem.push(kvCard('Query latency', qrows));
   $('siemGrid').innerHTML = siem.join('');
 
   $('updated').textContent = 'Updated ' + new Date().toLocaleTimeString();
@@ -197,7 +216,10 @@ async function loadDbFile(){
     document.getElementById('dbFileInfo').innerHTML =
       `<div class="kv"><span>Path</span><span class="v" style="font-size:11px;">${f.path||'—'}</span></div>`
       + `<div class="kv"><span>Size</span><span class="v">${fmtBytes(f.size_bytes)}</span></div>`
-      + `<div class="kv"><span>WAL</span><span class="v">${fmtBytes(f.wal_bytes)}</span></div>`;
+      + `<div class="kv"><span>WAL</span><span class="v">${fmtBytes(f.wal_bytes)}</span></div>`
+      + `<div class="kv"><span>Free pages</span><span class="v">${(f.freelist_count??0).toLocaleString()}</span></div>`
+      + `<div class="kv"><span>Free estimate</span><span class="v">${fmtBytes(f.free_bytes_estimate)}</span></div>`
+      + `<div class="kv"><span>auto_vacuum</span><span class="v">${f.auto_vacuum===2?'INCREMENTAL':(f.auto_vacuum===1?'FULL':'NONE')}</span></div>`;
   } catch(e){}
 }
 function paintIntegrity(d){

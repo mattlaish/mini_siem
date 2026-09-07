@@ -49,6 +49,137 @@ python3 -m venv .venv
 
 `install-services.sh` prefers `/opt/mini_siem/.venv/bin/python3` when it exists.
 
+## 2a. Choose the message-search engine
+
+`db-config.json` now has a top-level search control:
+
+```json
+{
+  "text_search": "auto"
+}
+```
+
+Recommended value is `auto`:
+
+- SQLite: FTS5 when available, otherwise `LIKE`.
+- PostgreSQL: indexed native FTS first; indexed `pg_trgm` second; `ILIKE` fallback last.
+
+Other accepted values are `fts`, `trigram`, and `like`. You can also use the
+`MINISIEM_TEXT_SEARCH` environment variable as an emergency/runtime query override;
+search-index provisioning still follows the persisted `db-config.json` value.
+For PostgreSQL, `auto` best-effort creates the native FTS GIN index and tries
+`CREATE EXTENSION IF NOT EXISTS pg_trgm` plus its GIN index. `fts` creates only
+the FTS index, `trigram` creates only the trigram path, and `like` skips search
+index DDL. If the database account cannot create extensions, mini-SIEM continues
+running; the dashboard shows the effective fallback. A database owner can enable `pg_trgm` separately
+if substring acceleration is wanted.
+
+`python3 configure-db.py` prompts for this setting and writes it into
+`db-config.json`.
+
+## 2b. Performance defaults
+
+No manual tuning is required to get the current safe defaults. `db-config.json` is
+merged with built-in defaults at runtime, and `configure-db.py` now writes the
+performance keys explicitly so they are easy to inspect and change.
+
+For SQLite the current defaults are:
+
+```json
+"sqlite": {
+  "path": "siem.db",
+  "busy_timeout_ms": 5000,
+  "cache_size_kib": 32768,
+  "temp_store_memory": true,
+  "mmap_size_mb": 128,
+  "wal_autocheckpoint_pages": 1000,
+  "optimize_interval_seconds": 3600
+}
+```
+
+The values are bounded in code. The busy timeout applies both to SQLite's PRAGMA
+and the Python driver so short listener/dashboard writer collisions wait instead
+of immediately failing. `PRAGMA optimize` is rate-limited rather than executed on
+every web request.
+
+Per-event listener stdout is disabled by default:
+
+```json
+"ingest_event_logging": false,
+"ingest_stats_interval_seconds": 10
+```
+
+The Phase 4 main ingest path also has a dedicated database writer:
+
+```json
+"ingest_workers": 4,
+"ingest_queue_size": 10000,
+"db_writer_queue_size": 20000,
+"db_writer_batch_size": 100,
+"db_writer_max_delay_ms": 75,
+"forward_queue_size": 10000
+```
+
+The installer does not need a new OS account or service for the DB writer; it is a
+thread inside the existing listener process. `siem` remains the non-login Dashboard
+service account and the listener remains `root:minisiem` when privileged syslog port
+514 is used. After upgrade, re-running `install-services.sh` is safe and reconciles
+the existing service definitions without replacing the repository's `.git/`.
+
+This prevents systemd/journald from duplicating every SIEM event. While traffic is
+active, the listener emits a compact aggregate processed/received/dropped/failed,
+queue-depth, and events/sec line every 10 seconds. Turn per-event output on only
+for short debugging sessions.
+
+## 2c. Archive, maintenance, and overload thresholds
+
+mini-SIEM does **not** use age-based log deletion. Evidence archiving is deliberately
+disabled by default so an upgrade cannot move data unexpectedly. Enable it only after
+choosing an archive location that is backed up and available to both the listener and
+dashboard processes:
+
+```json
+"archive": {
+  "enabled": true,
+  "directory": "/var/lib/mini-siem/archive",
+  "hot_days": 30,
+  "mode": "copy",
+  "batch_rows": 500,
+  "max_batches_per_cycle": 20,
+  "run_interval_seconds": 3600,
+  "verify_on_create": true
+}
+```
+
+Start with `mode=copy`: sealed archive segments are created while hot rows remain.
+After archive backup/monitoring is proven, `mode=move` may be used. Move mode removes
+only the hot copy, and only after the sealed segment is committed, compacted,
+checksummed, cataloged, re-opened, and verified. Normal Log Search still includes moved
+archive evidence. Old `retention` settings from earlier builds are no longer an active
+deletion policy.
+
+The archive directory must be writable by the listener service and readable by the
+dashboard service. With the standard installation, use `siem:minisiem`/`minisiem`
+permissions consistently with the existing service-account model; do not make the
+archive world-writable.
+
+SQLite housekeeping is separate from archiving:
+
+```json
+"maintenance": {
+  "wal_checkpoint_mb": 256,
+  "incremental_vacuum_pages": 2000,
+  "quick_check_interval_seconds": 86400
+}
+```
+
+No live full `VACUUM` is run. The Health page shows archive counts/dedup statistics,
+WAL/free-page state, query latency, and the current overload state.
+
+For PostgreSQL deployments, also review the pool/session bounds before production and
+run the disposable-database validation harness described in `TESTING.md`. Live planner
+validation is not implied by installation alone.
+
 ## 3. Install both systemd services
 
 Run as root through `sudo`:

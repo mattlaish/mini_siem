@@ -21,6 +21,7 @@ and forward 514 -> it. Details in README.md.
 import argparse
 import json
 import queue
+from collections import deque
 import re
 import socket
 import sqlite3
@@ -54,6 +55,7 @@ from threatintel import IOCMatcher
 from normalize import FieldIndexer, write_fields
 import severity as severity_mod
 import db as dbmod
+from maintenance import MaintenanceWorker
 
 # --------------------------------------------------------------------------
 # Syslog parsing
@@ -515,8 +517,105 @@ class Storage:
                 )
                 if fields:
                     write_fields(self.conn, new_id, fields)
+                dbmod.update_log_rollups(self.conn, [event])
                 self._maybe_commit_locked()
                 return new_id
+            except Exception:
+                self.rollback_locked()
+                raise
+
+    def insert_log_batch(self, items):
+        """Persist a micro-batch of ``(event, fields)`` tuples in one commit.
+
+        The log row, normalized fields, total counter, hourly severity rollup,
+        and per-source last-seen record share the same transaction. IDs are
+        returned in input order so the post-persist detection stage can keep
+        its log references exact.
+        """
+        if not items:
+            return [], 0.0
+        started = time.perf_counter()
+        with self.lock:
+            try:
+                # Do not let a compatibility-path pending transaction become
+                # part of the dedicated writer's latency/accounting window.
+                if self._pending > 0:
+                    self.commit_locked()
+                ids = []
+                source_rollup = {}
+                hourly = {}
+                for event, fields in items:
+                    new_id = self.conn.insert_returning_id(
+                        """INSERT INTO logs
+                           (received_at, source_ip, peer_ip, format, priority, facility, severity,
+                            device_timestamp, hostname, destination, app_name, proc_id, msg_id, message, raw)
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        (
+                            event["received_at"], event["source_ip"], event.get("peer_ip", ""),
+                            event["format"], event["priority"], event["facility"], event["severity"],
+                            event["device_timestamp"], event["hostname"], event.get("destination", ""),
+                            event["app_name"], event["proc_id"], event["msg_id"], event["message"], event["raw"],
+                        ),
+                    )
+                    if fields:
+                        write_fields(self.conn, new_id, fields)
+                    ids.append(new_id)
+                    received = str(event.get("received_at") or "")
+                    src = str(event.get("source_ip") or "").strip()
+                    if src and received:
+                        old = source_rollup.get(src)
+                        if old is None:
+                            source_rollup[src] = [received, received, 1]
+                        else:
+                            old[0] = min(old[0], received)
+                            old[1] = max(old[1], received)
+                            old[2] += 1
+                    if received:
+                        bucket = received[:13] + ":00:00+00:00"
+                        sev = str(event.get("severity") or "").lower()
+                        hourly[(bucket, sev)] = hourly.get((bucket, sev), 0) + 1
+
+                now = datetime.now(timezone.utc).isoformat()
+                dbmod.runtime_stat_increment(self.conn, "total_logs", len(ids), updated_at=now)
+                for src, (first_seen, last_seen, count) in source_rollup.items():
+                    self.conn.execute(
+                        """INSERT INTO source_last_seen(source_ip, first_seen, last_seen, event_count)
+                           VALUES (?,?,?,?)
+                           ON CONFLICT(source_ip) DO UPDATE SET
+                             first_seen=CASE WHEN excluded.first_seen < source_last_seen.first_seen
+                                             THEN excluded.first_seen ELSE source_last_seen.first_seen END,
+                             last_seen=CASE WHEN excluded.last_seen > source_last_seen.last_seen
+                                            THEN excluded.last_seen ELSE source_last_seen.last_seen END,
+                             event_count=source_last_seen.event_count + excluded.event_count""",
+                        (src, first_seen, last_seen, count),
+                    )
+                for (bucket, sev), count in hourly.items():
+                    self.conn.execute(
+                        """INSERT INTO hourly_log_stats(bucket_hour, severity, count)
+                           VALUES (?,?,?)
+                           ON CONFLICT(bucket_hour, severity) DO UPDATE SET
+                             count=hourly_log_stats.count + excluded.count""",
+                        (bucket, sev, count),
+                    )
+                self.conn.commit()
+                self._pending = 0
+                self._last_commit = time.time()
+            except Exception:
+                self.rollback_locked()
+                raise
+        return ids, (time.perf_counter() - started) * 1000.0
+
+    def publish_ingest_telemetry(self, telemetry: dict):
+        """Publish one compact JSON telemetry snapshot for the dashboard."""
+        payload = json.dumps(telemetry, separators=(",", ":"), sort_keys=True)
+        with self.lock:
+            try:
+                dbmod.runtime_stat_upsert(
+                    self.conn, "ingest_telemetry", value_text=payload,
+                    updated_at=datetime.now(timezone.utc).isoformat())
+                self.conn.commit()
+                self._pending = 0
+                self._last_commit = time.time()
             except Exception:
                 self.rollback_locked()
                 raise
@@ -572,6 +671,9 @@ class Storage:
                         source_ip, description, ",".join(str(i) for i in log_ids),
                     ),
                 )
+                dbmod.runtime_stat_increment(
+                    self.conn, "total_alerts", 1,
+                    updated_at=datetime.now(timezone.utc).isoformat())
                 self.commit_locked()
                 return new_id
             except Exception:
@@ -583,19 +685,154 @@ class Storage:
 # Bounded ingest pipeline
 # --------------------------------------------------------------------------
 
-class IngestPipeline:
-    """Bounded receive queue + worker pool for the full event pipeline.
+class DBWriter:
+    """Single-owner log writer with bounded queue and micro-batched commits."""
 
-    Socket threads only enqueue raw payloads. UDP uses non-blocking enqueue so
-    the socket can keep draining; queue overflow becomes an explicit counter.
-    TCP/API producers may wait briefly, allowing natural backpressure before a
-    message is dropped.
+    _SENTINEL = object()
+
+    def __init__(self, storage, output_queue, queue_size=20000, batch_size=100,
+                 max_delay_ms=75, failure_callback=None):
+        self.storage = storage
+        self.output_queue = output_queue
+        self.queue_size = max(1, int(queue_size))
+        self.batch_size = max(1, int(batch_size))
+        self.max_delay_ms = max(0, int(max_delay_ms))
+        self.failure_callback = failure_callback
+        self._queue = queue.Queue(maxsize=self.queue_size)
+        self._lock = threading.Lock()
+        self._written = 0
+        self._failed = 0
+        self._batches = 0
+        self._batch_events = 0
+        self._high_water = 0
+        self._latencies = deque(maxlen=256)
+        self._thread = threading.Thread(target=self._run, daemon=True, name="db-writer")
+        self._thread.start()
+
+    def submit(self, event, fields, timeout=0.10):
+        try:
+            self._queue.put((event, fields), timeout=timeout)
+        except queue.Full:
+            return False
+        with self._lock:
+            self._high_water = max(self._high_water, self._queue.qsize())
+        return True
+
+    def _record_batch(self, count, latency_ms):
+        with self._lock:
+            self._written += count
+            self._batches += 1
+            self._batch_events += count
+            self._latencies.append(float(latency_ms))
+
+    def _record_failure(self, count):
+        with self._lock:
+            self._failed += count
+
+    def _run(self):
+        stop_after_batch = False
+        while True:
+            first = self._queue.get()
+            if first is self._SENTINEL:
+                self._queue.task_done()
+                return
+            batch = [first]
+            deadline = time.monotonic() + (self.max_delay_ms / 1000.0)
+            while len(batch) < self.batch_size:
+                remaining = deadline - time.monotonic()
+                if self.max_delay_ms <= 0 or remaining <= 0:
+                    break
+                try:
+                    item = self._queue.get(timeout=remaining)
+                except queue.Empty:
+                    break
+                if item is self._SENTINEL:
+                    self._queue.task_done()
+                    stop_after_batch = True
+                    break
+                batch.append(item)
+            try:
+                if hasattr(self.storage, "insert_log_batch"):
+                    ids, latency_ms = self.storage.insert_log_batch(batch)
+                else:
+                    # Lightweight test/embedding compatibility. Production
+                    # Storage always provides the atomic micro-batch method.
+                    started = time.perf_counter()
+                    ids = [self.storage.insert_log(event, fields=fields) for event, fields in batch]
+                    latency_ms = (time.perf_counter() - started) * 1000.0
+                self._record_batch(len(ids), latency_ms)
+                # Persisted events are never dropped from post-processing. If
+                # that bounded queue is full the DB writer waits, which pushes
+                # back to its own bounded input queue and makes overload visible.
+                for log_id, (event, fields) in zip(ids, batch):
+                    self.output_queue.put((log_id, event, fields))
+            except Exception as exc:
+                self._record_failure(len(batch))
+                if self.failure_callback:
+                    self.failure_callback(len(batch), exc)
+            finally:
+                for _ in batch:
+                    self._queue.task_done()
+            if stop_after_batch:
+                return
+
+    def stats(self):
+        with self._lock:
+            lat = sorted(self._latencies)
+            def pct(p):
+                if not lat:
+                    return 0.0
+                idx = min(len(lat) - 1, max(0, int(round((len(lat) - 1) * p))))
+                return lat[idx]
+            return {
+                "db_written": self._written,
+                "db_failed": self._failed,
+                "db_batches": self._batches,
+                "db_queue_depth": self._queue.qsize(),
+                "db_queue_capacity": self.queue_size,
+                "db_queue_high_water": self._high_water,
+                "db_batch_size_config": self.batch_size,
+                "db_batch_avg": (self._batch_events / self._batches) if self._batches else 0.0,
+                "db_commit_ms_avg": (sum(lat) / len(lat)) if lat else 0.0,
+                "db_commit_ms_p50": pct(0.50),
+                "db_commit_ms_p95": pct(0.95),
+            }
+
+    def stop(self, drain=True):
+        if not drain:
+            while True:
+                try:
+                    self._queue.get_nowait()
+                    self._queue.task_done()
+                except queue.Empty:
+                    break
+        # Producers are already stopped by IngestPipeline before this call. Put
+        # the sentinel behind all accepted jobs *before* waiting: if the writer
+        # is holding a low-traffic partial batch, it consumes the sentinel and
+        # flushes immediately instead of sleeping for the configured max delay.
+        self._queue.put(self._SENTINEL)
+        self._queue.join()
+        self._thread.join(timeout=5)
+
+
+class IngestPipeline:
+    """Three-stage bounded ingest pipeline.
+
+    Stage 1 socket/API receivers enqueue raw events. Stage 2 parser workers
+    parse/enrich/extract and enqueue prepared writes. One DBWriter owns the
+    high-volume log transaction path and commits micro-batches. Persisted rows
+    then enter a bounded post-persist queue for rule/IOC/forwarder processing.
+    This preserves the rule invariant that every alert references a durable
+    log ID while allowing the single database writer to batch efficiently.
     """
 
     _SENTINEL = object()
 
     def __init__(self, storage, engine, ioc, fields, forwarders,
-                 worker_count: int = 4, queue_size: int = 10000):
+                 worker_count: int = 4, queue_size: int = 10000,
+                 db_writer_queue_size: int = 20000, db_writer_batch_size: int = 100,
+                 db_writer_max_delay_ms: int = 75,
+                 event_logging: bool = False, stats_interval_seconds: int = 10):
         self.storage = storage
         self.engine = engine
         self.ioc = ioc
@@ -603,23 +840,102 @@ class IngestPipeline:
         self.forwarders = forwarders
         self.worker_count = max(1, int(worker_count))
         self.queue_size = max(1, int(queue_size))
+        self.event_logging = bool(event_logging)
+        try:
+            self.stats_interval_seconds = max(0, int(stats_interval_seconds))
+        except (TypeError, ValueError):
+            self.stats_interval_seconds = 10
         self._queue = queue.Queue(maxsize=self.queue_size)
+        self._post_queue = queue.Queue(maxsize=max(1000, int(db_writer_queue_size)))
         self._stats_lock = threading.Lock()
         self._accepting = True
         self._received = 0
         self._enqueued = 0
+        self._prepared = 0
         self._processed = 0
         self._failed = 0
         self._dropped = 0
         self._dropped_udp = 0
         self._dropped_other = 0
+        self._db_queue_dropped = 0
+        self._db_write_failed = 0
         self._high_water = 0
+        self._post_high_water = 0
         self._workers = []
+        self._post_workers = []
+        self._report_stop = threading.Event()
+        self._reporter = None
+        self.db_writer = DBWriter(
+            storage, self._post_queue,
+            queue_size=db_writer_queue_size,
+            batch_size=db_writer_batch_size,
+            max_delay_ms=db_writer_max_delay_ms,
+            failure_callback=self._on_db_failure,
+        )
         for idx in range(self.worker_count):
             t = threading.Thread(target=self._worker_loop, daemon=True,
-                                 name=f"ingest-worker-{idx + 1}")
+                                 name=f"ingest-parser-{idx + 1}")
             t.start()
             self._workers.append(t)
+        for idx in range(self.worker_count):
+            t = threading.Thread(target=self._post_worker_loop, daemon=True,
+                                 name=f"ingest-post-{idx + 1}")
+            t.start()
+            self._post_workers.append(t)
+        if self.stats_interval_seconds > 0:
+            self._reporter = threading.Thread(
+                target=self._stats_report_loop, daemon=True, name="ingest-stats")
+            self._reporter.start()
+
+    def _on_db_failure(self, count, exc):
+        with self._stats_lock:
+            self._failed += count
+            self._db_write_failed += count
+        print(f"[ingest] DB batch failed ({count} event(s)): {type(exc).__name__}: {exc}", file=sys.stderr)
+
+    def _publish_telemetry(self, current, rate):
+        data = dict(current)
+        data["ingest_rate_eps"] = round(float(rate), 3)
+        data["published_at"] = datetime.now(timezone.utc).isoformat()
+        try:
+            self.storage.publish_ingest_telemetry(data)
+        except Exception as exc:
+            print(f"[ingest] telemetry publish failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+
+    def _stats_report_loop(self):
+        previous = self.stats()
+        previous_forward = self.forwarders.stats() if hasattr(self.forwarders, "stats") else {}
+        previous_at = time.monotonic()
+        while not self._report_stop.wait(self.stats_interval_seconds):
+            current = self.stats()
+            current_forward = self.forwarders.stats() if hasattr(self.forwarders, "stats") else {}
+            now = time.monotonic()
+            elapsed = max(0.001, now - previous_at)
+            rate = (current["processed"] - previous.get("processed", 0)) / elapsed
+            changed = any(current[k] != previous.get(k) for k in
+                          ("received", "processed", "failed", "dropped", "db_written"))
+            if changed or current["queue_depth"] or current["db_queue_depth"]:
+                print(
+                    "[ingest] "
+                    f"processed={current['processed']} received={current['received']} "
+                    f"dropped={current['dropped']} failed={current['failed']} "
+                    f"queue={current['queue_depth']}/{current['queue_capacity']} "
+                    f"dbq={current['db_queue_depth']}/{current['db_queue_capacity']} "
+                    f"batch={current['db_batch_avg']:.1f} "
+                    f"commit_p95={current['db_commit_ms_p95']:.1f}ms rate={rate:.1f}/s"
+                )
+            publish = dict(current)
+            publish["interval_dropped"] = max(0, current["dropped"] - previous.get("dropped", 0))
+            publish["interval_failed"] = max(0, current["failed"] - previous.get("failed", 0))
+            publish["interval_db_queue_dropped"] = max(0, current["db_queue_dropped"] - previous.get("db_queue_dropped", 0))
+            publish["interval_db_write_failed"] = max(0, current["db_write_failed"] - previous.get("db_write_failed", 0))
+            publish["forward_queue_depth"] = int(current_forward.get("queue_depth") or 0)
+            publish["forward_queue_capacity"] = int(current_forward.get("queue_capacity") or 0)
+            publish["forward_queue_high_water"] = int(current_forward.get("queue_high_water") or 0)
+            publish["forward_dropped"] = int(current_forward.get("dropped") or 0)
+            publish["interval_forward_dropped"] = max(0, int(current_forward.get("dropped") or 0) - int(previous_forward.get("dropped") or 0))
+            self._publish_telemetry(publish, rate)
+            previous, previous_forward, previous_at = current, current_forward, now
 
     def submit(self, raw, source_ip: str, transport: str = "api", received_at: str = None):
         if not self._accepting:
@@ -641,8 +957,7 @@ class IngestPipeline:
                     self._dropped_other += 1
                 dropped = self._dropped
             if dropped == 1 or dropped % 100 == 0:
-                print(f"[ingest] queue full: dropped={dropped} transport={transport} "
-                      f"capacity={self.queue_size}", file=sys.stderr)
+                print(f"[ingest] queue full: dropped={dropped} transport={transport} capacity={self.queue_size}", file=sys.stderr)
             return False
         with self._stats_lock:
             self._enqueued += 1
@@ -651,19 +966,27 @@ class IngestPipeline:
 
     def stats(self):
         with self._stats_lock:
-            return {
+            base = {
                 "received": self._received,
                 "enqueued": self._enqueued,
+                "prepared": self._prepared,
                 "processed": self._processed,
                 "failed": self._failed,
                 "dropped": self._dropped,
                 "dropped_udp": self._dropped_udp,
                 "dropped_other": self._dropped_other,
+                "db_queue_dropped": self._db_queue_dropped,
+                "db_write_failed": self._db_write_failed,
                 "queue_depth": self._queue.qsize(),
                 "queue_capacity": self.queue_size,
                 "queue_high_water": self._high_water,
+                "post_queue_depth": self._post_queue.qsize(),
+                "post_queue_capacity": self._post_queue.maxsize,
+                "post_queue_high_water": self._post_high_water,
                 "workers": self.worker_count,
             }
+        base.update(self.db_writer.stats())
+        return base
 
     def _worker_loop(self):
         while True:
@@ -672,15 +995,31 @@ class IngestPipeline:
                 if item is self._SENTINEL:
                     return
                 raw, source_ip, received_at, _transport = item
-                if isinstance(raw, bytes):
-                    raw = raw.decode("utf-8", errors="replace")
-                else:
-                    raw = str(raw)
+                raw = raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else str(raw)
                 event = parse_syslog(raw, source_ip)
-                # Timestamp receipt at the socket/API boundary, not after queue wait.
                 event["received_at"] = received_at
                 extracted = self.fields.extract(event)
-                log_id = self.storage.insert_log(event, fields=extracted)
+                if not self.db_writer.submit(event, extracted):
+                    with self._stats_lock:
+                        self._failed += 1
+                        self._db_queue_dropped += 1
+                    continue
+                with self._stats_lock:
+                    self._prepared += 1
+            except Exception as exc:
+                with self._stats_lock:
+                    self._failed += 1
+                print(f"[ingest] preparation failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+            finally:
+                self._queue.task_done()
+
+    def _post_worker_loop(self):
+        while True:
+            item = self._post_queue.get()
+            try:
+                if item is self._SENTINEL:
+                    return
+                log_id, event, extracted = item
                 self.engine.process(log_id, event)
                 self.ioc.process(log_id, event)
                 try:
@@ -688,33 +1027,52 @@ class IngestPipeline:
                 except Exception:
                     pass
                 self.forwarders.forward(event)
-                sev = event["severity"] or "-"
-                print(f"[{event['received_at']}] {source_ip} [{sev}] {event['message'][:120]}")
+                if self.event_logging:
+                    sev = event["severity"] or "-"
+                    print(f"[{event['received_at']}] {event.get('source_ip','')} [{sev}] {event['message'][:120]}")
                 with self._stats_lock:
                     self._processed += 1
+                    self._post_high_water = max(self._post_high_water, self._post_queue.qsize())
             except Exception as exc:
                 with self._stats_lock:
                     self._failed += 1
-                print(f"[ingest] processing failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+                print(f"[ingest] post-processing failed: {type(exc).__name__}: {exc}", file=sys.stderr)
             finally:
-                self._queue.task_done()
+                self._post_queue.task_done()
 
     def stop(self, drain: bool = True):
         self._accepting = False
+        self._report_stop.set()
         if drain:
             self._queue.join()
         else:
             while True:
                 try:
-                    self._queue.get_nowait()
-                    self._queue.task_done()
+                    self._queue.get_nowait(); self._queue.task_done()
                 except queue.Empty:
                     break
+        # Parser workers cannot produce any more DB jobs after this join.
         for _ in self._workers:
             self._queue.put(self._SENTINEL)
         self._queue.join()
         for t in self._workers:
-            t.join(timeout=2)
+            t.join(timeout=3)
+
+        self.db_writer.stop(drain=drain)
+        if drain:
+            self._post_queue.join()
+        for _ in self._post_workers:
+            self._post_queue.put(self._SENTINEL)
+        self._post_queue.join()
+        for t in self._post_workers:
+            t.join(timeout=3)
+        if self._reporter is not None:
+            self._reporter.join(timeout=1)
+        # Publish one final zero-window snapshot without claiming an event rate.
+        try:
+            self._publish_telemetry(self.stats(), 0.0)
+        except Exception:
+            pass
 
 
 # --------------------------------------------------------------------------
@@ -810,7 +1168,13 @@ def main():
         storage, engine, ioc, fields, forwarders,
         worker_count=int(db_cfg.get("ingest_workers", 4)),
         queue_size=int(db_cfg.get("ingest_queue_size", 10000)),
+        db_writer_queue_size=int(db_cfg.get("db_writer_queue_size", 20000)),
+        db_writer_batch_size=int(db_cfg.get("db_writer_batch_size", 100)),
+        db_writer_max_delay_ms=int(db_cfg.get("db_writer_max_delay_ms", 75)),
+        event_logging=bool(db_cfg.get("ingest_event_logging", False)),
+        stats_interval_seconds=int(db_cfg.get("ingest_stats_interval_seconds", 10)),
     )
+    maintenance = MaintenanceWorker(storage, db_cfg)
 
     threads = []
     for p in ports:
@@ -834,6 +1198,7 @@ def main():
             time.sleep(1)
     except KeyboardInterrupt:
         print("\nShutting down.")
+        maintenance.stop()
         pipeline.stop(drain=True)
         forwarders.stop(drain=True)
         fields.stop()
