@@ -142,15 +142,14 @@ Scope:
 - Add PostgreSQL-native `tsvector`/GIN search if warranted by measured load.
 - Record representative ingestion and search performance.
 
-### Slice 5 — Evidence archive lifecycle — IMPLEMENTED
+### Slice 5 — Data retention — PLANNED
 
 Scope:
 
-- No age-based evidence deletion. Archive is disabled by default.
-- Seal old hot evidence into checksummed SQLite archive segments.
-- Preserve every original occurrence ID/time while exact payloads/fields are content-deduplicated.
-- `mode=move` evicts only a verified hot copy; archived evidence remains searchable.
-- Keep SQLite live maintenance non-destructive and archive verification explicit.
+- Add disabled-by-default retention (`retention_days = 0`).
+- Provide dry-run counts and batched deletion.
+- Clean dependent fields/matches/FTS data without orphaning rows.
+- Keep SQLite and PostgreSQL maintenance paths separate.
 
 ### Slice 6 — Poller event idempotency — PLANNED
 
@@ -193,7 +192,7 @@ Scope:
 Scope:
 
 - Add tests for parsing, DB initialization, authentication, CSRF, throttling,
-  API-key ingestion, PostgreSQL query generation, archive lifecycle, idempotency, and
+  API-key ingestion, PostgreSQL query generation, retention, idempotency, and
   URL validation.
 - Use temporary databases and synthetic data only.
 - Never contact production Sophos or external providers from CI.
@@ -206,7 +205,7 @@ Scope:
 4. Slice 10 subset — regression tests for Slices 0–2.
 5. Slice 3 — PostgreSQL compatibility.
 6. Slice 4 — real PostgreSQL integration baseline.
-7. Slices 5–7 — archive lifecycle, idempotency, feed limits.
+7. Slices 5–7 — retention, idempotency, feed limits.
 8. Slices 8–9 — optional SSO/SSRF hardening.
 9. Complete Slice 10.
 
@@ -586,40 +585,3 @@ Runtime change (not documentation-only): added `investigation_profiles.py`; repl
 - Additional DB/SQL/Sophos tests that do not import Flask pass; Flask-dependent full collection is not runnable in this packaging environment because Flask is absent.
 - `python -m compileall -q .`: passed.
 - `python security_static_scan.py`: 0 findings.
-
-## 2026-09-03 — Ingest batching, worker queue, asynchronous forwarding, and FTS fallback
-
-### Runtime changes
-- Removed `FieldIndexer.process()`'s per-event commit; log and normalized fields
-  now share one Storage lock/transaction batch.
-- Added batched field `executemany()` writes and batched re-index/backfill
-  transactions.
-- Added a bounded raw ingest queue plus configurable worker pool. Socket receive
-  threads now timestamp/enqueue raw messages instead of parsing/writing/running
-  rules inline. Queue saturation produces explicit drop counters.
-- Moved forwarding network sends onto a dedicated bounded queue/sender thread.
-- Added RuleEngine synchronization required by parallel ingest workers and clean
-  stop/join behavior for indexing/IOC helper threads.
-- Retained the existing SQLite FTS5 `logs_fts` mirror/triggers, added FTS5
-  availability probing and graceful `LIKE` fallback, and prevented PostgreSQL
-  searches from referencing the SQLite FTS table.
-- Added rollback/reset handling for batched Storage transactions after write
-  failures.
-
-### Configuration
-- Default commit batch: 100 write units.
-- Default commit max delay: 100 ms.
-- Default ingest workers: 4.
-- Default ingest queue: 10,000.
-- Default forwarding queue: 10,000.
-
-### Validation
-- Targeted ingest/indexing tests: 6 passed.
-- Broader selected non-Flask regression: 34 passed.
-- `compileall`: passed.
-- Static security scan: 21 files / 0 findings.
-- Bounded local SQLite stress: 5,000/5,000 events and 15,000 field rows
-  persisted, zero ingest/forward drops or processing failures, about 6,934
-  events/s. This is not a production benchmark.
-- Full pytest collection is blocked because Flask is not installed in the
-  packaging environment (`ModuleNotFoundError: flask`).

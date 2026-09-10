@@ -23,8 +23,6 @@ mini_siem/
   requirements.txt
 ```
 
-> **Production installation:** see [`INSTALLATION.md`](INSTALLATION.md) for the one-command systemd setup, including automatic creation of the `siem` service account and `minisiem` group.
-
 ## 1. Install dependencies
 
 ```bash
@@ -60,7 +58,6 @@ just edit `db-config.json` by hand:
 ```json
 {
   "backend": "postgres",
-  "text_search": "auto",
   "sqlite":   { "path": "siem.db" },
   "postgres": { "host": "db.internal", "port": 5432,
                 "dbname": "minisiem", "user": "minisiem", "password": "secret" }
@@ -78,210 +75,6 @@ Note: SQLite remains the tested-by-default path in this build. The
 PostgreSQL path is implemented through the same abstraction and verified
 by construction; test it against your Postgres with `configure-db.py`
 (which runs a real connect + table create) before relying on it.
-
-### Ingest throughput, DB micro-batching, and burst controls
-
-The collector uses three bounded stages: socket/API receive -> parser/extraction
-workers -> one dedicated DB writer -> post-persist rule/IOC/forwarding workers.
-SQLite only has one writer, so parser threads no longer compete for that writer
-lock one event at a time. The DB writer owns the high-volume log path and commits
-micro-batches while preserving log + normalized-field atomicity.
-
-The default runtime controls are top-level keys in `db-config.json`:
-
-```json
-{
-  "ingest_workers": 4,
-  "ingest_queue_size": 10000,
-  "db_writer_queue_size": 20000,
-  "db_writer_batch_size": 100,
-  "db_writer_max_delay_ms": 75,
-  "forward_queue_size": 10000,
-  "ingest_event_logging": false,
-  "ingest_stats_interval_seconds": 10,
-  "commit_batch_size": 100,
-  "commit_max_delay_ms": 100
-}
-```
-
-- `ingest_workers`: parser/extraction worker count and post-persist detection
-  worker count. Socket threads only timestamp/enqueue; expensive work stays off
-  the receive thread.
-- `ingest_queue_size`: bounded raw-message queue. UDP uses non-blocking enqueue;
-  TCP/API waits briefly. Overflow is explicit in telemetry instead of silently
-  hiding application-level loss.
-- `db_writer_queue_size`: bounded prepared-event queue in front of the single DB
-  writer. If sustained overload fills it, the event is counted as a DB-queue
-  drop/failure rather than consuming unbounded RAM.
-- `db_writer_batch_size` / `db_writer_max_delay_ms`: the DB writer commits when
-  it has up to 100 prepared events or the oldest batch has waited about 75 ms.
-  One transaction includes each log row, its extracted fields, total/hourly
-  counters, and source-last-seen state. Low traffic therefore stays low-latency;
-  bursts amortize commit/fsync cost. These in-memory queues are not a durable
-  message broker: a host/process crash can lose accepted-but-not-yet-committed
-  events.
-- `commit_batch_size` / `commit_max_delay_ms`: retained for compatibility and
-  lower-volume auxiliary/direct `Storage.insert_log()` callers. The main socket
-  ingest path now uses the dedicated DB-writer settings above.
-- `forward_queue_size`: forwarding remains a separate bounded sender queue, so
-  a slow downstream destination cannot stall persistence.
-- `ingest_event_logging`: defaults to `false`; per-event stdout/journald is for
-  short debugging only.
-- `ingest_stats_interval_seconds`: every 10 seconds the listener emits one
-  aggregate status line and publishes cross-process telemetry (rates, receive /
-  DB / post queue depths, drops/failures, average batch size, and rolling commit
-  avg/p50/p95) into the database for the Dashboard.
-
-Rules and IOC checks execute only after the DB writer has produced a committed
-`log_id`, so alerts never intentionally reference an event that failed its log
-transaction. Shutdown stops new submissions, drains parser work, flushes the DB
-writer queue/micro-batch, drains post-persist processing and forwarding, and then
-closes storage.
-
-### Cursor-based live/history queries and statistics rollups
-
-`/api/logs` keeps its legacy array response by default, but clients can request
-`envelope=1` to receive rows plus opaque `newest_cursor` / `oldest_cursor`
-values. `after_cursor` means chronologically newer than `(received_at,id)` and
-`before_cursor` means older; keyset pagination is supported for the default or
-`received_at` sort and does not use large `OFFSET`s. `after_id` / `before_id`
-remain lightweight ID-only compatibility options. The Dashboard's 5-second live
-refresh uses `after_cursor` and fetches only unseen rows when the normal
-recent-first query is active; filter/sort changes safely perform a full query.
-
-Phase 4 also maintains three lightweight rollups in the same log transaction:
-`runtime_stats` (including total events and listener telemetry),
-`hourly_log_stats` (hour + severity counts), and `source_last_seen`. Existing DBs
-bootstrap totals/source state once and only the most recent 14 days of hourly
-history. `/api/stats` reads the rollups for total events and silent-source
-detection. Its 24-hour log count is still exact: complete UTC hours come from the
-rollup, while only the two partial boundary hours use indexed `received_at` raw-log
-ranges. Alert and IOC 24-hour queries remain indexed raw-table queries because
-those tables are much smaller.
-
-Message search is selected by the top-level `text_search` setting in
-`db-config.json` (`auto`, `fts`, `trigram`, or `like`); the optional
-`MINISIEM_TEXT_SEARCH` environment variable overrides query selection at runtime;
-index provisioning still follows the persisted `db-config.json` mode. `auto` is
-the recommended production setting. SQLite uses its synchronized FTS5 mirror
-when available and otherwise falls back to `LIKE`. PostgreSQL initialization follows the selected mode: `auto` best-effort creates
-a native expression GIN index over `to_tsvector('simple', message)` and also
-attempts to enable `pg_trgm` plus a GIN trigram index; `fts` creates only the
-FTS index, `trigram` creates only the optional trigram path, and `like` creates
-neither. PostgreSQL `auto` prefers indexed native FTS, then indexed trigram
-search, then `ILIKE`. Failure to create the optional `pg_trgm` extension never
-prevents SIEM startup. The Log Search UI shows the effective engine and
-whether it is indexed. Text search remains AND-ed with source, host, destination,
-field, severity, ID, and time filters regardless of backend.
-
-### SQLite runtime tuning
-
-The default SQLite stanza is intentionally conservative and may be adjusted per host:
-
-```json
-"sqlite": {
-  "path": "siem.db",
-  "busy_timeout_ms": 5000,
-  "cache_size_kib": 32768,
-  "temp_store_memory": true,
-  "mmap_size_mb": 128,
-  "wal_autocheckpoint_pages": 1000,
-  "optimize_interval_seconds": 3600
-}
-```
-
-`busy_timeout_ms` also sets the Python driver wait so a short listener/dashboard
-writer collision waits instead of immediately returning `database is locked`. Cache
-and mmap values are bounded in code to prevent an accidental config typo from
-reserving unbounded memory. `PRAGMA optimize` is rate-limited once per database per
-process rather than being run on every dashboard connection. Fresh SQLite databases
-request `auto_vacuum=INCREMENTAL`; existing databases are never silently rewritten
-with a blocking full VACUUM.
-
-### Performance Phase 6: archive-first evidence lifecycle, query truth, and overload health
-
-mini-SIEM no longer has an age-based log-deletion lifecycle. Historical evidence is
-handled through sealed archive segments instead. Archive is **OFF by default**:
-
-```json
-"archive": {
-  "enabled": false,
-  "directory": "archive",
-  "hot_days": 30,
-  "mode": "copy",
-  "batch_rows": 500,
-  "max_batches_per_cycle": 20,
-  "run_interval_seconds": 3600,
-  "verify_on_create": true
-},
-"maintenance": {
-  "wal_checkpoint_mb": 256,
-  "incremental_vacuum_pages": 2000,
-  "quick_check_interval_seconds": 86400
-}
-```
-
-`mode=copy` keeps the hot row and creates a sealed archive copy. `mode=move` evicts
-the hot copy only **after** the archive segment has been committed, compacted,
-SHA-256 checksummed, cataloged, re-opened, and verified. A crash between archive seal
-and hot eviction can therefore create an extra copy, not lost evidence. Existing
-Phase-5 `retention` keys are ignored by the new maintenance path and do not delete logs.
-
-Archive segments use exact content-addressed deduplication. Every occurrence preserves
-its original global log ID and `received_at`; identical event payloads (including raw
-text and extracted fields) are stored once per segment. Similar-but-not-identical
-security events are never collapsed, because repetition can itself be detection
-evidence. The sealed segment exposes compatible `logs` / `log_fields` views, so normal
-Log Search, text search, Source/Host/Destination filters, field filters, Timeline, and
-row expansion continue to find moved evidence. If an expected archive segment cannot
-be opened, Log Search returns an explicit archive availability error instead of a false
-empty result.
-
-Query telemetry remains strictly observational. It records only coarse query classes
-and durations, never search text/filter values, and all telemetry writes are fail-open:
-a telemetry error cannot change the real query WHERE clause or suppress rows.
-
-SQLite maintenance is non-destructive: bounded PASSIVE WAL checkpointing, bounded
-`incremental_vacuum` only on databases already configured for incremental auto-vacuum,
-`PRAGMA optimize`, free-page monitoring, and a rate-limited `PRAGMA quick_check`.
-The live hot database never receives an automatic full `VACUUM`.
-
-Operational health remains `HEALTHY`, `DEGRADED`, or `OVERLOADED` and now exposes the
-per-queue pressure signals used to derive that state. Health is observability only; it
-does not itself throttle, drop, or rewrite ingest behavior.
-
-```json
-"query_telemetry": {"max_samples": 512, "slow_ms": 250},
-"overload": {
-  "queue_warn_percent": 80,
-  "queue_overload_percent": 95,
-  "commit_p95_warn_ms": 50,
-  "query_p95_warn_ms": 250,
-  "telemetry_stale_seconds": 30
-}
-```
-
-The existing IOC implementation remains available, including the Phase-5 matcher
-optimizations, but Phase 6 intentionally freezes IOC architecture. A later decision can
-keep IOC matching embedded or move it into a separate enrichment service without being
-forced by this evidence-lifecycle work.
-
-PostgreSQL still uses bounded pool/session settings and the guarded validation harness:
-
-```json
-"postgres": {
-  "pool_min": 1,
-  "pool_max": 10,
-  "connect_timeout_seconds": 5,
-  "statement_timeout_ms": 15000,
-  "lock_timeout_ms": 3000,
-  "idle_in_transaction_session_timeout_ms": 30000,
-  "application_name": "mini-siem"
-}
-```
-
-Live PostgreSQL `EXPLAIN (ANALYZE, BUFFERS)` evidence remains a separate validation
-gate; the existence of the harness is not a production-readiness claim.
 
 ## 1c. Authentication (login on the dashboard)
 
@@ -472,20 +265,8 @@ configured to send TCP for reliable delivery.
 python3 dashboard.py --db siem.db --host 127.0.0.1 --port 8080
 ```
 Then open `http://127.0.0.1:8080`. The command serves Flask through Waitress
-(single process, threaded) rather than Werkzeug's development server. The live
-dashboard auto-refresh is deliberately split: Log Search refreshes every 5
-seconds and Stats every 15 seconds; Alerts and the AI queue are loaded initially
-and thereafter only by an explicit/manual workflow. Cascade Timeline is loaded
-only when opened or when its own Refresh button is pressed. Background refreshes
-never overlap the same endpoint: an in-flight background request is skipped,
-manual/filter-driven refreshes cancel stale requests, and hidden browser tabs
-pause live polling. For the normal recent-first view, background Log Search refreshes
-use the latest `(received_at,id)` cursor, so `/api/logs` returns only unseen events;
-those rows are prepended without rebuilding the existing DOM, rows that fall beyond
-the 200-row window are removed, and one delegated table handler replaces per-row
-click listeners. Bursts larger than one page are consumed in subsequent cursor
-requests rather than skipped. Filter/sort changes still perform a full render for
-correctness. The dashboard is read-only with respect to collected logs and can
+(single process, threaded) rather than Werkzeug's development server. It polls
+the same SQLite file the listener writes to, refreshing every 5 seconds. It's read-only and can
 run on a different machine than the listener as long as it can reach
 the `siem.db` file (e.g. on shared storage), or you point `--db` at a
 copy/replica.
@@ -570,52 +351,20 @@ message you expand.
 
 **Extracted columns:** enter field names (comma-separated, up to 8) in
 the normalization settings and each becomes a real column to the right
-of Message — with a per-column filter box and click-to-sort headers
-(numeric-aware; missing values sort last). `field=value` is an indexed exact
-match; `field=value*` is indexed prefix; `field=*value*` explicitly requests the
-slower contains path. Extracted fields are **materialized at ingest** into an indexed
-`log_fields` table with both display `value` and lowercase `value_norm`, so filtering
+of Message — with a per-column filter box (substring, case-insensitive)
+and click-to-sort headers (numeric-aware; missing values sort last).
+Extracted fields are **materialized at ingest** into an indexed
+`log_fields` table (same database — no second DB needed), so filtering
 and sorting by extracted fields searches your ENTIRE history via
 indexed lookups, with no scan cap. Requirements: a little extra disk
 (one small row per field per log) and one habit — after adding or
 changing patterns, click **Re-index existing logs** once so older logs
 gain the new fields (new logs pick patterns up automatically within
 seconds). Exports include the columns as `x_<name>` and honor the same
-filters. SQLite runs in WAL + `synchronous=NORMAL` and now applies conservative
-runtime tuning from `db-config.json`: a bounded busy timeout, page cache, in-memory
-temp store, mmap window, WAL autocheckpoint size, and rate-limited `PRAGMA optimize`.
-You'll see `siem.db-wal`/`siem.db-shm` files beside the DB — that's normal.
-Double-clicking an **alert** opens its related logs
+filters. SQLite now runs in WAL journal mode for much higher ingest
+throughput (~4,500 ev/s with indexing in testing); you'll see
+`siem.db-wal`/`siem.db-shm` files beside the DB — that's normal. Double-clicking an **alert** opens its related logs
 in the log search view.
-
-**Log Search boolean controls and timeline.** Source, Host, and Destination each
-accept comma-separated terms with a per-box AND/OR selector. Their normal fast path
-is index-friendly: a full IP is exact, bare text is prefix, `=value` forces exact,
-`value*` forces prefix, and `*value*` explicitly selects contains. Existing CIDR /
-dotted-IP subnet syntax remains supported. The operator is scoped to positive terms
-inside that one box; exclusions (`!term`) always apply, and different filter families
-remain conjunctive. The direct `field=value`
-query-builder has the same AND/OR control and preserves repeated field names, so
-queries such as `event_id=4624 OR event_id=4625` are representable without one
-value overwriting the other. Message full-text search and field filters are
-executed together in the same query — field OR never turns them into a
-message-OR-field query. **Cascade timeline** reuses the exact active Log Search
-filters and opens in a native HTML `<dialog>` above the dashboard rather than
-inserting itself into the log table flow. On desktop the dialog is approximately
-90% of the viewport width and 85% of its height; on small screens it becomes
-full-screen. The timeline initially loads the most recent 500 matching events and
-renders them chronologically. Its Refresh button uses the timeline's saved
-`after_cursor` and fetches only newer matching events. The logical canvas may grow,
-but the browser renders only cards near the visible horizontal viewport (plus a
-small buffer), keeping Timeline DOM size bounded. The client retains at most 5,000
-loaded events per open timeline. It shows the displayed range,
-source-to-destination/host path, a compact first-sentence Message summary, and a
-recognized Event ID when present. Close it with the top-right `×`, `Esc`, or the
-shaded backdrop. Clicking an event closes the dialog and locates/highlights that
-log in the main table; if it is outside the current 200-row page, the dashboard
-fetches that exact ID under the same active filters and adds it to the current
-table before scrolling. Search filters are not changed. Timeline timestamps use
-the compact form `Jul 25 2011 23:15` in the browser's local time.
 
 ### How normalization works — the three layers
 
@@ -864,15 +613,13 @@ mini-siem-listener   root             listener.py    TCP/UDP 514
 mini-siem-dashboard  siem (non-login) dashboard.py   Waitress 8080 + API pollers
 ```
 
-Create a project virtual environment first:
+The installer uses an application-local Python virtual environment. It reuses either
+`/opt/mini_siem/.venv` or the legacy/current `/opt/mini_siem/venv` when present.
+If neither exists, it creates `.venv` automatically and installs
+`requirements.txt`. This prevents systemd from depending on a personal user's
+`~/.local` Python packages.
 
-```bash
-cd /opt/mini_siem
-python3 -m venv .venv
-./.venv/bin/pip install -r requirements.txt
-```
-
-Then install the services. No username or numeric UID is required:
+Install or repair the services. No username or numeric UID is required:
 
 ```bash
 cd /opt/mini_siem
@@ -885,9 +632,12 @@ shell and a shared `minisiem` group. `mini-siem-dashboard` always runs as
 privileged port. Your personal account (for example `matt`) is not used by
 either service.
 
-`install-services.sh` **prefers `/opt/mini_siem/.venv/bin/python3`** when that
-venv exists, so `sudo` does not accidentally select `/bin/python3` while Flask
-and Waitress are installed only for another interpreter/user.
+`install-services.sh` prefers `.venv/bin/python3`/`python`, then
+`venv/bin/python3`/`python`, and never uses system Python as the final service
+runtime. If the selected project venv is missing Flask/Waitress, the installer
+repairs its dependencies from `requirements.txt`. Re-running the installer is
+the supported repair path for a partial systemd installation; it rewrites,
+enables, restarts, and verifies both units.
 
 On CentOS/RHEL with SELinux Enforcing, moving/copying the project from a home
 directory can leave `/opt/mini_siem` incorrectly labeled `user_home_t`. That
@@ -1010,3 +760,12 @@ Option B/C/D above and drop to an unprivileged user.)
 - This is a lightweight/reference implementation, not a hardened
   Internet-facing service — run it inside your trusted network
   perimeter, not exposed directly to the internet.
+
+## PostgreSQL Migration Notes
+
+The PostgreSQL migration effort identified several operational requirements:
+
+- backend migration must preserve application state
+- schema handling must support existing databases
+- administrator bootstrap behavior must be migration-safe
+- deployment readiness requires both infrastructure and application validation

@@ -11,8 +11,7 @@
 #   1. Online-backup siem.db -> backups/siem-YYYYMMDD-HHMMSS.db
 #   2. Run PRAGMA integrity_check on the BACKUP (checking the copy avoids
 #      contending with the live writer)
-#   3. Rotate: keep the newest $KEEP backup copies
-#      (this NEVER rotates/deletes sealed evidence archive segments)
+#   3. Rotate: keep the newest $KEEP backups
 #   4. If integrity fails, shout: stderr + logger + optional syslog to the
 #      SIEM itself + optional email
 #
@@ -34,8 +33,6 @@ BACKUP_DIR="${BACKUP_DIR:-$SCRIPT_DIR/backups}"
 KEEP="${KEEP:-14}"                 # how many backups to retain
 ALERT_EMAIL="${ALERT_EMAIL:-}"     # optional: email address for failures
 SIEM_SYSLOG="${SIEM_SYSLOG:-}"     # optional: host:port to send a failure syslog to (e.g. 127.0.0.1:514)
-CHECKPOINT_WAL_MB="${CHECKPOINT_WAL_MB:-256}"
-INCREMENTAL_VACUUM_PAGES="${INCREMENTAL_VACUUM_PAGES:-2000}"
 
 stamp="$(date -u +%Y%m%d-%H%M%S)"
 dest="$BACKUP_DIR/siem-$stamp.db"
@@ -88,28 +85,6 @@ if [ "$count" -gt "$KEEP" ]; then
         rm -f "${backups[$i]}" && log "rotated out $(basename "${backups[$i]}")"
     done
 fi
-
-# ---- 4. bounded online housekeeping -------------------------------------
-# Never run a full VACUUM against the live SIEM. Passive checkpoint only when
-# WAL has grown beyond the threshold; incremental_vacuum only when the DB was
-# created with auto_vacuum=INCREMENTAL.
-wal="$DB-wal"
-wal_bytes=0
-[ -f "$wal" ] && wal_bytes=$(stat -c%s "$wal" 2>/dev/null || echo 0)
-threshold_bytes=$((CHECKPOINT_WAL_MB * 1024 * 1024))
-if [ "$wal_bytes" -ge "$threshold_bytes" ]; then
-    log "WAL ${wal_bytes} bytes >= ${threshold_bytes}; requesting PASSIVE checkpoint"
-    sqlite3 "$DB" 'PRAGMA wal_checkpoint(PASSIVE);' || log "PASSIVE checkpoint busy/failed; will retry next run"
-fi
-auto_vacuum=$(sqlite3 "$DB" 'PRAGMA auto_vacuum;' 2>/dev/null || echo 0)
-page_count=$(sqlite3 "$DB" 'PRAGMA page_count;' 2>/dev/null || echo '?')
-freelist=$(sqlite3 "$DB" 'PRAGMA freelist_count;' 2>/dev/null || echo '?')
-log "pages=$page_count freelist=$freelist auto_vacuum=$auto_vacuum"
-if [ "$auto_vacuum" = "2" ] && [ "$INCREMENTAL_VACUUM_PAGES" -gt 0 ]; then
-    log "requesting incremental_vacuum($INCREMENTAL_VACUUM_PAGES)"
-    sqlite3 "$DB" "PRAGMA incremental_vacuum($INCREMENTAL_VACUUM_PAGES);" || log "incremental vacuum skipped/busy"
-fi
-sqlite3 "$DB" 'PRAGMA optimize;' >/dev/null 2>&1 || true
 
 log "done — $count backup(s) retained (keeping newest $KEEP)"
 exit 0

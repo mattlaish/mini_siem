@@ -22,7 +22,6 @@ Delivery semantics match syslog norms: UDP is fire-and-forget; TCP
 failures set last_error and drop the message (no buffering/replay).
 """
 
-import queue
 import re
 import socket
 import threading
@@ -204,129 +203,38 @@ class ForwarderManager:
     """Hot-reloads forwarder config from the DB and fans each received
     raw syslog message out to every matching destination."""
 
-    _SENTINEL = object()
-
     def __init__(self, storage, listen_port: int, reload_interval: int = 5,
-                 flush_interval: int = 10, queue_size: int = 10000):
+                 flush_interval: int = 10):
         self.storage = storage
         self.listen_port = listen_port
         self.reload_interval = reload_interval
         self.flush_interval = flush_interval
-        self.queue_size = max(1, int(queue_size))
         self._udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self._forwarders = {}   # id -> _RuntimeForwarder
         self._warned_loops = set()  # forwarder ids already warned about
         self._fw_lock = threading.Lock()
-        self._queue = queue.Queue(maxsize=self.queue_size)
-        self._stats_lock = threading.Lock()
-        self._dropped = 0
-        self._enqueued = 0
-        self._processed_events = 0
-        self._high_water = 0
-        self._accepting = True
-        self._stop = threading.Event()
         self._reload()
-        self._sender_thread = threading.Thread(
-            target=self._sender_loop, daemon=True, name="forwarder-sender")
-        self._sender_thread.start()
-        self._background_thread = threading.Thread(
-            target=self._background_loop, daemon=True, name="forwarder-config")
-        self._background_thread.start()
+        t = threading.Thread(target=self._background_loop, daemon=True)
+        t.start()
 
     # -- public API ----------------------------------------------------------
 
     def forward(self, event: dict):
-        """Queue a forwarding request without doing network I/O on ingest."""
         raw = event.get("raw")
-        if not raw or not self._accepting:
-            return False
-        snapshot = {
-            "raw": raw,
-            "severity": event.get("severity"),
-            "format": event.get("format"),
-            "hostname": event.get("hostname"),
-            "peer_ip": event.get("peer_ip"),
-            "source_ip": event.get("source_ip"),
-        }
-        try:
-            self._queue.put_nowait(snapshot)
-        except queue.Full:
-            with self._stats_lock:
-                self._dropped += 1
-                dropped = self._dropped
-            if dropped == 1 or dropped % 100 == 0:
-                print(f"[forwarder] queue full: dropped={dropped} capacity={self.queue_size}")
-            return False
-        with self._stats_lock:
-            self._enqueued += 1
-            self._high_water = max(self._high_water, self._queue.qsize())
-        return True
-
-    def stats(self):
-        with self._stats_lock:
-            return {
-                "enqueued": self._enqueued,
-                "processed_events": self._processed_events,
-                "dropped": self._dropped,
-                "queue_depth": self._queue.qsize(),
-                "queue_capacity": self.queue_size,
-                "queue_high_water": self._high_water,
-            }
-
-    def _sender_loop(self):
-        while True:
-            event = self._queue.get()
-            try:
-                if event is self._SENTINEL:
-                    return
-                raw = event["raw"]
-                # Keep runtime forwarder objects/socket state stable for the send.
-                # A slow destination can delay other destinations, but it cannot
-                # delay collection because this is a dedicated sender thread.
-                with self._fw_lock:
-                    targets = [fw for fw in self._forwarders.values() if fw.wants(event)]
-                    for fw in targets:
-                        fw.send(apply_origin(raw, event, fw.origin_mode), self._udp_sock)
-                with self._stats_lock:
-                    self._processed_events += 1
-            except Exception as exc:
-                print(f"[forwarder] sender error: {type(exc).__name__}: {exc}")
-            finally:
-                self._queue.task_done()
-
-    def stop(self, drain: bool = True):
-        self._accepting = False
-        if drain:
-            self._queue.join()
-        else:
-            while True:
-                try:
-                    self._queue.get_nowait()
-                    self._queue.task_done()
-                except queue.Empty:
-                    break
-        self._queue.put(self._SENTINEL)
-        self._queue.join()
-        self._sender_thread.join(timeout=4)
-        self._stop.set()
-        self._background_thread.join(timeout=2)
-        try:
-            self._flush_stats()
-        except Exception:
-            pass
+        if not raw:
+            return
         with self._fw_lock:
-            for fw in self._forwarders.values():
-                fw._close_tcp()
-        try:
-            self._udp_sock.close()
-        except OSError:
-            pass
+            targets = [fw for fw in self._forwarders.values() if fw.wants(event)]
+        for fw in targets:
+            # per-destination: byte-faithful passthrough, or origin-annotated
+            fw.send(apply_origin(raw, event, fw.origin_mode), self._udp_sock)
 
     # -- config reload + stats flush ------------------------------------------
 
     def _background_loop(self):
         last_flush = time.time()
-        while not self._stop.wait(self.reload_interval):
+        while True:
+            time.sleep(self.reload_interval)
             try:
                 self._reload()
             except Exception as exc:
@@ -396,16 +304,13 @@ class ForwarderManager:
         if not snapshots:
             return
         with self.storage.lock:
-            try:
-                self.storage.conn.executemany(
+            for count, last_at, last_err, fw_id in snapshots:
+                self.storage.conn.execute(
                     """UPDATE forwarders
                        SET forwarded_count = forwarded_count + ?,
                            last_forward_at = COALESCE(?, last_forward_at),
                            last_error = ?
                        WHERE id = ?""",
-                    snapshots,
+                    (count, last_at, last_err, fw_id),
                 )
-                self.storage.commit_locked()
-            except Exception:
-                self.storage.rollback_locked()
-                raise
+            self.storage.conn.commit()

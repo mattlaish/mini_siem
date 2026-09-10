@@ -13,8 +13,7 @@ def configure(services):
 
 @bp.get("/api/health")
 def api_health():
-    query_stats = _svc.query_telemetry().snapshot() if hasattr(_svc, "query_telemetry") else {}
-    return jsonify(health_mod.collect(_svc.get_conn(), _svc.db_config(), query_stats=query_stats))
+    return jsonify(health_mod.collect(_svc.get_conn(), _svc.db_config()))
 
 @bp.get("/api/db/integrity")
 def api_db_integrity():

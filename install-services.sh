@@ -12,10 +12,12 @@
 # non-login system account named `siem` for it. The listener stays root only so
 # it can bind the privileged syslog port directly.
 #
-# Python selection:
-#   1) <project>/.venv/bin/python3
-#   2) <project>/.venv/bin/python
-#   3) python3 found in PATH
+# Python runtime selection / bootstrap:
+#   1) <project>/.venv/bin/python3 or python
+#   2) <project>/venv/bin/python3 or python (legacy/current deployments)
+#   3) if neither project venv is usable, create <project>/.venv and install
+#      requirements.txt there. System Python is used only to bootstrap the venv,
+#      never as the final service runtime.
 #
 # CentOS/RHEL SELinux:
 # If the project was copied from a home directory into /opt with preserved
@@ -81,20 +83,65 @@ if [[ $# -gt 0 ]]; then
     exit 1
 fi
 
-# Prefer the project venv. This avoids sudo selecting /bin/python3 while Flask
-# and Waitress are installed only in the deployment venv.
-if [[ -x "${SCRIPT_DIR}/.venv/bin/python3" ]]; then
-    PYTHON_BIN="${SCRIPT_DIR}/.venv/bin/python3"
-elif [[ -x "${SCRIPT_DIR}/.venv/bin/python" ]]; then
-    PYTHON_BIN="${SCRIPT_DIR}/.venv/bin/python"
-else
-    PYTHON_BIN="$(command -v python3 || true)"
+# Select or bootstrap a project-owned virtual environment.  Supporting both
+# `.venv` and `venv` lets the installer safely repair older deployments without
+# forcing a runtime move.  System Python is only a bootstrap interpreter.
+BASE_PYTHON="$(command -v python3 || true)"
+PYTHON_BIN=""
+for candidate in \
+    "${SCRIPT_DIR}/.venv/bin/python3" \
+    "${SCRIPT_DIR}/.venv/bin/python" \
+    "${SCRIPT_DIR}/venv/bin/python3" \
+    "${SCRIPT_DIR}/venv/bin/python"; do
+    if [[ -x "${candidate}" ]]; then
+        PYTHON_BIN="${candidate}"
+        break
+    fi
+done
+
+if [[ -z "${PYTHON_BIN}" ]]; then
+    if [[ -z "${BASE_PYTHON}" || ! -x "${BASE_PYTHON}" ]]; then
+        echo "No usable Python 3 interpreter found to bootstrap mini-SIEM." >&2
+        exit 1
+    fi
+    if [[ ! -f "${SCRIPT_DIR}/requirements.txt" ]]; then
+        echo "requirements.txt is missing from ${SCRIPT_DIR}." >&2
+        exit 1
+    fi
+    echo "No project venv found; creating ${SCRIPT_DIR}/.venv ..."
+    "${BASE_PYTHON}" -m venv "${SCRIPT_DIR}/.venv"
+    if [[ -x "${SCRIPT_DIR}/.venv/bin/python3" ]]; then
+        PYTHON_BIN="${SCRIPT_DIR}/.venv/bin/python3"
+    else
+        PYTHON_BIN="${SCRIPT_DIR}/.venv/bin/python"
+    fi
 fi
-if [[ -z "${PYTHON_BIN}" || ! -x "${PYTHON_BIN}" ]]; then
-    echo "No usable Python 3 interpreter found." >&2
-    echo "Recommended:" >&2
-    echo "    python3 -m venv ${SCRIPT_DIR}/.venv" >&2
-    echo "    ${SCRIPT_DIR}/.venv/bin/pip install -r ${SCRIPT_DIR}/requirements.txt" >&2
+
+if [[ ! -x "${PYTHON_BIN}" ]]; then
+    echo "Selected Python runtime is not executable: ${PYTHON_BIN}" >&2
+    exit 1
+fi
+
+# Repair missing dependencies inside the selected project venv.  This avoids
+# relying on ~/.local site-packages belonging to the administrator who runs sudo.
+if ! "${PYTHON_BIN}" -c "import flask, waitress" 2>/dev/null; then
+    if [[ ! -f "${SCRIPT_DIR}/requirements.txt" ]]; then
+        echo "requirements.txt is missing from ${SCRIPT_DIR}." >&2
+        exit 1
+    fi
+    echo "Installing mini-SIEM Python dependencies into $(dirname "$(dirname "${PYTHON_BIN}")") ..."
+    if ! "${PYTHON_BIN}" -m pip --version >/dev/null 2>&1; then
+        "${PYTHON_BIN}" -m ensurepip --upgrade >/dev/null 2>&1 || true
+    fi
+    if ! "${PYTHON_BIN}" -m pip install -r "${SCRIPT_DIR}/requirements.txt"; then
+        echo "Dependency installation failed for ${PYTHON_BIN}." >&2
+        echo "Fix package/network access, then re-run this installer." >&2
+        exit 1
+    fi
+fi
+
+if ! "${PYTHON_BIN}" -c "import flask, waitress" 2>/dev/null; then
+    echo "'${PYTHON_BIN}' still cannot import Flask and Waitress after dependency repair." >&2
     exit 1
 fi
 
@@ -107,21 +154,13 @@ for f in listener.py dashboard.py; do
     fi
 done
 
-if ! "${PYTHON_BIN}" -c "import flask, waitress" 2>/dev/null; then
-    echo "'${PYTHON_BIN}' cannot import Flask and Waitress." >&2
-    echo "Recommended:" >&2
-    echo "    python3 -m venv ${SCRIPT_DIR}/.venv" >&2
-    echo "    ${SCRIPT_DIR}/.venv/bin/pip install -r ${SCRIPT_DIR}/requirements.txt" >&2
-    echo "Then re-run this installer." >&2
-    exit 1
-fi
-
 # CentOS/RHEL: cp -a / mv from a home directory can leave /opt content labeled
 # user_home_t. systemd may then be denied EXEC under SELinux Enforcing.
 if command -v getenforce >/dev/null 2>&1 && [[ "$(getenforce)" == "Enforcing" ]]; then
     CURRENT_CONTEXT="$(ls -Zd "${SCRIPT_DIR}" 2>/dev/null | awk '{print $1}' || true)"
-    if [[ "${SCRIPT_DIR}" == /opt/* && "${CURRENT_CONTEXT}" == *":user_home_t:"* ]]; then
-        echo "SELinux: ${SCRIPT_DIR} is labeled user_home_t under /opt; restoring default labels..."
+    PYTHON_CONTEXT="$(ls -Z "${PYTHON_BIN}" 2>/dev/null | awk '{print $1}' || true)"
+    if [[ "${SCRIPT_DIR}" == /opt/* && ( "${CURRENT_CONTEXT}" == *":user_home_t:"* || "${PYTHON_CONTEXT}" == *":user_home_t:"* ) ]]; then
+        echo "SELinux: stale user_home_t label detected under ${SCRIPT_DIR}; restoring default labels..."
         if command -v restorecon >/dev/null 2>&1; then
             restorecon -RF "${SCRIPT_DIR}"
         else
@@ -189,11 +228,6 @@ chgrp -R "${SHARED_GROUP}" "${SCRIPT_DIR}"
 chmod -R g+rX "${SCRIPT_DIR}"
 chmod 2775 "${SCRIPT_DIR}"
 
-# Default evidence archive path. The listener may run as root to bind 514,
-# while the dashboard runs as siem:minisiem and needs read/traverse access.
-# setgid keeps newly sealed segment files in the shared minisiem group.
-install -d -o root -g "${SHARED_GROUP}" -m 2750 "${SCRIPT_DIR}/archive"
-
 for f in "${SCRIPT_DIR}/db-config.json" "${SCRIPT_DIR}/siem.db" "${SCRIPT_DIR}/siem.db-wal" "${SCRIPT_DIR}/siem.db-shm"; do
     if [[ -e "${f}" ]]; then
         chgrp "${SHARED_GROUP}" "${f}"
@@ -219,6 +253,16 @@ if command -v runuser >/dev/null 2>&1; then
         echo "Service account '${SERVICE_USER}' cannot write ${SCRIPT_DIR}; SQLite WAL/SHM creation would fail." >&2
         exit 1
     fi
+fi
+
+# Re-running this installer is the supported repair path.  Detect partial
+# systemd state explicitly so operators know the installer is reconciling it.
+LISTENER_EXISTS=0
+DASHBOARD_EXISTS=0
+[[ -f "${LISTENER_UNIT}" ]] && LISTENER_EXISTS=1
+[[ -f "${DASHBOARD_UNIT}" ]] && DASHBOARD_EXISTS=1
+if [[ "${LISTENER_EXISTS}" -ne "${DASHBOARD_EXISTS}" ]]; then
+    echo "Partial mini-SIEM service installation detected; repairing both systemd units."
 fi
 
 cat > "${LISTENER_UNIT}" <<EOF
@@ -268,7 +312,7 @@ systemctl reset-failed "${LISTENER_SVC}" "${DASHBOARD_SVC}" 2>/dev/null || true
 systemctl restart "${LISTENER_SVC}"
 sleep 1
 systemctl restart "${DASHBOARD_SVC}"
-sleep 1
+sleep 2
 
 echo ""
 echo "=== ${LISTENER_SVC} ==="
@@ -276,6 +320,46 @@ systemctl --no-pager --lines=8 status "${LISTENER_SVC}" || true
 echo ""
 echo "=== ${DASHBOARD_SVC} ==="
 systemctl --no-pager --lines=8 status "${DASHBOARD_SVC}" || true
+
+VERIFY_FAILED=0
+for svc in "${LISTENER_SVC}" "${DASHBOARD_SVC}"; do
+    if ! systemctl is-enabled --quiet "${svc}"; then
+        echo "VERIFY FAIL: ${svc} is not enabled." >&2
+        VERIFY_FAILED=1
+    fi
+    if ! systemctl is-active --quiet "${svc}"; then
+        echo "VERIFY FAIL: ${svc} is not active." >&2
+        journalctl -u "${svc}" -n 30 --no-pager >&2 || true
+        VERIFY_FAILED=1
+    fi
+done
+
+if ! grep -Fq "ExecStart=${PYTHON_BIN} " "${LISTENER_UNIT}"; then
+    echo "VERIFY FAIL: listener unit is not pinned to ${PYTHON_BIN}." >&2
+    VERIFY_FAILED=1
+fi
+if ! grep -Fq "ExecStart=${PYTHON_BIN} " "${DASHBOARD_UNIT}"; then
+    echo "VERIFY FAIL: dashboard unit is not pinned to ${PYTHON_BIN}." >&2
+    VERIFY_FAILED=1
+fi
+
+if command -v ss >/dev/null 2>&1; then
+    if ! ss -H -lntup 2>/dev/null | grep -Eq ":${SYSLOG_PORT}([[:space:]]|$)"; then
+        echo "VERIFY FAIL: no listener is visible on TCP/UDP ${SYSLOG_PORT}." >&2
+        VERIFY_FAILED=1
+    fi
+    if ! ss -H -lntup 2>/dev/null | grep -Eq ":${DASH_PORT}([[:space:]]|$)"; then
+        echo "VERIFY FAIL: no listener is visible on dashboard port ${DASH_PORT}." >&2
+        VERIFY_FAILED=1
+    fi
+fi
+
+if [[ "${VERIFY_FAILED}" -ne 0 ]]; then
+    echo "mini-SIEM installation/repair verification FAILED." >&2
+    exit 1
+fi
+
+echo "Post-install verification: PASS"
 
 cat <<EOF
 

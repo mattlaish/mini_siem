@@ -1,0 +1,9 @@
+{
+  "artifact": "mini_siem_postgresql_configure_fix_full.zip",
+  "timestamp_utc": "2026-09-09T07:18:30Z",
+  "changes": [
+    "Fixed configure-db.py obsolete db.test_connection() call",
+    "Uses db.initialize() as the database setup entry point",
+    "Preserved PostgreSQL DBA separation: database creation remains external"
+  ]
+}

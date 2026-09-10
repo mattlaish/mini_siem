@@ -8,15 +8,13 @@ and raises an alert + records a match when a log touches one.
 Design mirrors the forwarder: an in-memory index of enabled IOCs is
 hot-reloaded from the `iocs` table every few seconds, so adding or
 importing indicators takes effect without restarting the listener. The
-match check runs in the ingest path using type-appropriate indexes: direct
-lookups for IP/hash, extracted-domain suffix lookup for domains, and a
-dependency-free Aho-Corasick multi-pattern automaton for URL substrings.
-This keeps per-event work bounded as IOC collections grow.
+match check runs in the ingest path but is a set/dict lookup (O(1) per
+indicator type), so it's cheap enough to stay inline.
 
 Supported IOC types:
     ip     — exact match against source_ip, hostname, and any IPs in the message
-    domain — exact/parent-domain suffix match from extracted host/domain tokens
-    url    — substring match in message through one multi-pattern automaton
+    domain — substring match (host or FQDN) in message/hostname
+    url    — substring match in message
     hash   — md5/sha1/sha256 token match in message (hex, case-insensitive)
 
 Matches are written to `ioc_matches` and also raise an alert through the
@@ -44,73 +42,6 @@ def normalize_ioc(ioc_type: str, value: str) -> str:
     return v
 
 
-
-
-class MultiPatternMatcher:
-    """Small dependency-free Aho-Corasick matcher for URL substrings.
-
-    The automaton is rebuilt only when the IOC table reloads, so per-event URL
-    matching is O(message length + matches) rather than O(number of URL IOCs).
-    """
-
-    def __init__(self, patterns=()):
-        self.goto = [dict()]
-        self.fail = [0]
-        self.out = [[]]
-        for pattern in patterns:
-            pat = str(pattern or "")
-            if not pat:
-                continue
-            state = 0
-            for ch in pat:
-                nxt = self.goto[state].get(ch)
-                if nxt is None:
-                    nxt = len(self.goto)
-                    self.goto[state][ch] = nxt
-                    self.goto.append({})
-                    self.fail.append(0)
-                    self.out.append([])
-                state = nxt
-            self.out[state].append(pat)
-        from collections import deque
-        q = deque()
-        for _ch, state in self.goto[0].items():
-            q.append(state)
-            self.fail[state] = 0
-        while q:
-            r = q.popleft()
-            for ch, state in self.goto[r].items():
-                q.append(state)
-                f = self.fail[r]
-                while f and ch not in self.goto[f]:
-                    f = self.fail[f]
-                self.fail[state] = self.goto[f].get(ch, 0)
-                self.out[state].extend(self.out[self.fail[state]])
-
-    def find(self, text):
-        state = 0
-        seen = set()
-        for ch in str(text or ""):
-            while state and ch not in self.goto[state]:
-                state = self.fail[state]
-            state = self.goto[state].get(ch, 0)
-            for pattern in self.out[state]:
-                if pattern not in seen:
-                    seen.add(pattern)
-                    yield pattern
-
-
-def _domain_suffixes(value):
-    """Yield host/domain then parent suffixes, excluding bare TLDs."""
-    host = str(value or "").strip().lower().strip(".")
-    if not host:
-        return
-    labels = [p for p in host.split(".") if p]
-    for i in range(max(0, len(labels) - 1)):
-        suffix = ".".join(labels[i:])
-        if "." in suffix:
-            yield suffix
-
 def guess_type(value: str) -> str:
     """Best-effort classification when a feed doesn't specify the type."""
     v = (value or "").strip()
@@ -133,27 +64,21 @@ class IOCMatcher:
         self._ips = {}      # value_norm -> ioc dict
         self._domains = {}
         self._urls = {}
-        self._url_matcher = MultiPatternMatcher()
         self._hashes = {}
         self._count = 0
-        self._stop = threading.Event()
         self._reload()
-        self._thread = threading.Thread(target=self._loop, daemon=True, name="ioc-reload")
-        self._thread.start()
+        t = threading.Thread(target=self._loop, daemon=True)
+        t.start()
 
     # -- reload ------------------------------------------------------------
 
     def _loop(self):
-        while not self._stop.wait(self.reload_interval):
+        while True:
+            time.sleep(self.reload_interval)
             try:
                 self._reload()
             except Exception as exc:
                 print(f"[ti] IOC reload failed: {exc}")
-
-    def stop(self):
-        self._stop.set()
-        if self._thread.is_alive():
-            self._thread.join(timeout=2)
 
     def _reload(self):
         with self.storage.lock:
@@ -172,10 +97,8 @@ class IOCMatcher:
                 urls[key] = r
             elif t == "hash":
                 hashes[key] = r
-        url_matcher = MultiPatternMatcher(urls.keys())
         with self._lock:
             self._ips, self._domains, self._urls, self._hashes = ips, domains, urls, hashes
-            self._url_matcher = url_matcher
             self._count = len(rows)
 
     def count(self):
@@ -190,7 +113,6 @@ class IOCMatcher:
             if self._count == 0:
                 return []
             ips, domains, urls, hashes = self._ips, self._domains, self._urls, self._hashes
-            url_matcher = self._url_matcher
 
         msg = event.get("message", "") or ""
         msg_l = msg.lower()
@@ -214,26 +136,16 @@ class IOCMatcher:
             if hn in hashes and ("hash", hn) not in seen:
                 seen.add(("hash", hn)); matches.append(hashes[hn])
 
-        # URL: dependency-free Aho-Corasick multi-pattern scan. This preserves
-        # the historical substring semantics while avoiding one `in` scan per
-        # configured URL IOC.
-        for key in url_matcher.find(msg_l):
-            ioc = urls.get(key)
-            if ioc is not None and ("url", key) not in seen:
+        # url: substring
+        for key, ioc in urls.items():
+            if key and key in msg_l and ("url", key) not in seen:
                 seen.add(("url", key)); matches.append(ioc)
 
-        # Domain: extract domain-shaped tokens once, then exact/suffix lookup.
-        # `evil.example` therefore matches `sub.evil.example`, but an IOC never
-        # matches arbitrary prose just because its letters occur inside a word.
-        domain_candidates = set(_DOMAIN.findall(msg_l))
-        host_l = (event.get("hostname") or "").lower().strip(".")
-        if host_l and "." in host_l:
-            domain_candidates.add(host_l)
-        for candidate in domain_candidates:
-            for key in _domain_suffixes(candidate):
-                ioc = domains.get(key)
-                if ioc is not None and ("domain", key) not in seen:
-                    seen.add(("domain", key)); matches.append(ioc)
+        # domain: substring against message + hostname
+        host_l = (event.get("hostname") or "").lower()
+        for key, ioc in domains.items():
+            if key and (key in msg_l or key == host_l) and ("domain", key) not in seen:
+                seen.add(("domain", key)); matches.append(ioc)
 
         return matches
 
@@ -250,20 +162,16 @@ class IOCMatcher:
     def _record(self, log_id: int, event: dict, ioc: dict):
         threat = ioc.get("threat") or ioc.get("source") or "IOC hit"
         with self.storage.lock:
-            try:
-                self.storage.conn.execute(
-                    """INSERT INTO ioc_matches
-                       (matched_at, ioc_id, ioc_type, ioc_value, threat, log_id,
-                        source_ip, hostname, message)
-                       VALUES (?,?,?,?,?,?,?,?,?)""",
-                    (datetime.now(timezone.utc).isoformat(), ioc.get("id"),
-                     ioc.get("ioc_type"), ioc.get("value"), threat, log_id,
-                     event.get("source_ip"), event.get("hostname"),
-                     (event.get("message") or "")[:500]))
-                self.storage.commit_locked()
-            except Exception:
-                self.storage.rollback_locked()
-                raise
+            self.storage.conn.execute(
+                """INSERT INTO ioc_matches
+                   (matched_at, ioc_id, ioc_type, ioc_value, threat, log_id,
+                    source_ip, hostname, message)
+                   VALUES (?,?,?,?,?,?,?,?,?)""",
+                (datetime.now(timezone.utc).isoformat(), ioc.get("id"),
+                 ioc.get("ioc_type"), ioc.get("value"), threat, log_id,
+                 event.get("source_ip"), event.get("hostname"),
+                 (event.get("message") or "")[:500]))
+            self.storage.conn.commit()
         self.storage.insert_alert(
             rule_name="threat_intel_match",
             severity=ioc.get("severity") or "warning",

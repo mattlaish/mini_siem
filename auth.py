@@ -358,3 +358,5 @@ def build_saml_auth(flask_request, cfg: dict):
         "post_data": url_data.form.copy(),
     }
     return OneLogin_Saml2_Auth(req, _saml_settings(cfg))
+
+# Bootstrap policy hardening required: do not auto-create users on existing deployments.

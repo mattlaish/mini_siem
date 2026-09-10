@@ -104,3 +104,14 @@ latencies are engineering smoke data only. They are useful for same-host regress
 comparison but are not production capacity claims. Production sizing requires actual
 storage, event shapes, rules/IOC load, forwarding destinations, archive custody/backup,
 and the selected database backend.
+
+## PostgreSQL Migration Test Coverage Notes
+
+Additional validation areas identified:
+
+- PostgreSQL startup behavior
+- database readiness handling
+- existing schema detection
+- identity/bootstrap preservation
+- migration rollback behavior
+- source artifact integrity

@@ -14,9 +14,7 @@ Usage:
 """
 
 import argparse
-import base64
 import ipaddress
-import json
 import re
 import threading
 import time
@@ -25,14 +23,12 @@ from flask import Flask, jsonify, render_template, request, session, redirect, u
 
 import severity as severity_mod
 import db as dbmod
-import archive as archive_mod
 import auth
-from sql_helpers import placeholders, identifier, select_in, where_clause
+from sql_helpers import placeholders, identifier, where_clause
 
 import ai_soc
 import ai_worker
 import health as health_mod
-import telemetry as telemetry_mod
 from correlations import PLAYBOOKS, get_playbook, run_correlation
 
 app = Flask(__name__)
@@ -193,55 +189,6 @@ def _db_config():
     return DB_CONFIG if DB_CONFIG is not None else dbmod.config_from_path(DB_PATH)
 
 
-_QUERY_TELEMETRY = None
-_QUERY_TELEMETRY_CFG = None
-_QUERY_TELEMETRY_LOCK = threading.Lock()
-
-
-def _query_telemetry():
-    """Lazily build one bounded telemetry collector for this dashboard process."""
-    global _QUERY_TELEMETRY, _QUERY_TELEMETRY_CFG
-    cfg = (_db_config().get("query_telemetry") or {})
-    signature = (int(cfg.get("max_samples", 512)), float(cfg.get("slow_ms", 250)))
-    with _QUERY_TELEMETRY_LOCK:
-        if _QUERY_TELEMETRY is None or _QUERY_TELEMETRY_CFG != signature:
-            _QUERY_TELEMETRY = telemetry_mod.QueryTelemetry(*signature)
-            _QUERY_TELEMETRY_CFG = signature
-        return _QUERY_TELEMETRY
-
-
-def _record_query_telemetry_safe(query_class, duration_ms):
-    """Telemetry is observation-only and can never change query correctness."""
-    try:
-        _query_telemetry().record(query_class, duration_ms)
-    except Exception:
-        # If telemetry itself breaks, the real log/stats response still wins.
-        return False
-    return True
-
-
-def _logs_query_class(args):
-    purpose = (args.get("purpose") or "").lower()
-    if purpose == "timeline":
-        return "logs.timeline"
-    if purpose == "live":
-        return "logs.live"
-    has_text = bool((args.get("q") or "").strip())
-    has_field = bool((args.get("field_query") or "").strip())
-    if not has_field:
-        try:
-            has_field = any(str(k).startswith("f_") and args.get(k) for k in args.keys())
-        except Exception:
-            has_field = False
-    if has_text and has_field:
-        return "logs.text_field"
-    if has_text:
-        return "logs.text"
-    if has_field:
-        return "logs.field"
-    return "logs.list"
-
-
 def admin_required(fn):
     """Guard: only 'admin' role may perform this action. Analysts and
     viewers get 403. SSO users default to admin (see auth.current_role)."""
@@ -312,14 +259,14 @@ def set_ingest_hook(on_message, storage):
 def _ingest_raw(raw_line: str, source_ip: str):
     """Push one raw syslog-format line through the pipeline."""
     if _INGEST_HOOK is not None:
-        result = _INGEST_HOOK(raw_line, source_ip)
-        return True if result is None else bool(result)
+        _INGEST_HOOK(raw_line, source_ip)
+        return True
     try:
         import listener as _listener
         import normalize as _normalize
         ev = _listener.parse_syslog(raw_line, source_ip)
         conn = get_conn()
-        log_id = conn.insert_returning_id(
+        cur = conn.execute(
             """INSERT INTO logs (received_at, source_ip, peer_ip, format, priority, facility,
                severity, device_timestamp, hostname, destination, app_name, proc_id, msg_id, message, raw)
                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
@@ -327,6 +274,7 @@ def _ingest_raw(raw_line: str, source_ip: str):
              ev["facility"], ev["severity"], ev["device_timestamp"], ev["hostname"],
              ev.get("destination", ""),
              ev["app_name"], ev["proc_id"], ev["msg_id"], ev["message"], ev["raw"]))
+        log_id = cur.lastrowid
         # extract searchable fields (the listener's socket path does this via
         # FieldIndexer; poller/API events come through here, so do it too or
         # they'd have columns but no searchable fields).
@@ -337,7 +285,6 @@ def _ingest_raw(raw_line: str, source_ip: str):
                 _normalize.write_fields(conn, log_id, fields)
         except Exception:
             pass
-        dbmod.update_log_rollups(conn, [ev])
         conn.commit(); conn.close()
         return True
     except Exception:
@@ -780,27 +727,6 @@ def _fts_token(needle):
     return '"' + " ".join(parts) + '"'
 
 
-def _postgres_tsquery_token(needle):
-    """Build a safe PostgreSQL tsquery fragment matching SQLite FTS intent.
-
-    A single term becomes a prefix lexeme (``term:*``); multiple words become
-    an adjacent phrase using ``<->``. Input is reduced to the same safe token
-    alphabet as the SQLite FTS5 helper before any tsquery syntax is emitted.
-    """
-    if not needle:
-        return ""
-    cleaned = re.sub(r'[^\w\s.\-]', ' ', needle).strip()
-    if not cleaned:
-        return ""
-    parts = cleaned.split()
-    quoted = ["'" + part.replace("'", "") + "'" for part in parts if part]
-    if not quoted:
-        return ""
-    if len(quoted) == 1:
-        return quoted[0] + ":*"
-    return " <-> ".join(quoted)
-
-
 def _fts_build_match(include, exclude):
     """Assemble an FTS5 MATCH expression from include/exclude token lists.
     include terms are AND-ed; exclude terms are NOT-ed. FTS5 requires at
@@ -874,200 +800,50 @@ def _subnet_clause(column, term):
     return None
 
 
-def _like_escape(value):
-    """Escape SQL LIKE metacharacters; mini-SIEM uses * as its explicit
-    user-facing wildcard so literal % and _ never silently broaden a filter."""
-    return str(value).replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-
-
-def _concept_match_mode(term, concept):
-    """Return (mode, needle) for Source/Host/Destination filters.
-
-    Syntax is intentionally small and index-friendly:
-      =value     exact
-      value*     prefix
-      *value*    contains (explicit slow path)
-      bare IP    exact
-      bare text  prefix
-
-    Existing CIDR / dotted-subnet forms are handled separately.
-    """
-    text = str(term or "").strip()
-    if text.startswith("="):
-        return "exact", text[1:].strip()
-    if len(text) >= 2 and text.startswith("*") and text.endswith("*"):
-        return "contains", text[1:-1].strip()
-    if text.endswith("*"):
-        return "prefix", text[:-1].strip()
-    try:
-        ipaddress.ip_address(text)
-        return "exact", text
-    except ValueError:
-        return "prefix", text
-
-
-def _base_match_clause(column, mode, needle, backend):
-    escaped = _like_escape(needle.lower() if backend == "postgres" else needle)
-    if backend == "postgres":
-        expr = f"LOWER({column})"
-        if mode == "exact":
-            return f"{expr} = ?", [needle.lower()]
-        pattern = escaped + "%" if mode == "prefix" else "%" + escaped + "%"
-        return f"{expr} LIKE ? ESCAPE '\\'", [pattern]
-    if mode == "exact":
-        return f"{column} = ? COLLATE NOCASE", [needle]
-    pattern = escaped + "%" if mode == "prefix" else "%" + escaped + "%"
-    return f"{column} LIKE ? COLLATE NOCASE ESCAPE '\\'", [pattern]
-
-
-def _alias_match_clause(alias, mode, needle, backend="sqlite"):
-    escaped = _like_escape(needle.lower())
-    if mode == "exact":
-        if backend == "sqlite":
-            return f"{alias}.value_norm = ? COLLATE NOCASE", [needle.lower()]
-        return f"{alias}.value_norm = ?", [needle.lower()]
-    pattern = escaped + "%" if mode == "prefix" else "%" + escaped + "%"
-    if backend == "sqlite":
-        return f"{alias}.value_norm LIKE ? COLLATE NOCASE ESCAPE '\\'", [pattern]
-    return f"{alias}.value_norm LIKE ? ESCAPE '\\'", [pattern]
-
-
-def _concept_clause(column, concept, term, negate, backend="sqlite"):
-    """Build one indexed canonical Source/Host/Destination predicate.
-
-    Base columns use case-insensitive exact/prefix indexes; configured alias
-    fields use log_fields.value_norm. Contains remains available only when the
-    operator explicitly wraps a term in *...*, making the slower path visible.
+def _concept_clause(column, concept, term, negate):
+    """Build the WHERE clause for one search term against a canonical
+    concept (source / host / destination): matches the base COLUMN (which
+    is already correct for most sources) OR any of the concept's configured
+    alias field names in log_fields (the safety net for sources that use a
+    different field name for the same idea, e.g. Sophos's endpoint_ip for
+    "source"). Resolved fresh per request from get_search_aliases(), so
+    editing the config applies to historical data immediately — nothing to
+    reindex.
+    Returns (sql, params); sql is already negated (NOT ...) if requested.
     """
     aliases = get_search_aliases().get(concept) or []
-    mode, needle = _concept_match_mode(term, concept)
-    if not needle:
-        return "1=1", []
-
-    # Preserve existing subnet shorthand unless the user explicitly requested
-    # exact (=...) or wildcard syntax. A full non-.0 IP is exact by default.
-    explicit = str(term or "").strip().startswith("=") or "*" in str(term or "")
-    subnet = None if explicit else _subnet_clause(column, needle)
+    subnet = _subnet_clause(column, term)
     if subnet:
-        # Re-render the subnet's anchored prefix through the backend-aware
-        # matcher so SQLite NOCASE / PostgreSQL lower()+pattern indexes apply.
-        subnet_prefix = str(subnet[1][-1]).rstrip("%")
-        col_sql, col_params = _base_match_clause(column, "prefix", subnet_prefix, backend)
-        alias_mode = "prefix"
-        alias_needle = subnet_prefix
+        col_sql, col_params = subnet
+        needle = None  # subnet clause already encodes the match
     else:
-        col_sql, col_params = _base_match_clause(column, mode, needle, backend)
-        alias_mode = mode
-        alias_needle = needle
+        col_sql, col_params = f"{column} LIKE ?", [f"%{term}%"]
 
     if aliases:
         ph = ",".join("?" * len(aliases))
-        alias_match_sql, alias_match_params = _alias_match_clause("hf", alias_mode, alias_needle, backend=backend)
-        alias_sql = (
-            f"EXISTS (SELECT 1 FROM log_fields hf WHERE hf.log_id = l.id "
-            f"AND hf.field IN ({ph}) AND {alias_match_sql})"
-        )
-        alias_params = list(aliases) + alias_match_params
+        if subnet:
+            # same subnet-boundary LIKE pattern, applied to the alias value
+            alias_pattern = col_params[-1]  # the LIKE pattern _subnet_clause built
+            alias_sql = (f"EXISTS (SELECT 1 FROM log_fields hf WHERE hf.log_id = l.id "
+                         f"AND hf.field IN ({ph}) AND hf.value LIKE ?)")
+            alias_params = list(aliases) + [alias_pattern]
+        else:
+            alias_sql = (f"EXISTS (SELECT 1 FROM log_fields hf WHERE hf.log_id = l.id "
+                         f"AND hf.field IN ({ph}) AND LOWER(hf.value) LIKE ?)")
+            alias_params = list(aliases) + [f"%{term.lower()}%"]
         sql = f"({col_sql} OR {alias_sql})"
         params = col_params + alias_params
     else:
         sql = f"({col_sql})"
         params = col_params
+
     return (f"NOT {sql}" if negate else sql), params
 
 
-def _concept_filter_terms(raw_value, column, concept, operator, backend="sqlite"):
-    """Build comma-separated Source/Host/Destination terms.
 
-    Positive terms use AND by default or a single OR group when operator=or.
-    Negated terms always remain conjunctive exclusions. `!=value` is explicit
-    exact negation; `!value` follows the normal smart prefix/IP semantics.
-    """
-    terms = [t.strip() for t in (raw_value or "").split(",") if t.strip()]
-    positive, negative = [], []
-    for term in terms:
-        exact_negate = term.startswith("!=")
-        negate = exact_negate or term.startswith("!")
-        needle = (term[2:] if exact_negate else term[1:]).strip() if negate else term
-        if not needle:
-            continue
-        if exact_negate:
-            needle = "=" + needle
-        sql, params = _concept_clause(column, concept, needle, negate, backend=backend)
-        (negative if negate else positive).append((sql, params))
-
-    clauses, params = [], []
-    if positive:
-        if (operator or "").strip().lower() == "or" and len(positive) > 1:
-            clauses.append("(" + " OR ".join(sql for sql, _ in positive) + ")")
-            for _, sp in positive:
-                params.extend(sp)
-        else:
-            for sql, sp in positive:
-                clauses.append(sql)
-                params.extend(sp)
-    for sql, sp in negative:
-        clauses.append(sql)
-        params.extend(sp)
-    return clauses, params
-
-
-def _encode_log_cursor(received_at, log_id):
-    payload = json.dumps({"t": str(received_at or ""), "i": int(log_id)},
-                         separators=(",", ":")).encode("utf-8")
-    return base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
-
-
-def _decode_log_cursor(value):
-    text = str(value or "").strip()
-    if not text:
-        return None
-    if len(text) > 512:
-        raise ValueError("cursor is too long")
-    try:
-        padded = text + "=" * (-len(text) % 4)
-        data = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8"))
-        received_at = str(data["t"])
-        log_id = int(data["i"])
-    except Exception as exc:
-        raise ValueError("invalid log cursor") from exc
-    if not received_at or log_id <= 0:
-        raise ValueError("invalid log cursor")
-    return received_at, log_id
-
-
-def _cursor_supported(args):
-    sort = (args.get("sort") or "").strip()
-    return sort in ("", "received_at")
-
-
-def _cursor_envelope(rows, limit):
-    if not rows:
-        return {"rows": [], "newest_cursor": None, "oldest_cursor": None,
-                "maybe_more": False}
-    def key(row):
-        return (str(row.get("received_at") or ""), int(row.get("id") or 0))
-    newest = max(rows, key=key)
-    oldest = min(rows, key=key)
-    return {
-        "rows": rows,
-        "newest_cursor": _encode_log_cursor(newest.get("received_at"), newest.get("id")),
-        "oldest_cursor": _encode_log_cursor(oldest.get("received_at"), oldest.get("id")),
-        "maybe_more": len(rows) >= int(limit),
-    }
-
-
-def _build_log_query(args, select_cols, use_fts=True, search_backend=None,
-                     fts_table="logs_fts", fts_id_expr="l.id"):
-
-    """Shared WHERE builder for log search + export.
-
-    ``search_backend`` is one of the engines resolved by db.text_search_status.
-    The legacy ``use_fts`` argument remains for small helper/test callers: when
-    no explicit engine is supplied it maps to SQLite FTS5 or portable LIKE.
-    Text search is always one AND-ed category alongside source/host/destination,
-    severity, time, ids and extracted-field filters.
-    """
+def _build_log_query(args, select_cols):
+    """Shared WHERE builder for log search + export. Supports q, source_ip,
+    hostname, severity (synonym-aware), time range (from/to ISO), and ids."""
     q = args.get("q", "").strip()
     source_ip = args.get("source_ip", "").strip()
     hostname = args.get("hostname", "").strip()
@@ -1076,91 +852,41 @@ def _build_log_query(args, select_cols, use_fts=True, search_backend=None,
     time_from = args.get("from", "").strip()
     time_to = args.get("to", "").strip()
     ids = args.get("ids", "").strip()
-    after_cursor = (args.get("after_cursor") or "").strip()
-    before_cursor = (args.get("before_cursor") or "").strip()
-    after_id = (args.get("after_id") or "").strip()
-    before_id = (args.get("before_id") or "").strip()
-
-    if search_backend is None:
-        search_backend = "sqlite_fts5" if use_fts else "sqlite_like"
 
     clauses, params = [], []
     if ids:
         id_list = [int(i) for i in ids.split(",") if i.strip().isdigit()][:500]
         if id_list:
-            clauses.append(f"l.id IN ({','.join('?' * len(id_list))})")
+            clauses.append(f"id IN ({','.join('?' * len(id_list))})")
             params.extend(id_list)
-    # Keyset cursors are defined on (received_at,id), independent of the
-    # requested display direction. "after" always means chronologically newer
-    # and "before" older. They are accepted only for the default/time sort.
-    if (after_cursor or before_cursor or after_id or before_id) and _cursor_supported(args):
-        if after_cursor:
-            try:
-                ct, ci = _decode_log_cursor(after_cursor)
-                clauses.append("(l.received_at > ? OR (l.received_at = ? AND l.id > ?))")
-                params.extend([ct, ct, ci])
-            except ValueError:
-                pass
-        if before_cursor:
-            try:
-                ct, ci = _decode_log_cursor(before_cursor)
-                clauses.append("(l.received_at < ? OR (l.received_at = ? AND l.id < ?))")
-                params.extend([ct, ct, ci])
-            except ValueError:
-                pass
-        if after_id.isdigit():
-            clauses.append("l.id > ?")
-            params.append(int(after_id))
-        if before_id.isdigit():
-            clauses.append("l.id < ?")
-            params.append(int(before_id))
     if q:
+        # Message search via FTS5 (fast, indexed) instead of leading-wildcard
+        # LIKE scans. Preserves the existing syntax:
+        #   error                 -> message contains the word "error"
+        #   !tasklist             -> excludes "tasklist"
+        #   error, !tasklist      -> has "error" AND not "tasklist"
+        # Terms are comma-separated. Each term becomes a prefix token match
+        # (term*) so "fort" still finds "fortigate"; excluded terms become
+        # FTS NOT clauses. If a term can't be expressed in FTS (empty after
+        # cleaning), it's skipped. The whole thing is one MATCH subquery.
+        include, exclude = [], []
         terms = [t.strip() for t in q.split(",")] if "," in q else [q.strip()]
-        used_native = False
-
-        if search_backend == "sqlite_fts5":
-            include, exclude = [], []
-            for term in terms:
-                if not term:
-                    continue
-                neg = term.startswith("!=") or term.startswith("!")
-                needle = (term[2:] if term.startswith("!=") else term[1:]).strip() if neg else term
-                tok = _fts_token(needle)
-                if not tok:
-                    continue
-                (exclude if neg else include).append(tok)
-            match_expr = _fts_build_match(include, exclude)
-            if match_expr:
-                clauses.append(
-                    f"{fts_id_expr} IN (SELECT rowid FROM {fts_table} WHERE {fts_table} MATCH ?)"
-                )
-                params.append(match_expr)
-                used_native = True
-
-        elif search_backend == "postgres_fts":
-            # Keep comma terms as independent AND-ed clauses so ! exclusions
-            # have the same cross-filter semantics as SQLite. The helper emits
-            # only sanitized tsquery syntax and mirrors FTS5 prefix/phrase intent.
-            for term in terms:
-                t = term.strip()
-                if not t:
-                    continue
-                neg = t.startswith("!=") or t.startswith("!")
-                needle = (t[2:] if t.startswith("!=") else t[1:]).strip() if neg else t
-                tok = _postgres_tsquery_token(needle)
-                if not tok:
-                    continue
-                clause = (
-                    "to_tsvector('simple'::regconfig, COALESCE(message, ''::text)) "
-                    "@@ to_tsquery('simple'::regconfig, ?)"
-                )
-                clauses.append(f"NOT ({clause})" if neg else clause)
-                params.append(tok)
-                used_native = True
-
-        elif search_backend in ("postgres_trigram", "postgres_ilike"):
-            # pg_trgm accelerates the same ILIKE '%needle%' expression when its
-            # GIN index exists; postgres_ilike is the transparent fallback.
+        for term in terms:
+            if not term:
+                continue
+            neg = term.startswith("!=") or term.startswith("!")
+            needle = (term[2:] if term.startswith("!=") else term[1:]).strip() if neg else term
+            tok = _fts_token(needle)
+            if not tok:
+                continue
+            (exclude if neg else include).append(tok)
+        match_expr = _fts_build_match(include, exclude)
+        if match_expr:
+            clauses.append("id IN (SELECT rowid FROM logs_fts WHERE logs_fts MATCH ?)")
+            params.append(match_expr)
+        else:
+            # nothing expressible in FTS (e.g. only punctuation) — fall back to
+            # a LIKE on the single term so the search still does something.
             for term in terms:
                 t = term.strip()
                 if not t:
@@ -1168,46 +894,56 @@ def _build_log_query(args, select_cols, use_fts=True, search_backend=None,
                 neg = t.startswith("!=") or t.startswith("!")
                 needle = (t[2:] if t.startswith("!=") else t[1:]).strip() if neg else t
                 if needle:
-                    clauses.append("message NOT ILIKE ?" if neg else "message ILIKE ?")
+                    clauses.append("message NOT LIKE ?" if neg else "message LIKE ?")
                     params.append(f"%{needle}%")
-                    used_native = True
-
-        if not used_native:
-            # SQLite without FTS5, or an FTS-only exclusion query that cannot
-            # be expressed as MATCH without a positive term, uses LIKE.
-            for term in terms:
-                t = term.strip()
-                if not t:
-                    continue
-                neg = t.startswith("!=") or t.startswith("!")
-                needle = (t[2:] if t.startswith("!=") else t[1:]).strip() if neg else t
-                if needle:
-                    if str(search_backend).startswith("postgres_"):
-                        clauses.append("message NOT ILIKE ?" if neg else "message ILIKE ?")
-                    else:
-                        clauses.append("message NOT LIKE ?" if neg else "message LIKE ?")
-                    params.append(f"%{needle}%")
-    filter_backend = "postgres" if str(search_backend).startswith("postgres_") else "sqlite"
     if source_ip:
-        # Source/Host/Destination each support comma-separated values plus an
-        # explicit AND/OR operator. Cross-category composition stays AND.
-        cc, cp = _concept_filter_terms(
-            source_ip, "source_ip", "source", args.get("source_op", "and"),
-            backend=filter_backend)
-        clauses.extend(cc)
-        params.extend(cp)
+        # Supports exclusion (!term), partial match, subnet (CIDR or dotted
+        # prefix like 192.168.1.0), comma-separated:
+        #   sophos-central     -> source contains it
+        #   192.168.1.0/24     -> any IP in that subnet
+        #   192.168.1.0        -> treated as the /24
+        #   !10.0.0.0/8        -> exclude that subnet
+        # Also matches the "source" concept's configured alias fields (Setup
+        # -> Search field aliases), so an IP that lives in a different field
+        # per source — Fortigate's src= vs Sophos's endpoint_ip — is
+        # findable with ONE search regardless of which source it came from.
+        for term in ([t.strip() for t in source_ip.split(",")] if "," in source_ip else [source_ip]):
+            if not term:
+                continue
+            negate = term.startswith("!=") or term.startswith("!")
+            needle = (term[2:] if term.startswith("!=") else term[1:]).strip() if negate else term
+            if not needle:
+                continue
+            sql, sp = _concept_clause("source_ip", "source", needle, negate)
+            clauses.append(sql)
+            params.extend(sp)
     if hostname:
-        cc, cp = _concept_filter_terms(
-            hostname, "hostname", "host", args.get("host_op", "and"),
-            backend=filter_backend)
-        clauses.extend(cc)
-        params.extend(cp)
+        # Same inclusion/exclusion/partial/subnet semantics as source, and
+        # the same alias-fallback behavior via the "host" concept aliases.
+        for term in ([t.strip() for t in hostname.split(",")] if "," in hostname else [hostname]):
+            if not term:
+                continue
+            negate = term.startswith("!=") or term.startswith("!")
+            needle = (term[2:] if term.startswith("!=") else term[1:]).strip() if negate else term
+            if not needle:
+                continue
+            sql, sp = _concept_clause("hostname", "host", needle, negate)
+            clauses.append(sql)
+            params.extend(sp)
     if destination:
-        cc, cp = _concept_filter_terms(
-            destination, "destination", "destination",
-            args.get("destination_op", "and"), backend=filter_backend)
-        clauses.extend(cc)
-        params.extend(cp)
+        # New: Destination previously had a column and a display, but no
+        # search box at all. Same semantics as source/host, via the
+        # "destination" concept aliases.
+        for term in ([t.strip() for t in destination.split(",")] if "," in destination else [destination]):
+            if not term:
+                continue
+            negate = term.startswith("!=") or term.startswith("!")
+            needle = (term[2:] if term.startswith("!=") else term[1:]).strip() if negate else term
+            if not needle:
+                continue
+            sql, sp = _concept_clause("destination", "destination", needle, negate)
+            clauses.append(sql)
+            params.extend(sp)
     if severity:
         # Severity supports operators for richer filtering:
         #   informational        -> exactly that severity (synonym-aware)
@@ -1239,7 +975,7 @@ def _build_log_query(args, select_cols, use_fts=True, search_backend=None,
             # more severe = lower rank number, so >= severity => <= rank.
             target = rank_of[canon_name]
             rank_op = {">=": "<=", ">": "<", "<=": ">=", "<": ">"}[op]
-            cases = " ".join(f"WHEN '{sev}' THEN {i}" for i, sev in enumerate(SEV_RANK))
+            cases = " ".join(f"WHEN '{s}' THEN {i}" for i, s in enumerate(SEV_RANK))
             clauses.append(f"(CASE LOWER(severity) {cases} ELSE 99 END) {rank_op} ?")
             params.append(target)
     if time_from:
@@ -1262,384 +998,214 @@ def _build_log_query(args, select_cols, use_fts=True, search_backend=None,
     SEV_RANK = ("emergency", "alert", "critical", "error", "warning",
                 "notice", "informational", "debug")
     if sort == "severity":
-        cases = " ".join(f"WHEN '{sev}' THEN {i}" for i, sev in enumerate(SEV_RANK))
+        cases = " ".join(f"WHEN '{s}' THEN {i}" for i, s in enumerate(SEV_RANK))
         order = f"ORDER BY CASE LOWER(severity) {cases} ELSE 99 END {direction}, id DESC"
     elif sort in SORTABLE:
-        tie = direction if sort == "received_at" else "DESC"
-        order = f"ORDER BY {SORTABLE[sort]} {direction}, id {tie}"
+        order = f"ORDER BY {SORTABLE[sort]} {direction}, id DESC"
     else:
-        order = "ORDER BY received_at DESC, id DESC"
+        order = "ORDER BY id DESC"
     sql = f"SELECT {select_cols} FROM logs l {where} {order}"
     return sql, params
 
 
-def _parse_field_filter(name, raw_value, group):
-    """Parse extracted-field filters into exact/prefix/contains modes.
-
-    field=value is exact and hits (field,value_norm,log_id); field=value* is
-    prefix; field=*value* is the explicit contains/scan path. Leading !/!=
-    keeps the same match mode but negates it.
-    """
-    val = (raw_value or "").strip()
-    if not name or not val:
-        return None
-    negate = val.startswith("!=") or val.startswith("!")
-    if negate:
-        val = val[2:].strip() if val.startswith("!=") else val[1:].strip()
-    if not val:
-        return None
-    mode = "exact"
-    if len(val) >= 2 and val.startswith("*") and val.endswith("*"):
-        mode, val = "contains", val[1:-1].strip()
-    elif val.endswith("*"):
-        mode, val = "prefix", val[:-1].strip()
-    if not val:
-        return None
-    return {"field": name, "needle": val.lower(), "mode": mode,
-            "negate": negate, "group": group}
-
-
-def _field_value_predicate(alias, mode, needle, backend="sqlite"):
-    if mode == "exact":
-        if backend == "sqlite":
-            return f"{alias}.value_norm = ? COLLATE NOCASE", [needle]
-        return f"{alias}.value_norm = ?", [needle]
-    escaped = _like_escape(needle)
-    pattern = escaped + "%" if mode == "prefix" else "%" + escaped + "%"
-    if backend == "sqlite":
-        return f"{alias}.value_norm LIKE ? COLLATE NOCASE ESCAPE '\\'", [pattern]
-    return f"{alias}.value_norm LIKE ? ESCAPE '\\'", [pattern]
-
-
 def _extraction_args(args):
-    """Parse extracted-field params.
-
-    f_<name>=substr remains the per-column/legacy filter contract.  New
-    repeated fc=field=value params preserve duplicate field names for the
-    query-builder (e.g. event_id=4624 OR event_id=4625).
-    """
+    """Parse extracted-field params: fields=user,action ; f_<name>=substr ;
+    sort=x_<name> ; dir=asc|desc. Returns (fields, filters, sort, direction)."""
     fields = [c.strip() for c in (args.get("fields") or "").split(",") if c.strip()][:8]
-    filters = []
-
-    # MultiDict.lists() preserves repeated f_ values when available; plain
-    # dict-like test callers fall back to one value per key.
-    if hasattr(args, "lists"):
-        pairs = args.lists()
-    else:
-        pairs = ((k, [v]) for k, v in args.items())
-    for k, values in pairs:
-        if not k.startswith("f_"):
-            continue
-        name = k[2:].strip()
-        if not name:
-            continue
-        for raw in values:
-            spec = _parse_field_filter(name, raw, "column")
-            if spec:
-                filters.append(spec)
+    filters = {}
+    for k, v in args.items():
+        if k.startswith("f_") and v.strip():
+            name = k[2:].strip()
+            if name:
+                val = v.strip()
+                # a leading ! (or !=) means EXCLUDE this field=value.
+                negate = False
+                if val.startswith("!=") or val.startswith("!"):
+                    negate = True
+                    val = val[2:].strip() if val.startswith("!=") else val[1:].strip()
+                filters[name] = {"needle": val.lower(), "negate": negate}
                 if name not in fields:
                     fields.append(name)
-
-    chip_values = args.getlist("fc") if hasattr(args, "getlist") else []
-    for raw in chip_values:
-        text = (raw or "").strip()
-        if not text or "=" not in text:
-            continue
-        name, value = text.split("=", 1)
-        name = name.strip().lower()
-        if not name or not all(ch.isalnum() or ch in "_.-" for ch in name):
-            continue
-        spec = _parse_field_filter(name, value, "chip")
-        if spec:
-            filters.append(spec)
-            if name not in fields:
-                fields.append(name)
-
     sort = (args.get("sort") or "").strip()
     direction = "desc" if (args.get("dir") or "").lower() == "desc" else "asc"
     return fields, filters, sort, direction
 
 
-def _query_logs_extracted_on_conn(conn, args, limit, select_cols, sort_cap=100000,
-                                  search_backend=None, fts_table="logs_fts",
-                                  fts_id_expr="l.id"):
-    """Run the canonical log query against one hot or archive connection.
-
-    Archive databases expose compatible ``logs``/``log_fields`` views, so the
-    same boolean/text/field semantics are used for both evidence tiers. Only
-    the FTS table/id expression differs for deduplicated archive payloads.
-    """
+def _query_logs_extracted(args, limit, select_cols, sort_cap=100000):
+    """Query logs with extracted-field support via the indexed log_fields
+    table (materialized at ingest). Field filters become indexed JOINs;
+    sorting fetches (id, value) pairs from the index (capped at sort_cap)
+    and orders numerically in-process; display values are batch-fetched
+    for just the returned page. No message re-scanning."""
     fields, filters, sort, direction = _extraction_args(args)
     needs = bool(fields or filters or sort.startswith("x_"))
 
-    field_backend = getattr(conn, "backend", "sqlite")
-    if search_backend is None:
-        search_status = dbmod.text_search_status(conn, _db_config())
-        search_backend = search_status["engine"]
-    base_sql, base_params = _build_log_query(
-        args, select_cols, search_backend=search_backend,
-        fts_table=fts_table, fts_id_expr=fts_id_expr)
+    base_sql, base_params = _build_log_query(args, select_cols)
+    conn = get_conn()
+    try:
+        if not needs:
+            limited_sql = base_sql + " LIMIT ?"
+            rows = [dict(r) for r in conn.execute(
+                limited_sql, base_params + [limit]).fetchall()]
+            return rows
 
-    if not needs:
-        limited_sql = base_sql + " LIMIT ?"
-        return [dict(r) for r in conn.execute(
-            limited_sql, base_params + [limit]).fetchall()]
-
-    # base WHERE applies to alias l
-    where_part = ""
-    if " WHERE " in base_sql:
-        where_part = base_sql.split(" WHERE ", 1)[1].split(" ORDER BY ", 1)[0]
-    joins, join_params = [], []
-    extra_where, extra_params = [], []
-    ji = 0
-    or_mode = (args.get("fc_op") or "").strip().lower() == "or"
-    has_explicit_chips = any(spec.get("group") == "chip" for spec in filters)
-    or_group, or_group_params = [], []
-    for spec in filters:
-        name = spec.get("field", "")
-        needle = spec.get("needle", "")
-        negate = spec.get("negate", False)
-        group = spec.get("group", "column")
-        mode = spec.get("mode", "exact")
-        if negate:
-            pred, pred_params = _field_value_predicate("fx", mode, needle, backend=field_backend)
-            extra_where.append(
-                "NOT EXISTS (SELECT 1 FROM log_fields fx WHERE fx.log_id = l.id "
-                f"AND fx.field = ? AND {pred})")
-            extra_params.extend([name] + pred_params)
-            continue
-
-        belongs_to_or = or_mode and (group == "chip" or not has_explicit_chips)
-        if belongs_to_or:
-            pred, pred_params = _field_value_predicate("fo", mode, needle, backend=field_backend)
-            or_group.append(
-                "EXISTS (SELECT 1 FROM log_fields fo WHERE fo.log_id = l.id "
-                f"AND fo.field = ? AND {pred})")
-            or_group_params.extend([name] + pred_params)
-        else:
-            alias = f"f{ji}"
-            pred, pred_params = _field_value_predicate(alias, mode, needle, backend=field_backend)
-            joins.append(
-                f"JOIN log_fields {alias} ON {alias}.log_id = l.id "
-                f"AND {alias}.field = ? AND {pred}")
-            join_params.extend([name] + pred_params)
-            ji += 1
-    if or_group:
-        extra_where.append("(" + " OR ".join(or_group) + ")")
-        extra_params.extend(or_group_params)
-    where_clauses = []
-    if where_part:
-        where_clauses.append(where_part)
-    where_clauses.extend(extra_where)
-    combined_where = " AND ".join(where_clauses)
-
-    cols = ", ".join("l." + c.strip() for c in select_cols.split(","))
-    sql = f"SELECT {cols} FROM logs l " + " ".join(joins)
-    params = list(join_params)
-    if combined_where:
-        sql += " WHERE " + combined_where
+        # base WHERE applies to alias l
+        where_part = ""
+        if " WHERE " in base_sql:
+            where_part = base_sql.split(" WHERE ", 1)[1].split(" ORDER BY ", 1)[0]
+        joins, join_params = [], []
+        extra_where, extra_params = [], []
+        ji = 0
+        # fc_op=or combines the POSITIVE field filters (the query-builder
+        # chips) with OR instead of the default AND. Negated filters (!term)
+        # always stay AND'd in regardless of this mode — "match ANY of these,
+        # but exclude that" is a coherent combination; OR-ing an exclusion
+        # in would defeat the purpose of excluding it. Default (no fc_op, or
+        # any value other than "or") is byte-identical to prior behavior, so
+        # every existing saved link/bookmark keeps working unchanged.
+        or_mode = (args.get("fc_op") or "").strip().lower() == "or"
+        or_group, or_group_params = [], []
+        for name, spec in filters.items():
+            # tolerate the older shape (plain string) as an include filter
+            if isinstance(spec, dict):
+                needle, negate = spec.get("needle", ""), spec.get("negate", False)
+            else:
+                needle, negate = spec, False
+            if negate:
+                # EXCLUDE: no row for this field matching the value.
+                extra_where.append(
+                    "NOT EXISTS (SELECT 1 FROM log_fields fx WHERE fx.log_id = l.id "
+                    "AND fx.field = ? AND LOWER(fx.value) LIKE ?)")
+                extra_params.extend([name, f"%{needle}%"])
+            else:
+                if or_mode:
+                    # kept in a SEPARATE accumulator (not extra_params) because
+                    # this clause is only appended to extra_where AFTER the
+                    # loop ends (it needs every chip collected first) — if its
+                    # params were interleaved into extra_params at loop time,
+                    # alongside negate params that DO land in extra_where
+                    # immediately, the final param list would be ordered by
+                    # "when appended" while the clause list is ordered by
+                    # "where appended", desyncing every ? placeholder after
+                    # the first negate+OR mix. Appending both the clause and
+                    # its params after the loop, together, keeps them aligned.
+                    or_group.append(
+                        "EXISTS (SELECT 1 FROM log_fields fo WHERE fo.log_id = l.id "
+                        "AND fo.field = ? AND LOWER(fo.value) LIKE ?)")
+                    or_group_params.extend([name, f"%{needle}%"])
+                else:
+                    joins.append(
+                        f"JOIN log_fields f{ji} ON f{ji}.log_id = l.id "
+                        f"AND f{ji}.field = ? AND LOWER(f{ji}.value) LIKE ?")
+                    join_params.extend([name, f"%{needle}%"])
+                    ji += 1
+        if or_group:
+            # single positive filter behaves the same whether "AND" or "OR"
+            # is selected, so this only changes behavior with 2+ chips.
+            extra_where.append("(" + " OR ".join(or_group) + ")")
+            extra_params.extend(or_group_params)
+        # combine base WHERE with any exclusion clauses
+        where_clauses = []
         if where_part:
-            params.extend(base_params)
-        params.extend(extra_params)
+            where_clauses.append(where_part)
+        where_clauses.extend(extra_where)
+        combined_where = " AND ".join(where_clauses)
 
-    if sort.startswith("x_"):
-        name = sort[2:]
-        sv_sql = (f"SELECT l.id AS lid, sv.value AS sval FROM logs l "
-                  + " ".join(joins)
-                  + " LEFT JOIN log_fields sv ON sv.log_id = l.id AND sv.field = ?")
-        sv_params = list(join_params) + [name]
+        cols = ", ".join("l." + c.strip() for c in select_cols.split(","))
+        sql = f"SELECT {cols} FROM logs l " + " ".join(joins)
+        params = list(join_params)
         if combined_where:
-            sv_sql += " WHERE " + combined_where
+            sql += " WHERE " + combined_where
             if where_part:
-                sv_params.extend(base_params)
-            sv_params.extend(extra_params)
-        sv_sql += " ORDER BY l.id DESC LIMIT ?"
-        sv_params.append(sort_cap)
-        pairs = [(r["lid"], r["sval"]) for r in conn.execute(sv_sql, sv_params).fetchall()]
-        present = [(i, v) for i, v in pairs if v not in (None, "")]
-        missing = [i for i, v in pairs if v in (None, "")]
-        def key(t):
-            try:
-                return (0, float(t[1]), "")
-            except (TypeError, ValueError):
-                return (1, 0, str(t[1]).lower())
-        present.sort(key=key, reverse=(direction == "desc"))
-        ordered_ids = [i for i, _ in present] + missing
-        page_ids = ordered_ids[:limit]
-        if not page_ids:
-            return []
-        ph = placeholders(len(page_ids))
-        fetch_sql = "SELECT " + cols + " FROM logs l WHERE l.id IN (" + ph + ")"
-        fetched = {r["id"]: dict(r) for r in conn.execute(fetch_sql, page_ids).fetchall()}
-        rows = [fetched[i] for i in page_ids if i in fetched]
-    else:
-        SORTABLE = {"received_at", "source_ip", "severity", "hostname",
-                    "app_name", "id"}
-        if sort in SORTABLE:
-            safe_sort = identifier("l." + sort, allowed={"l." + c for c in SORTABLE})
-            d = "ASC" if direction == "asc" else "DESC"
-            tie = d if sort == "received_at" else "DESC"
-            sql += " ORDER BY " + safe_sort + " " + d + ", l.id " + tie + " LIMIT ?"
+                params.extend(base_params)
+            params.extend(extra_params)
+
+        if sort.startswith("x_"):
+            name = sort[2:]
+            sv_sql = (f"SELECT l.id AS lid, sv.value AS sval FROM logs l "
+                      + " ".join(joins)
+                      + " LEFT JOIN log_fields sv ON sv.log_id = l.id AND sv.field = ?")
+            sv_params = list(join_params) + [name]
+            if combined_where:
+                sv_sql += " WHERE " + combined_where
+                if where_part:
+                    sv_params.extend(base_params)
+                sv_params.extend(extra_params)
+            sv_sql += " ORDER BY l.id DESC LIMIT ?"
+            sv_params.append(sort_cap)
+            pairs = [(r["lid"], r["sval"]) for r in conn.execute(sv_sql, sv_params).fetchall()]
+            present = [(i, v) for i, v in pairs if v not in (None, "")]
+            missing = [i for i, v in pairs if v in (None, "")]
+            def key(t):
+                try:
+                    return (0, float(t[1]), "")
+                except (TypeError, ValueError):
+                    return (1, 0, str(t[1]).lower())
+            present.sort(key=key, reverse=(direction == "desc"))
+            ordered_ids = [i for i, _ in present] + missing
+            page_ids = ordered_ids[:limit]
+            if not page_ids:
+                return []
+            ph = placeholders(len(page_ids))
+            fetch_sql = "SELECT " + cols + " FROM logs l WHERE l.id IN (" + ph + ")"
+            fetched = {r["id"]: dict(r) for r in conn.execute(fetch_sql, page_ids).fetchall()}
+            rows = [fetched[i] for i in page_ids if i in fetched]
         else:
-            sql += " ORDER BY l.received_at DESC, l.id DESC LIMIT ?"
-        params.append(limit)
-        rows = [dict(r) for r in conn.execute(sql, params).fetchall()]
+            # base-column sort (or default) while extracted columns are shown
+            SORTABLE = {"received_at", "source_ip", "severity", "hostname",
+                        "app_name", "id"}
+            if sort in SORTABLE:
+                safe_sort = identifier("l." + sort, allowed={"l." + c for c in SORTABLE})
+                d = "ASC" if direction == "asc" else "DESC"
+                sql += " ORDER BY " + safe_sort + " " + d + ", l.id DESC LIMIT ?"
+            else:
+                sql += " ORDER BY l.id DESC LIMIT ?"
+            params.append(limit)
+            rows = [dict(r) for r in conn.execute(sql, params).fetchall()]
 
-    if rows and fields:
-        ids = [r["id"] for r in rows]
-        ph = placeholders(len(ids))
-        fph = placeholders(len(fields))
-        vals = {}
-        field_sql = ("SELECT log_id, field, value FROM log_fields WHERE log_id IN ("
-                     + ph + ") AND field IN (" + fph + ")")
-        for fr in conn.execute(field_sql, ids + fields).fetchall():
-            vals.setdefault(fr["log_id"], {})[fr["field"]] = fr["value"]
-        for r in rows:
-            got = vals.get(r["id"], {})
-            r["extracted"] = {f: got.get(f, "") for f in fields}
-    elif fields:
-        for r in rows:
-            r["extracted"] = {f: "" for f in fields}
-    return rows
-
-
-def _enrich_endpoint_ip(conn, rows):
-    ids = [int(r.get("id") or 0) for r in rows if int(r.get("id") or 0) > 0]
-    if not ids:
-        return
-    try:
-        sql, params = select_in(
-            "log_fields", "log_id,value", "log_id", ids,
-            suffix=" AND field='endpoint_ip'",
-        )
-        eip = {r["log_id"]: r["value"] for r in conn.execute(sql, params).fetchall()}
-    except Exception:
-        eip = {}
-    for row in rows:
-        if eip.get(row.get("id")):
-            row["endpoint_ip"] = eip[row["id"]]
-
-
-def _sort_merged_logs(args, rows, limit):
-    fields, _, sort, direction = _extraction_args(args)
-    reverse = direction == "desc"
-    sev_rank = {s: i for i, s in enumerate(
-        ("emergency", "alert", "critical", "error", "warning", "notice", "informational", "debug"))}
-
-    if not sort:
-        return sorted(rows, key=lambda r: (str(r.get("received_at") or ""), int(r.get("id") or 0)), reverse=True)[:limit]
-    if sort == "received_at":
-        return sorted(rows, key=lambda r: (str(r.get("received_at") or ""), int(r.get("id") or 0)), reverse=reverse)[:limit]
-    if sort == "severity":
-        # Lower rank means more severe. Existing SQL ASC puts emergency first.
-        return sorted(rows, key=lambda r: (sev_rank.get(str(r.get("severity") or "").lower(), 99), -int(r.get("id") or 0)), reverse=reverse)[:limit]
-    if sort.startswith("x_"):
-        name = sort[2:]
-        def xkey(r):
-            value = (r.get("extracted") or {}).get(name, "")
-            try:
-                return (0, float(value), "")
-            except (TypeError, ValueError):
-                return (1, 0.0, str(value).lower())
-        return sorted(rows, key=xkey, reverse=reverse)[:limit]
-    if sort in {"source_ip", "hostname", "app_name", "id"}:
-        return sorted(rows, key=lambda r: (str(r.get(sort) or "").lower(), int(r.get("id") or 0)), reverse=reverse)[:limit]
-    return sorted(rows, key=lambda r: (str(r.get("received_at") or ""), int(r.get("id") or 0)), reverse=True)[:limit]
-
-
-def _archive_search_needed(args, hot_rows, limit):
-    if str(args.get("include_archive", "1")).lower() in ("0", "false", "no"):
-        return False
-    if (args.get("purpose") or "").strip().lower() == "live":
-        return False
-    if args.get("after_cursor") or args.get("after_id"):
-        return False
-    # The unfiltered default view is newest-first. If hot already fills the
-    # page, older archives cannot change that page and need not be opened.
-    meaningful = any((args.get(k) or "").strip() for k in
-                     ("q", "source_ip", "hostname", "destination", "severity", "from", "to", "ids", "before_cursor", "before_id", "fc"))
-    sort = (args.get("sort") or "").strip()
-    direction = (args.get("dir") or "desc").lower()
-    if not meaningful and sort in ("", "received_at") and direction != "asc" and len(hot_rows) >= limit:
-        return False
-    return True
-
-
-def _query_logs_extracted(args, limit, select_cols, sort_cap=100000):
-    """Query hot + sealed archive evidence with one search/filter contract."""
-    hot = get_conn()
-    try:
-        hot_rows = _query_logs_extracted_on_conn(hot, args, limit, select_cols, sort_cap=sort_cap)
-        _enrich_endpoint_ip(hot, hot_rows)
-        for row in hot_rows:
-            row["archived"] = False
-        if not _archive_search_needed(args, hot_rows, limit):
-            return hot_rows
-        ids_text = (args.get("ids") or "").strip()
-        ids = [int(v) for v in ids_text.split(",") if v.strip().isdigit()] if ids_text else None
-        segments = archive_mod.list_segments(
-            hot, time_from=(args.get("from") or "").strip() or None,
-            time_to=(args.get("to") or "").strip() or None, ids=ids)
+        # batch-fetch display values for this page only
+        if rows and fields:
+            ids = [r["id"] for r in rows]
+            ph = placeholders(len(ids))
+            fph = placeholders(len(fields))
+            vals = {}
+            field_sql = ("SELECT log_id, field, value FROM log_fields WHERE log_id IN ("
+                         + ph + ") AND field IN (" + fph + ")")
+            for fr in conn.execute(field_sql, ids + fields).fetchall():
+                vals.setdefault(fr["log_id"], {})[fr["field"]] = fr["value"]
+            for r in rows:
+                got = vals.get(r["id"], {})
+                r["extracted"] = {f: got.get(f, "") for f in fields}
+        elif fields:
+            for r in rows:
+                r["extracted"] = {f: "" for f in fields}
+        return rows
     finally:
-        hot.close()
-
-    combined = {int(r["id"]): r for r in hot_rows}
-    for seg in segments:
-        try:
-            acon = archive_mod.open_archive(seg["path"], readonly=True)
-        except Exception as exc:
-            raise archive_mod.ArchiveSearchError(
-                f"archive segment {seg['segment_id']} is unavailable: {type(exc).__name__}") from exc
-        try:
-            engine = "sqlite_fts5" if archive_mod.archive_fts5_available(acon) else "sqlite_like"
-            rows = _query_logs_extracted_on_conn(
-                acon, args, limit, select_cols, sort_cap=sort_cap,
-                search_backend=engine, fts_table="archive_payloads_fts",
-                fts_id_expr="l.payload_id")
-            _enrich_endpoint_ip(acon, rows)
-            for row in rows:
-                row["archived"] = True
-                row["archive_segment"] = seg["segment_id"]
-                # copy-mode segments intentionally overlap hot evidence. Hot
-                # rows win so callers never see a duplicate occurrence.
-                combined.setdefault(int(row["id"]), row)
-        except Exception as exc:
-            if isinstance(exc, archive_mod.ArchiveSearchError):
-                raise
-            raise archive_mod.ArchiveSearchError(
-                f"archive segment {seg['segment_id']} query failed: {type(exc).__name__}") from exc
-        finally:
-            acon.close()
-
-    return _sort_merged_logs(args, list(combined.values()), limit)
+        conn.close()
 
 
 @app.route("/api/logs")
 def api_logs():
-    query_started = time.perf_counter()
-    query_class = _logs_query_class(request.args)
-    limit = min(max(int(request.args.get("limit", 200)), 1), 1000)
-    envelope = (request.args.get("envelope") or "").lower() in ("1", "true", "yes")
-    if (request.args.get("after_cursor") or request.args.get("before_cursor")) and not _cursor_supported(request.args):
-        return jsonify({"error": "cursor pagination supports only the default or received_at sort"}), 400
-    for name in ("after_cursor", "before_cursor"):
-        if request.args.get(name):
-            try:
-                _decode_log_cursor(request.args.get(name))
-            except ValueError as exc:
-                return jsonify({"error": str(exc)}), 400
-
-    try:
-        rows = _query_logs_extracted(
-            request.args, limit,
-            "id, received_at, source_ip, peer_ip, severity, facility, hostname, destination, app_name, message")
-    except archive_mod.ArchiveSearchError as exc:
-        # Never silently omit expected archive evidence. A broken archive tier
-        # is an availability error, not an empty search result.
-        return jsonify({"error": "archive search unavailable", "detail": str(exc)}), 503
-    payload = _cursor_envelope(rows, limit) if envelope else rows
-    _record_query_telemetry_safe(query_class, (time.perf_counter() - query_started) * 1000.0)
-    return jsonify(payload)
+    limit = min(int(request.args.get("limit", 200)), 1000)
+    rows = _query_logs_extracted(
+        request.args, limit,
+        "id, received_at, source_ip, peer_ip, severity, facility, hostname, destination, app_name, message")
+    # Enrich with endpoint_ip (stored as a field, not a base column) so the UI
+    # can show it in the Net-source column for sources with no network src=
+    # (e.g. Sophos, whose 'source' is the connector name). Batch-fetched for
+    # just this page — no per-row queries.
+    ids = [r["id"] for r in rows]
+    if ids:
+        conn = get_conn()
+        ph = placeholders(len(ids))
+        eip_sql = ("SELECT log_id, value FROM log_fields "
+                   "WHERE field='endpoint_ip' AND log_id IN (" + ph + ")")
+        eip = {r["log_id"]: r["value"] for r in conn.execute(eip_sql, ids).fetchall()}
+        conn.close()
+        for r in rows:
+            if eip.get(r["id"]):
+                r["endpoint_ip"] = eip[r["id"]]
+    return jsonify(rows)
 
 
 @app.route("/api/logs/facets")
@@ -1667,13 +1233,10 @@ def api_logs_export():
     import json as _json
     fmt = request.args.get("format", "csv").lower()
     limit = min(int(request.args.get("limit", 100000)), 500000)
-    try:
-        rows = _query_logs_extracted(
-            request.args, limit,
-            "id, received_at, source_ip, severity, facility, hostname, app_name, message, raw",
-            sort_cap=500000)
-    except archive_mod.ArchiveSearchError as exc:
-        return jsonify({"error": "archive export unavailable", "detail": str(exc)}), 503
+    rows = _query_logs_extracted(
+        request.args, limit,
+        "id, received_at, source_ip, severity, facility, hostname, app_name, message, raw",
+        sort_cap=500000)
     # flatten extracted fields into x_<name> columns for CSV/JSON
     extra_cols = []
     for r in rows:
@@ -1763,7 +1326,6 @@ def api_alerts():
 def api_stats():
     """Dashboard stats that answer 'what needs me, what's missing' rather
     than 'what's most frequent'."""
-    stats_started = time.perf_counter()
     from datetime import datetime, timezone, timedelta
     now = datetime.now(timezone.utc)
     day_ago = (now - timedelta(hours=24)).isoformat()
@@ -1775,31 +1337,8 @@ def api_stats():
     baseline_start = (now - timedelta(days=14)).isoformat()
 
     conn = get_conn()
-    # Phase 4 rollups remove the two hottest full-table counts from every
-    # dashboard refresh. Fallbacks keep upgrades/read-only test DBs usable.
-    try:
-        runtime = dbmod.read_runtime_stats(conn, ["total_logs", "total_alerts", "ingest_telemetry", "maintenance_status"])
-    except Exception:
-        runtime = {}
-    total_logs = int((runtime.get("total_logs") or {}).get("value_num") or 0)
-    total_alerts = int((runtime.get("total_alerts") or {}).get("value_num") or 0)
-    if "total_logs" not in runtime:
-        # Upgrade/read-only fallback must count logical evidence, not merely the
-        # hot tier.  A moved archive occurrence no longer has a row in logs,
-        # while copy-mode archive occurrences still do; count only catalog ids
-        # whose hot copy is absent to avoid double-counting.
-        hot_count = int(conn.execute("SELECT COUNT(*) c FROM logs").fetchone()["c"] or 0)
-        try:
-            archived_only = int(conn.execute(
-                """SELECT COUNT(*) c FROM archive_occurrence_catalog ac
-                   LEFT JOIN logs l ON l.id=ac.log_id
-                   WHERE l.id IS NULL"""
-            ).fetchone()["c"] or 0)
-        except Exception:
-            archived_only = 0
-        total_logs = hot_count + archived_only
-    if "total_alerts" not in runtime:
-        total_alerts = conn.execute("SELECT COUNT(*) c FROM alerts").fetchone()["c"]
+    total_logs = conn.execute("SELECT COUNT(*) c FROM logs").fetchone()["c"]
+    total_alerts = conn.execute("SELECT COUNT(*) c FROM alerts").fetchone()["c"]
 
     # Actionable alerts: warning and above (warning/error/critical/alert/
     # emergency), broken down so the Total-alerts card can show the split
@@ -1822,34 +1361,15 @@ def api_stats():
              AND (ai_status IS NULL OR ai_status IN ('pending','error'))""",
         (day_ago,)).fetchone()["c"]
 
-    # 2. Silent sources: source_last_seen turns the former multi-scan logs
-    # query into one small indexed lookup. last_seen in [14d ago,3d ago) is
-    # equivalent to "seen in baseline, but not during the silence window".
-    try:
-        silent = [r["source_ip"] for r in conn.execute(
-            """SELECT source_ip FROM source_last_seen
-               WHERE last_seen >= ? AND last_seen < ?
-               ORDER BY last_seen ASC LIMIT 50""",
-            (baseline_start, silence_cutoff)).fetchall()]
-    except Exception:
-        silent = [r["source_ip"] for r in conn.execute(
-            """SELECT DISTINCT source_ip FROM logs
-               WHERE received_at >= ? AND received_at < ?
-                 AND source_ip IS NOT NULL AND source_ip != ''
-                 AND source_ip NOT IN (
-                     SELECT DISTINCT source_ip FROM logs WHERE received_at >= ?)
-               LIMIT 50""",
-            (baseline_start, silence_cutoff, silence_cutoff)).fetchall()]
-
-    # Recent event volume/severity is exact: complete UTC hours come from the
-    # rollup and only the two partial boundary hours use indexed raw-log scans.
-    # This avoids a 24-hour full-table aggregate without over-counting the first
-    # partial hour or accidentally including future buckets.
-    try:
-        hourly_counts = dbmod.recent_log_counts_from_rollups(
-            conn, day_ago, now.isoformat())
-    except Exception:
-        hourly_counts = {}
+    # 2. Silent sources: logged in the past 14 days but nothing for 3 days
+    silent = [r["source_ip"] for r in conn.execute(
+        """SELECT DISTINCT source_ip FROM logs
+           WHERE received_at >= ? AND received_at < ?
+             AND source_ip IS NOT NULL AND source_ip != ''
+             AND source_ip NOT IN (
+                 SELECT DISTINCT source_ip FROM logs WHERE received_at >= ?)
+           LIMIT 50""",
+        (baseline_start, silence_cutoff, silence_cutoff)).fetchall()]
 
     # 3. IOC matches in the last 24h
     try:
@@ -1859,52 +1379,9 @@ def api_stats():
     except Exception:
         ioc_hits = 0
 
-    ingest = {}
-    try:
-        raw_telemetry = (runtime.get("ingest_telemetry") or {}).get("value_text") or ""
-        ingest = json.loads(raw_telemetry) if raw_telemetry else {}
-    except Exception:
-        ingest = {}
-    text_search = dbmod.text_search_status(conn, _db_config(), fresh=True)
-    try:
-        maintenance = json.loads((runtime.get("maintenance_status") or {}).get("value_text") or "{}")
-    except Exception:
-        maintenance = {}
-    acfg = (_db_config().get("archive") or {})
-    if not maintenance:
-        maintenance = {
-            "archive": {
-                "enabled": bool(acfg.get("enabled", False)),
-                "mode": str(acfg.get("mode", "copy") or "copy"),
-                "hot_days": int(acfg.get("hot_days", 30) or 30),
-            },
-            "oldest_hot_log": None,
-        }
-    try:
-        maintenance["archive_summary"] = archive_mod.archive_summary(conn)
-    except Exception:
-        maintenance.setdefault("archive_summary", {})
-    if maintenance.get("oldest_hot_log") is None:
-        try:
-            oldest = conn.execute("SELECT received_at FROM logs ORDER BY received_at ASC,id ASC LIMIT 1").fetchone()
-            maintenance["oldest_hot_log"] = oldest["received_at"] if oldest else None
-        except Exception:
-            pass
-    try:
-        query_stats = _query_telemetry().snapshot()
-    except Exception:
-        # Query telemetry is explicitly non-authoritative: failure must never
-        # hide or alter real SIEM results/statistics.
-        query_stats = {}
-    operational = telemetry_mod.derive_operational_health(ingest, query_stats, _db_config())
-    db_file = dbmod.db_file_info(_db_config())
     conn.close()
-    payload = {
+    return jsonify({
         "total_logs": total_logs,
-        "logs_24h": sum(hourly_counts.values()),
-        "logs_24h_by_severity": hourly_counts,
-        "ingest": ingest,
-        "text_search": text_search,
         "listen_ports": _listen_ports_configured(),
         "total_alerts": total_alerts,
         "alerts_breakdown": {
@@ -1918,13 +1395,7 @@ def api_stats():
         "silent_sources": {"count": len(silent), "sources": silent[:10],
                            "silence_days": 3, "baseline_days": 14},
         "ioc_hits_24h": ioc_hits,
-        "query_telemetry": query_stats,
-        "operational_health": operational,
-        "maintenance": maintenance,
-        "database_file": db_file,
-    }
-    _record_query_telemetry_safe("stats", (time.perf_counter() - stats_started) * 1000.0)
-    return jsonify(payload)
+    })
 
 
 # ---------------------------------------------------------------------------
@@ -2517,8 +1988,7 @@ def start_poller_manager():
         if isinstance(payload, dict) and event.get("_endpoint_ip"):
             payload = dict(payload)
             payload.setdefault("endpoint_ip", event["_endpoint_ip"])
-        if not _ingest_raw(_json.dumps(payload, ensure_ascii=False), connector):
-            raise RuntimeError("ingest queue full")
+        _ingest_raw(_json.dumps(payload, ensure_ascii=False), connector)
 
     _POLLER_MANAGER = _api_poller.PollerManager(
         conn_factory=get_conn,
@@ -2948,46 +2418,15 @@ def api_log_fields(log_id):
         "SELECT field, value FROM log_fields WHERE log_id=? ORDER BY field",
         (log_id,)).fetchall()
     fields = {r["field"]: r["value"] for r in rows}
-    if fields:
+    if not fields:
+        # fallback: re-extract from the message for rows with no stored fields
+        r = conn.execute("SELECT message FROM logs WHERE id=?", (log_id,)).fetchone()
         conn.close()
-        return jsonify({"fields": fields, "stored": True, "archived": False})
-
-    hot_row = conn.execute("SELECT message FROM logs WHERE id=?", (log_id,)).fetchone()
-    if hot_row is not None:
-        conn.close()
-        if hot_row["message"]:
-            return jsonify({"fields": extract_fields(hot_row["message"]), "stored": False, "archived": False})
-        return jsonify({"fields": {}, "stored": False, "archived": False})
-
-    # The hot copy may have been evicted after a verified archive seal. Search
-    # the catalog by original global log id; archive errors are explicit so the
-    # UI never mistakes unavailable evidence for "no fields".
-    try:
-        segments = archive_mod.list_segments(conn, ids=[log_id])
-    finally:
-        conn.close()
-    for seg in segments:
-        try:
-            acon = archive_mod.open_archive(seg["path"], readonly=True)
-            try:
-                rows = acon.execute(
-                    "SELECT field,value FROM log_fields WHERE log_id=? ORDER BY field",
-                    (log_id,)).fetchall()
-                fields = {r["field"]: r["value"] for r in rows}
-                if fields:
-                    return jsonify({"fields": fields, "stored": True, "archived": True,
-                                    "archive_segment": seg["segment_id"]})
-                row = acon.execute("SELECT message FROM logs WHERE id=?", (log_id,)).fetchone()
-                if row is not None:
-                    return jsonify({"fields": extract_fields(row["message"] or ""),
-                                    "stored": False, "archived": True,
-                                    "archive_segment": seg["segment_id"]})
-            finally:
-                acon.close()
-        except Exception as exc:
-            return jsonify({"error": "archive evidence unavailable", "detail":
-                            f"{seg['segment_id']}: {type(exc).__name__}"}), 503
-    return jsonify({"fields": {}, "stored": False, "archived": False})
+        if r and r["message"]:
+            return jsonify({"fields": extract_fields(r["message"]), "stored": False})
+        return jsonify({"fields": {}, "stored": False})
+    conn.close()
+    return jsonify({"fields": fields, "stored": True})
 
 
 @app.route("/api/norm-columns", methods=["GET"])
@@ -3213,7 +2652,6 @@ def api_ingest():
     src = src.split(",")[0].strip()
     ctype = (request.content_type or "").lower()
     count = 0
-    dropped = 0
     try:
         if "application/json" in ctype:
             payload = request.get_json(force=True, silent=True)
@@ -3235,22 +2673,17 @@ def api_ingest():
                     line = _json_to_syslog_line(obj)
                 else:
                     line = str(obj)
-                if _ingest_raw(line, src):
-                    count += 1
-                else:
-                    dropped += 1
+                _ingest_raw(line, src)
+                count += 1
         else:
             body = request.get_data(as_text=True) or ""
             for line in body.splitlines():
                 if line.strip():
-                    if _ingest_raw(line, src):
-                        count += 1
-                    else:
-                        dropped += 1
+                    _ingest_raw(line, src)
+                    count += 1
     except Exception as exc:
         return jsonify({"error": f"ingest failed: {type(exc).__name__}"}), 500
-    status = 200 if dropped == 0 else (503 if count == 0 else 202)
-    return jsonify({"ok": dropped == 0, "ingested": count, "dropped": dropped}), status
+    return jsonify({"ok": True, "ingested": count})
 
 
 
@@ -3279,7 +2712,6 @@ def _register_split_blueprints():
     services = SimpleNamespace(
         get_conn=get_conn, audit=audit, require_admin=_require_admin_now,
         db_config=_db_config, cfg_get=cfg_get, cfg_set=cfg_set,
-        query_telemetry=_query_telemetry,
         get_ai_config=get_ai_config, save_ai_config=save_ai_config,
         llm_from_config=_llm_from_config, secretbox_master=_secretbox_master,
     )

@@ -1,0 +1,36 @@
+mini-SIEM original-based installer hardening
+Build date: 2026-09-09
+
+Baseline:
+  user-uploaded mini_siem.zip
+  original install-services.sh size: 11371 bytes
+  original install-services.sh SHA-256: a21c4f7df00b833b1967b6b9f4d482433d301ada6780d5da0c854301a0efef5b
+
+Corrected installer:
+  install-services.sh size: 14856 bytes
+  install-services.sh SHA-256: a326888855287930c357313f75c8302123395c90c00d607d56e8ba8573d34276
+  shebang: #!/usr/bin/env bash
+
+Changes:
+  - preserve dedicated siem service account and minisiem group
+  - preserve root-only listener for TCP/UDP 514
+  - support both .venv and venv project runtimes
+  - bootstrap .venv when no project venv exists
+  - repair Flask/Waitress dependencies inside selected project venv
+  - system Python is bootstrap-only, never final systemd runtime
+  - SELinux stale user_home_t check covers project and selected Python
+  - detect and repair partial listener/dashboard systemd state
+  - post-install fail-closed verification for enabled/active services,
+    pinned ExecStart runtime, and expected listening ports
+
+Artifact gates performed:
+  - bash -n install-services.sh: PASS
+  - shebang/content sanity: PASS
+  - installer size sanity (> original 11 KB): PASS
+  - full package excludes .git, __pycache__, .pytest_cache, *.pyc, *.pyo
+  - extracted ZIP installer hash comparison: performed after packaging
+
+Not run:
+  - live systemd install/repair on the user's NAS
+  - SELinux live transition test
+  - network/package-manager dependency bootstrap against external repositories
