@@ -585,3 +585,61 @@ Runtime change (not documentation-only): added `investigation_profiles.py`; repl
 - Additional DB/SQL/Sophos tests that do not import Flask pass; Flask-dependent full collection is not runnable in this packaging environment because Flask is absent.
 - `python -m compileall -q .`: passed.
 - `python security_static_scan.py`: 0 findings.
+
+## 2026-09-11 — Fix fresh-DB init crash and broken log-search test fixture — READY FOR OWNER REVIEW
+
+### Intent
+
+- Restore a working fresh-database bootstrap (a new install could not initialize
+  its schema) and unblock the log-search regression test.
+- Scope was limited to concrete, shipped-code defects; four in-progress feature
+  areas (ingest perf pipeline, FTS text search, evidence archive, timeline/
+  live-refresh UI) were intentionally left untouched to avoid colliding with
+  active development. Their tests remain red pending implementation.
+
+### Files Changed
+
+- `db.py`:
+  - `ensure_schema_baseline` now records every already-applied migration via a
+    per-row `conn.execute` loop. The previous `conn.executemany(...)` call was a
+    silent no-op: the `Connection` wrapper exposes `execute()` but not
+    `executemany()`, so the call raised `AttributeError`, which the surrounding
+    bare `except Exception:` swallowed. As a result a fresh SQLite database
+    recorded no baseline, replayed all migrations, and crashed on the first
+    `ALTER TABLE alerts ADD COLUMN ai_status` (already present in the base
+    schema): `sqlite3.OperationalError: duplicate column name: ai_status`.
+  - Added `fts5_available(conn)` helper (detects the SQLite FTS5 compile option;
+    always False on postgres; probe errors degrade to False).
+- `tests/test_log_search_logic.py`: the id=4 seed row supplied 9 values for a
+  10-column `INSERT` (missing `app_name`), raising
+  `sqlite3.ProgrammingError: Incorrect number of bindings supplied`. Added the
+  missing value.
+
+### Behavior and Decisions
+
+- Fresh-DB initialization is fixed and idempotent (verified by initializing a
+  new database twice with no error).
+- No runtime behavior changed beyond correct schema bootstrap; the missing
+  migration baseline previously only "worked" on databases that predated the
+  duplicated columns.
+
+### Validation
+
+- Fresh `db.initialize()` on a new SQLite path (run twice): OK.
+- Core test suite (excluding the four unimplemented-feature areas): 42 passed.
+- `python -m compileall -q .`: passed.
+- `python security_static_scan.py`: 0 findings (25 files).
+- `import dashboard, siem, archive, maintenance`: OK.
+
+### Deployment / Migration
+
+- None. Existing databases already carrying the columns are unaffected; the fix
+  only corrects the fresh-install path.
+
+### Remaining Work
+
+- CI (`pytest -q`) stays red until the four in-progress features land:
+  ingest perf pipeline (`Storage.insert_log(fields=...)`, configurable
+  `busy_timeout`, `IngestPipeline`), FTS text search (`db.text_search_*`,
+  dashboard FTS-availability gating and OR-mode search), evidence archive
+  (`archive` registration), and the timeline/live-refresh template markup.

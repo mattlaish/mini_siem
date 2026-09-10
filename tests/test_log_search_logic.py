@@ -75,7 +75,7 @@ def search_db(tmp_path, monkeypatch):
             (1, "2026-09-03T14:02:04Z", "sophos", "10.0.0.10", "informational", "user", "EHWS447", "cloud", "Sophos", "Update succeeded. Event ID 19"),
             (2, "2026-09-03T14:03:04Z", "sophos", "10.0.0.10", "warning", "user", "EHWS447", "quarantine", "Sophos", "Malware detected. Event ID 111"),
             (3, "2026-09-03T14:04:04Z", "firewall", "10.0.0.20", "notice", "local0", "FW01", "cloud", "Fortigate", "Update succeeded. Event ID 19"),
-            (4, "2026-09-03T14:05:04Z", "collector", "10.0.0.30", "notice", "local0", "EHWS448", "archive", "Agent heartbeat complete"),
+            (4, "2026-09-03T14:05:04Z", "collector", "10.0.0.30", "notice", "local0", "EHWS448", "archive", "Agent", "Agent heartbeat complete"),
         ],
     )
     conn.executemany(

@@ -526,10 +526,15 @@ def ensure_schema_baseline(conn, config: dict):
         conn.execute("SELECT 1 FROM logs LIMIT 1")
         import datetime as _datetime
         now = _datetime.datetime.utcnow().isoformat()
-        conn.executemany(
-            "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
-            [(version, now) for version in range(1, len(_migrations()) + 1)],
-        )
+        # The Connection wrapper exposes execute(), not executemany(); insert
+        # each baseline row individually so every already-satisfied migration
+        # is recorded and startup does not replay ALTER statements the base
+        # schema already applied.
+        for version in range(1, len(_migrations()) + 1):
+            conn.execute(
+                "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+                (version, now),
+            )
         conn.commit()
     except Exception:
         try:
@@ -750,6 +755,26 @@ def initialize(config: dict):
                 pass
     finally:
         conn.close()
+
+
+def fts5_available(conn) -> bool:
+    """Return whether this SQLite build has the FTS5 extension compiled in.
+
+    Used to decide between an indexed ``logs_fts MATCH`` message search and a
+    plain ``LIKE`` fallback. Always False for non-SQLite backends. Any probe
+    error is treated as "not available" so search degrades rather than breaks.
+    """
+    if getattr(conn, "backend", "sqlite") == "postgres":
+        return False
+    try:
+        row = conn.execute(
+            "SELECT COUNT(*) AS c FROM pragma_compile_options "
+            "WHERE compile_options = 'ENABLE_FTS5'"
+        ).fetchone()
+        count = row["c"] if isinstance(row, dict) else row[0]
+        return bool(count)
+    except Exception:
+        return False
 
 
 def rebuild_fts(config: dict, progress=None):
