@@ -841,7 +841,7 @@ def _concept_clause(column, concept, term, negate):
 
 
 
-def _build_log_query(args, select_cols):
+def _build_log_query(args, select_cols, search_backend=None):
     """Shared WHERE builder for log search + export. Supports q, source_ip,
     hostname, severity (synonym-aware), time range (from/to ISO), and ids."""
     q = args.get("q", "").strip()

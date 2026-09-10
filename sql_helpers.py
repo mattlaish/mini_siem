@@ -63,6 +63,22 @@ def where_clause(clauses) -> str:
     return "WHERE " + " AND ".join(parts) if parts else ""
 
 
+def delete_in(table: str, column: str, values) -> tuple[str, list]:
+    """Build a parameterized DELETE statement with one IN predicate.
+
+    Table and column identifiers are syntax-validated. Values are always
+    returned separately for parameter binding.
+    """
+    safe_table = identifier(table)
+    safe_column = identifier(column)
+    vals = list(values)
+    return (
+        "DELETE FROM " + safe_table + " WHERE " + safe_column
+        + " IN (" + placeholders(len(vals)) + ")",
+        vals,
+    )
+
+
 def select_in(table: str, columns: str, column: str, values, *, suffix: str = "") -> tuple[str, list]:
     """Build a SELECT with one parameterized IN predicate.
 

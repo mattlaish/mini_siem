@@ -26,6 +26,7 @@ import sqlite3
 import sys
 import threading
 import time
+import queue
 from datetime import datetime, timezone
 
 from forwarder import ForwarderManager
@@ -552,6 +553,79 @@ class Storage:
             )
             self.conn.commit()
             return new_id
+
+
+class IngestPipeline:
+    """Bounded asynchronous ingest pipeline used by high-throughput paths.
+
+    The pipeline keeps transport handling separate from parsing and storage.
+    Queue overflow is reported instead of blocking UDP receive workers.
+    """
+
+    def __init__(self, storage, rules=None, ioc_matcher=None, fields=None,
+                 forwarders=None, worker_count=1, queue_size=1000):
+        self.storage = storage
+        self.rules = rules
+        self.ioc_matcher = ioc_matcher
+        self.fields = fields
+        self.forwarders = forwarders
+        self.queue = queue.Queue(maxsize=queue_size)
+        self._stop = threading.Event()
+        self._stats = {"processed": 0, "failed": 0, "dropped": 0,
+                       "dropped_udp": 0}
+        self._lock = threading.Lock()
+        self.workers = []
+        for _ in range(max(1, int(worker_count))):
+            t = threading.Thread(target=self._worker, daemon=True)
+            t.start()
+            self.workers.append(t)
+
+    def submit(self, raw, source_ip, transport="udp", received_at=None):
+        item = (raw, source_ip, transport, received_at)
+        try:
+            self.queue.put_nowait(item)
+            return True
+        except queue.Full:
+            with self._lock:
+                self._stats["dropped"] += 1
+                if transport == "udp":
+                    self._stats["dropped_udp"] += 1
+            return False
+
+    def _worker(self):
+        while not self._stop.is_set() or not self.queue.empty():
+            try:
+                raw, source_ip, transport, received_at = self.queue.get(timeout=0.1)
+            except queue.Empty:
+                continue
+            try:
+                event = parse_syslog(raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else raw,
+                                     source_ip)
+                if received_at:
+                    event["received_at"] = received_at
+                fields = self.fields.extract(event) if self.fields else {}
+                self.storage.insert_log(event, fields=fields)
+                if self.forwarders:
+                    self.forwarders.forward(event)
+                with self._lock:
+                    self._stats["processed"] += 1
+            except Exception:
+                with self._lock:
+                    self._stats["failed"] += 1
+            finally:
+                self.queue.task_done()
+
+    def stats(self):
+        with self._lock:
+            return dict(self._stats)
+
+    def stop(self, drain=False):
+        if drain:
+            self.queue.join()
+        self._stop.set()
+        for t in self.workers:
+            t.join(timeout=1)
+
 
 
 # --------------------------------------------------------------------------

@@ -525,9 +525,10 @@ def ensure_schema_baseline(conn, config: dict):
     try:
         conn.execute("SELECT 1 FROM logs LIMIT 1")
         import datetime as _datetime
-        conn.execute(
+        now = _datetime.datetime.utcnow().isoformat()
+        conn.executemany(
             "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
-            (len(_migrations()), _datetime.datetime.utcnow().isoformat()),
+            [(version, now) for version in range(1, len(_migrations()) + 1)],
         )
         conn.commit()
     except Exception:

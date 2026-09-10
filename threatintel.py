@@ -34,6 +34,45 @@ _HASH = re.compile(r"\b([a-fA-F0-9]{32}|[a-fA-F0-9]{40}|[a-fA-F0-9]{64})\b")
 _DOMAIN = re.compile(r"\b([a-z0-9](?:[a-z0-9\-]{0,61}[a-z0-9])?(?:\.[a-z0-9\-]{2,})+)\b", re.IGNORECASE)
 
 
+# --------------------------------------------------------------------------
+# High-volume text matching helpers
+# --------------------------------------------------------------------------
+
+def _domain_suffixes(host: str):
+    """Yield progressively broader domain suffixes.
+
+    Example:
+        a.b.example -> a.b.example, b.example, example
+    """
+    value = (host or "").strip().lower().strip(".")
+    if not value or "." not in value:
+        return
+    parts = value.split(".")
+    for index in range(len(parts)):
+        suffix = ".".join(parts[index:])
+        if suffix:
+            yield suffix
+
+
+class MultiPatternMatcher:
+    """Simple multi-pattern matcher interface used by performance paths.
+
+    The implementation keeps matching deterministic while avoiding repeated
+    caller-side scans for every pattern. Patterns are normalized as strings
+    and returned when they occur as substrings of the supplied text.
+    """
+
+    def __init__(self, patterns):
+        self.patterns = tuple(dict.fromkeys(str(p) for p in (patterns or []) if p))
+
+    def find(self, text):
+        value = str(text or "")
+        for pattern in self.patterns:
+            if pattern in value:
+                yield pattern
+
+
+
 def normalize_ioc(ioc_type: str, value: str) -> str:
     """Canonical form used for matching and dedupe."""
     v = (value or "").strip().lower()

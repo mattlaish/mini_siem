@@ -2,7 +2,8 @@
 <html lang="en">
 <head>
 <meta name="csrf-token" content="{{ csrf_token() }}">
-<script src="{{ url_for('static', filename='csrf.js') }}"></script>
+<script src="{{ url_for('static', filename='csrf.js') }}">document.getElementById('timelineRefresh').addEventListener('click', () => loadTimeline({incremental:true}));
+</script>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>mini-SIEM Dashboard</title>
@@ -71,6 +72,7 @@
 
   <div class="panel" style="display:flex;align-items:center;gap:10px;padding:12px 18px;">
     <button id="refreshNowBtn" style="padding:8px 14px;border:none;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;background:var(--accent);color:#fff;">Refresh now</button>
+    <button id="timelineRefresh" style="padding:8px 14px;border:1px solid var(--line);border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;">Refresh timeline</button>
     <button id="autoToggleBtn" style="padding:8px 14px;border:1px solid var(--ok);border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;background:var(--ok-soft);color:var(--ok);">Auto-refresh: ON</button>
     <span class="muted" id="lastUpdated" style="color:var(--ink-soft);font-size:12px;"></span>
   </div>
