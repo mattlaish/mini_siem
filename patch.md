@@ -643,3 +643,66 @@ Runtime change (not documentation-only): added `investigation_profiles.py`; repl
   `busy_timeout`, `IngestPipeline`), FTS text search (`db.text_search_*`,
   dashboard FTS-availability gating and OR-mode search), evidence archive
   (`archive` registration), and the timeline/live-refresh template markup.
+
+## 2026-09-11 — Migration-safe admin bootstrap + PostgreSQL-aware installer — READY FOR OWNER REVIEW
+
+### Intent
+
+- Protect an existing admin identity during a SQLite -> PostgreSQL migration.
+- Stop the class of deploy failure where a code pull adds a dependency
+  (e.g. `waitress`) or switches backend but the service environment is not
+  re-provisioned, causing the dashboard to crash-loop or silently fall back to
+  SQLite.
+
+### Files Changed
+
+- `db.py`: `ensure_admin_bootstrap_safe()` was dead code and, as written, used a
+  raw psycopg2 cursor (`conn.cursor()`/`%s`) the `Connection` wrapper does not
+  provide. Rewritten to be backend-portable via `conn.execute` (`?` -> `%s`),
+  returning whether the bootstrap admin exists; never modifies data.
+- `auth.py`: `seed_default_admin()` now calls `ensure_admin_bootstrap_safe()`
+  first and skips seeding when an admin already exists, so a migrated admin's
+  real credentials/`must_change_password` flag are never overwritten by the
+  admin/admin re-seed. Empty-table behavior is unchanged.
+- `tests/test_admin_bootstrap.py` (new): verifies default admin is seeded
+  (forced password change) on an empty DB, and that an existing admin is
+  preserved untouched.
+- `install-services.sh`: detects the configured backend from `db-config.json`;
+  when PostgreSQL, provisions `psycopg2-binary` (an optional driver not in
+  requirements.txt) and includes it in the venv import health checks; verifies
+  the service account actually resolves the postgres backend (readable
+  `db-config.json`) and fails loudly instead of silently using SQLite; sets
+  `db-config.json`/`auth-config.json` to `640` (group-readable, not
+  world-readable) since they carry secrets.
+- `OPERATION.md`: added an "Upgrading a deployed instance" section — after any
+  `git pull`, re-run `install-services.sh` before restarting; documents the
+  psycopg2/`db-config.json` readability requirements and the SQLite-fallback
+  symptom.
+
+### Behavior and Decisions
+
+- The dashboard `waitress` crash on the owner's host was root-caused to a venv
+  that was not re-provisioned after the pull (not the installer). Re-running
+  `install-services.sh` fixes it; the installer is now also postgres-aware.
+- The separate config-tracking issue (`db-config.json`/`auth-config.json`
+  committed to git, so a pull overwrote the host's postgres config) was left as
+  operator-managed for now, per owner decision.
+
+### Validation
+
+- `bash -n install-services.sh`: OK.
+- New admin-bootstrap tests: 2 passed. Core suite (excluding the four
+  in-progress feature areas): 44 passed.
+- `python -m compileall -q .`: passed. `security_static_scan.py`: 0 findings.
+- Fresh SQLite `db.initialize()`: OK.
+
+### Deployment / Migration
+
+- On the host: after pulling, run `sudo ./install-services.sh`; for postgres,
+  ensure `db-config.json` is readable by the service account (installer now
+  enforces `640` and fails if the backend does not resolve).
+
+### Remaining Work
+
+- CI (`pytest -q`) remains red pending the four in-progress feature areas
+  (ingest perf pipeline, FTS text search, evidence archive, timeline UI).

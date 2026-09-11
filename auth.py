@@ -94,7 +94,16 @@ DEFAULT_ADMIN_PASS = "admin"
 
 
 def seed_default_admin(conn):
-    """Create admin/admin on first run, flagged must_change_password."""
+    """Create admin/admin on first run, flagged must_change_password.
+
+    Never overwrites an existing admin identity: if a bootstrap admin already
+    exists (for example one carried across during a SQLite -> PostgreSQL
+    migration), seeding is skipped so the operator's real credentials are
+    preserved.
+    """
+    import db as _db
+    if _db.ensure_admin_bootstrap_safe(conn):
+        return
     row = conn.execute("SELECT COUNT(*) AS c FROM users").fetchone()
     count = row["c"] if isinstance(row, dict) else row[0]
     if count == 0:

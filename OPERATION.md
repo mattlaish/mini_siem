@@ -138,3 +138,32 @@ An operator must be able to distinguish "no suspicious evidence was found in Sho
 ### Immediate-triage timing note
 
 Auto-triage does not wait for the configured future half of a profile window to elapse. If a stage is analyzed before its full after-trigger window exists, retrieval uses evidence available through the current time. Operators should understand that a later manual/replayed investigation may have additional post-trigger telemetry.
+
+## Upgrading a deployed instance (after `git pull`)
+
+A code pull alone does not update the service environment. New releases can add
+Python dependencies (for example the dashboard now serves via `waitress`), and a
+missing dependency makes the service crash-loop on start. After pulling new code
+on a host, re-provision before restarting:
+
+```bash
+cd /opt/mini_siem            # your install directory
+git pull
+sudo ./install-services.sh   # reinstalls venv deps, fixes perms, rewrites units
+sudo systemctl restart mini-siem-listener mini-siem-dashboard
+systemctl status mini-siem-dashboard
+```
+
+Re-running `install-services.sh` is safe and idempotent: it repairs the venv
+(Flask + Waitress, and psycopg2 when `db-config.json` selects PostgreSQL),
+tightens config-file permissions, and re-checks that the service account can
+both import the required modules and resolve the intended DB backend.
+
+PostgreSQL notes:
+- `psycopg2` is an optional driver and is **not** in `requirements.txt`; the
+  installer provisions it automatically when `db-config.json` selects postgres.
+- `db-config.json` must be readable by the service account or the dashboard
+  silently falls back to SQLite (`[db] backend: sqlite://siem.db` in the log).
+  The installer now fails loudly if the service user cannot resolve postgres.
+- `db-config.json` is environment-specific: verify its backend after any pull,
+  since it carries your live connection settings.

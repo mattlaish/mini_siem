@@ -636,25 +636,23 @@ def postgres_required_tables_present(conn, tables):
 
 
 
-def ensure_admin_bootstrap_safe(conn, username="admin"):
-    """
-    Preserve existing PostgreSQL identities during backend migration.
+def ensure_admin_bootstrap_safe(conn, username="admin") -> bool:
+    """Return whether the bootstrap admin identity already exists.
 
-    Returns:
-      - True when bootstrap account already exists
-      - False when no existing account was found
-
-    This function intentionally does not overwrite existing users.
+    Used by the first-run seeder to avoid overwriting an operator's existing
+    admin account — e.g. after a SQLite -> PostgreSQL migration that already
+    carried the users table across. Backend-portable: it goes through the
+    Connection wrapper (which rewrites ``?`` to ``%s`` for PostgreSQL) rather
+    than assuming a raw psycopg2 cursor. This function never modifies data.
     """
-    cur = conn.cursor()
     try:
-        cur.execute(
-            "SELECT 1 FROM users WHERE username = %s LIMIT 1",
-            (username,),
-        )
-        return cur.fetchone() is not None
-    finally:
-        cur.close()
+        row = conn.execute(
+            "SELECT 1 FROM users WHERE username = ? LIMIT 1", (username,)
+        ).fetchone()
+        return row is not None
+    except Exception:
+        # If the users table is not present yet, no bootstrap account exists.
+        return False
 
 
 

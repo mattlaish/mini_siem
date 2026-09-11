@@ -122,9 +122,31 @@ if [[ ! -x "${PYTHON_BIN}" ]]; then
     exit 1
 fi
 
+# Detect the configured DB backend so PostgreSQL deployments also get the
+# psycopg2 driver provisioned (it is an optional dependency, not in
+# requirements.txt). Falls back to sqlite if db-config.json is absent/unreadable.
+DB_BACKEND="sqlite"
+if [[ -f "${SCRIPT_DIR}/db-config.json" ]]; then
+    DB_BACKEND="$("${PYTHON_BIN}" - "${SCRIPT_DIR}/db-config.json" <<'PY' 2>/dev/null || echo sqlite
+import json, sys
+try:
+    print((json.load(open(sys.argv[1])).get("backend") or "sqlite").strip().lower())
+except Exception:
+    print("sqlite")
+PY
+)"
+fi
+
+# Imports every service must satisfy inside the venv. PostgreSQL adds psycopg2.
+IMPORT_CHECK="import flask, waitress"
+if [[ "${DB_BACKEND}" == "postgres" ]]; then
+    IMPORT_CHECK="import flask, waitress, psycopg2"
+    echo "db-config.json selects the PostgreSQL backend; psycopg2 will be required."
+fi
+
 # Repair missing dependencies inside the selected project venv.  This avoids
 # relying on ~/.local site-packages belonging to the administrator who runs sudo.
-if ! "${PYTHON_BIN}" -c "import flask, waitress" 2>/dev/null; then
+if ! "${PYTHON_BIN}" -c "${IMPORT_CHECK}" 2>/dev/null; then
     if [[ ! -f "${SCRIPT_DIR}/requirements.txt" ]]; then
         echo "requirements.txt is missing from ${SCRIPT_DIR}." >&2
         exit 1
@@ -138,10 +160,19 @@ if ! "${PYTHON_BIN}" -c "import flask, waitress" 2>/dev/null; then
         echo "Fix package/network access, then re-run this installer." >&2
         exit 1
     fi
+    # PostgreSQL driver is optional and lives outside requirements.txt.
+    if [[ "${DB_BACKEND}" == "postgres" ]] && ! "${PYTHON_BIN}" -c "import psycopg2" 2>/dev/null; then
+        echo "Installing PostgreSQL driver (psycopg2-binary) ..."
+        if ! "${PYTHON_BIN}" -m pip install 'psycopg2-binary>=2.9'; then
+            echo "psycopg2-binary installation failed for ${PYTHON_BIN}." >&2
+            echo "Install a PostgreSQL client toolchain or psycopg2-binary, then re-run." >&2
+            exit 1
+        fi
+    fi
 fi
 
-if ! "${PYTHON_BIN}" -c "import flask, waitress" 2>/dev/null; then
-    echo "'${PYTHON_BIN}' still cannot import Flask and Waitress after dependency repair." >&2
+if ! "${PYTHON_BIN}" -c "${IMPORT_CHECK}" 2>/dev/null; then
+    echo "'${PYTHON_BIN}' still cannot import required modules (${IMPORT_CHECK}) after dependency repair." >&2
     exit 1
 fi
 
@@ -235,6 +266,15 @@ for f in "${SCRIPT_DIR}/db-config.json" "${SCRIPT_DIR}/siem.db" "${SCRIPT_DIR}/s
     fi
 done
 
+# Config files can carry secrets (PostgreSQL password, OAuth/SAML credentials).
+# Keep them readable by the service group but never world-readable.
+for f in "${SCRIPT_DIR}/db-config.json" "${SCRIPT_DIR}/auth-config.json"; do
+    if [[ -e "${f}" ]]; then
+        chgrp "${SHARED_GROUP}" "${f}"
+        chmod 640 "${f}"
+    fi
+done
+
 if [[ -d "${SCRIPT_DIR}/backups" ]]; then
     chgrp -R "${SHARED_GROUP}" "${SCRIPT_DIR}/backups"
     chmod -R g+rwX "${SCRIPT_DIR}/backups"
@@ -244,10 +284,22 @@ fi
 # Fail before writing/enabling units if the dedicated account cannot execute
 # the selected venv/interpreter or cannot create SQLite WAL/SHM beside siem.db.
 if command -v runuser >/dev/null 2>&1; then
-    if ! runuser -u "${SERVICE_USER}" -- "${PYTHON_BIN}" -c "import flask, waitress" >/dev/null 2>&1; then
-        echo "Service account '${SERVICE_USER}' cannot execute '${PYTHON_BIN}' or import Flask/Waitress." >&2
+    if ! runuser -u "${SERVICE_USER}" -- "${PYTHON_BIN}" -c "${IMPORT_CHECK}" >/dev/null 2>&1; then
+        echo "Service account '${SERVICE_USER}' cannot execute '${PYTHON_BIN}' or import required modules (${IMPORT_CHECK})." >&2
         echo "Check venv path permissions and SELinux labels before retrying." >&2
         exit 1
+    fi
+    # For PostgreSQL, confirm the service account actually resolves the intended
+    # backend (readable db-config.json) instead of silently falling back to SQLite.
+    if [[ "${DB_BACKEND}" == "postgres" ]]; then
+        resolved="$(runuser -u "${SERVICE_USER}" -- "${PYTHON_BIN}" -c \
+            "import db; print(db.load_config().get('backend','sqlite'))" 2>/dev/null || echo unknown)"
+        if [[ "${resolved}" != "postgres" ]]; then
+            echo "Service account '${SERVICE_USER}' resolves DB backend '${resolved}', not 'postgres'." >&2
+            echo "It likely cannot read ${SCRIPT_DIR}/db-config.json. Fix ownership/permissions" >&2
+            echo "(e.g. chown root:${SHARED_GROUP} db-config.json && chmod 640 db-config.json) and re-run." >&2
+            exit 1
+        fi
     fi
     if ! runuser -u "${SERVICE_USER}" -- test -w "${SCRIPT_DIR}"; then
         echo "Service account '${SERVICE_USER}' cannot write ${SCRIPT_DIR}; SQLite WAL/SHM creation would fail." >&2
