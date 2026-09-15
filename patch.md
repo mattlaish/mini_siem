@@ -706,3 +706,39 @@ Runtime change (not documentation-only): added `investigation_profiles.py`; repl
 
 - CI (`pytest -q`) remains red pending the four in-progress feature areas
   (ingest perf pipeline, FTS text search, evidence archive, timeline UI).
+
+## 2026-09-15 — Fix compile break: prose files saved with .py extension — READY FOR OWNER REVIEW
+
+### Intent
+
+- Restore a clean `python -m compileall` (a CI step). The "finailzed" commit added
+  12 files that are Markdown/English prose but carry a `.py` extension, so they
+  raised SyntaxError on compile.
+
+### Files Changed
+
+- Renamed 12 non-Python documentation files from `.py` to `.md` (content
+  unchanged): alert_lifecycle/alert_state_machine, detection_rule_management/
+  {rule_metrics,rule_tuning,rule_versioning}, entity_context_intelligence/
+  {relationship_model,risk_context}, investigation_workspace/{entity_context,
+  evidence_reference}, soc_case_management/ticket_timeline, soc_metrics_dashboard/
+  {alert_metrics,case_metrics,rule_effectiveness}.
+
+### Behavior and Decisions
+
+- All 12 were orphan files (imported by no runtime code), so renaming them is
+  safe and changes no behavior. They are documentation, so content was preserved
+  as `.md` rather than deleted.
+
+### Validation
+
+- `python -m compileall -q .`: exit 0 (previously SyntaxError on 12 files).
+- No remaining non-parsing `.py` files in the tree.
+- Test suite unchanged at 44 failed / 81 passed (no regression from this change;
+  the 44 failures are the pre-existing unfinished feature areas).
+- `import dashboard, siem, listener, db` + fresh SQLite init: OK.
+
+### Remaining Work
+
+- CI still red on 44 pre-existing failing tests (ingest perf pipeline, FTS text
+  search, timeline UI, evidence archive) — separate, unfinished feature work.
