@@ -1,0 +1,11 @@
+# Ticket timeline event reference
+
+Events:
+- TICKET_CREATED
+- ALERT_LINKED
+- ASSIGNED
+- STATUS_CHANGED
+- NOTE_ADDED
+- EVIDENCE_ADDED
+- RESOLVED
+- CLOSED
