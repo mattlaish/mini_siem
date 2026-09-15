@@ -1,0 +1,13 @@
+scenarios:
+  - name: database_unavailable
+    component: postgresql
+    expected_state: FAILED
+    recovery: restore_database_connectivity
+  - name: listener_stopped
+    component: listener
+    expected_state: FAILED
+    recovery: restart_listener
+  - name: disk_pressure
+    component: storage
+    expected_state: DEGRADED
+    recovery: free_storage_and_verify

@@ -110,6 +110,11 @@ _LOGIN_FAILURES_BY_PAIR = {}
 _LOGIN_FAILURES_BY_IP = {}
 _LOGIN_LIMIT_LOCK = threading.Lock()
 
+# Setup -> Troubleshoot uses a root-owned, constrained packet-capture helper.
+# Keep the helper path fixed: the dashboard must never choose an executable.
+_SYSLOG_CAPTURE_HELPER = "/usr/local/libexec/mini-siem-syslog-capture"
+_SYSLOG_CAPTURE_LOCK = threading.Lock()
+
 
 def _login_source_ip():
     forwarded = request.headers.get("X-Forwarded-For", "")
@@ -347,7 +352,7 @@ def init_auth(auth_config_path=None):
     once at startup (main) — and safe to call in tests."""
     global AUTH_CONFIG, _oauth
     AUTH_CONFIG = auth.load_auth_config(auth_config_path)
-    dbmod.initialize(_db_config())
+    dbmod.ensure_runtime_ready(_db_config())
     conn = get_conn()
     auth.seed_default_admin(conn)
     explicit = AUTH_CONFIG.get("session_secret") or ""
@@ -625,7 +630,7 @@ AI_DEFAULTS = {
 def ensure_schema():
     """Create all tables/indexes if missing, using the active backend's
     dialect. Idempotent; safe to call from any endpoint."""
-    dbmod.initialize(_db_config())
+    dbmod.ensure_runtime_ready(_db_config())
 
 
 def ensure_app_config():
@@ -2467,7 +2472,7 @@ def _ensure_api_keys_table():
     try:
         conn.execute("SELECT 1 FROM api_keys LIMIT 1")
     except Exception:
-        dbmod.initialize(_db_config())
+        dbmod.ensure_runtime_ready(_db_config())
     finally:
         conn.close()
 
@@ -2583,6 +2588,138 @@ def api_listen_ports_get():
             pass
     target = path if os.path.exists(path) else os.path.dirname(path)
     return jsonify({"ports": ports, "config_writable": os.access(target, os.W_OK)})
+
+
+
+
+@app.route("/api/troubleshoot/syslog-capture", methods=["POST"])
+@admin_required
+def api_troubleshoot_syslog_capture():
+    """Run a short, constrained packet-header capture for one source IP.
+
+    The dashboard never constructs a tcpdump expression.  It invokes a
+    root-owned helper through passwordless sudo; that helper validates the IP,
+    reads only the configured syslog listen ports, caps duration/packet count,
+    and never requests packet payloads.
+    """
+    import json as _json
+    import os as _os
+    import subprocess as _subprocess
+
+    body = request.get_json(silent=True) or {}
+    raw_ip = str(body.get("source_ip") or "").strip()
+    try:
+        source_ip = str(ipaddress.ip_address(raw_ip))
+    except ValueError:
+        return jsonify({"error": "Enter a valid IPv4 or IPv6 address."}), 400
+
+    if not _os.path.isfile(_SYSLOG_CAPTURE_HELPER):
+        return jsonify({
+            "error": "Syslog capture helper is not installed. Re-run sudo ./install-services.sh."
+        }), 503
+
+    from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+    def _peer_counters():
+        try:
+            _conn = get_conn()
+            _row = dbmod.read_runtime_stats(_conn, ["listener_health"]).get("listener_health")
+            _conn.close()
+            if not _row or not _row.get("value_text"):
+                return {"accepted": 0, "failed": 0}
+            _payload = _json.loads(_row.get("value_text") or "{}")
+            _source = ((_payload.get("sources") or {}).get(source_ip) or {})
+            return {"accepted": int(_source.get("accepted") or 0), "failed": int(_source.get("failed") or 0)}
+        except Exception:
+            return {"accepted": 0, "failed": 0}
+
+    before_counters = _peer_counters()
+    capture_started = _dt.now(_tz.utc)
+
+    # One capture at a time prevents repeated browser clicks from spawning a
+    # fleet of privileged tcpdump processes.  Duration is deliberately fixed.
+    if not _SYSLOG_CAPTURE_LOCK.acquire(blocking=False):
+        return jsonify({"error": "A syslog capture is already running. Try again shortly."}), 429
+    try:
+        try:
+            completed = _subprocess.run(
+                ["sudo", "-n", _SYSLOG_CAPTURE_HELPER,
+                 "--source-ip", source_ip, "--seconds", "4"],
+                capture_output=True,
+                text=True,
+                timeout=8,
+                check=False,
+                env={"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"},
+            )
+        except (_subprocess.TimeoutExpired, OSError) as exc:
+            audit("syslog_capture_failed", target=source_ip, detail=type(exc).__name__)
+            return jsonify({"error": f"Packet capture could not run: {type(exc).__name__}"}), 503
+    finally:
+        _SYSLOG_CAPTURE_LOCK.release()
+
+    raw = (completed.stdout or "").strip()
+    try:
+        result = _json.loads(raw) if raw else {}
+    except ValueError:
+        result = {}
+    if completed.returncode != 0 or not result.get("ok"):
+        err = result.get("error") or " ".join((completed.stderr or "").splitlines()[-2:])
+        audit("syslog_capture_failed", target=source_ip,
+              detail=(err or f"helper rc={completed.returncode}")[:300])
+        return jsonify({"error": err or "Packet capture helper failed."}), 503
+
+    capture_ended = _dt.now(_tz.utc)
+    after_counters = _peer_counters()
+    accepted_delta = max(0, after_counters["accepted"] - before_counters["accepted"])
+    failed_delta = max(0, after_counters["failed"] - before_counters["failed"])
+    stored = 0
+    storage_error = ""
+    try:
+        _conn = get_conn()
+        _row = _conn.execute(
+            "SELECT COUNT(*) AS c FROM logs WHERE peer_ip=? AND received_at>=? AND received_at<=?",
+            (source_ip, (capture_started - _td(seconds=1)).isoformat(), (capture_ended + _td(seconds=2)).isoformat()),
+        ).fetchone()
+        stored = int(_row["c"] if isinstance(_row, dict) else _row[0])
+        _conn.close()
+    except Exception as exc:
+        storage_error = type(exc).__name__
+
+    seen = bool(result.get("seen"))
+    network = {"status": "PASS" if seen else "WARNING", "packets": int(result.get("packets") or 0),
+               "detail": "Matching syslog packets reached the SIEM host." if seen else "No matching packet was observed during the capture window."}
+    if accepted_delta or stored:
+        listener_stage = {"status": "PASS", "accepted": accepted_delta, "failed": failed_delta,
+                          "detail": "Listener activity from this peer was observed."}
+    elif seen:
+        listener_stage = {"status": "WARNING", "accepted": accepted_delta, "failed": failed_delta,
+                          "detail": "Packets reached the host but no accepted event from this peer was confirmed."}
+    else:
+        listener_stage = {"status": "UNKNOWN", "accepted": accepted_delta, "failed": failed_delta,
+                          "detail": "Listener correlation requires incoming packets."}
+    if failed_delta:
+        parser_stage = {"status": "WARNING", "failed": failed_delta, "detail": "Listener recorded ingest/parser failures for this peer."}
+    elif stored:
+        parser_stage = {"status": "PASS", "failed": 0, "detail": "At least one event from this peer was parsed and stored."}
+    elif seen:
+        parser_stage = {"status": "UNKNOWN", "failed": 0, "detail": "Packet observed but no parsed/stored event was confirmed in this window."}
+    else:
+        parser_stage = {"status": "UNKNOWN", "failed": 0, "detail": "No packet available to validate parsing."}
+    if storage_error:
+        storage_stage = {"status": "UNKNOWN", "stored": 0, "detail": f"Storage correlation unavailable: {storage_error}."}
+    elif stored:
+        storage_stage = {"status": "PASS", "stored": stored, "detail": "Events from this peer are present in the hot log store."}
+    elif seen:
+        storage_stage = {"status": "WARNING", "stored": 0, "detail": "No event from this peer was stored during the correlation window."}
+    else:
+        storage_stage = {"status": "UNKNOWN", "stored": 0, "detail": "Storage correlation requires incoming events."}
+    search_stage = {"status": "PASS" if stored else "UNKNOWN", "matched": stored,
+                    "detail": "Stored events are queryable by peer IP." if stored else "No newly stored event was available for search confirmation."}
+    result["pipeline"] = {"network": network, "listener": listener_stage, "parser": parser_stage,
+                          "storage": storage_stage, "search": search_stage}
+
+    audit("PIPELINE_DIAGNOSTIC_RUN", target=source_ip,
+          detail=f"seen={seen} packets={int(result.get('packets') or 0)} accepted={accepted_delta} failed={failed_delta} stored={stored}")
+    return jsonify(result)
 
 
 @app.route("/api/listen-ports", methods=["POST"])
@@ -2732,14 +2869,16 @@ def main():
     ap = argparse.ArgumentParser(description="mini-SIEM dashboard")
     ap.add_argument("--db", default="siem.db")
     ap.add_argument("--db-config", default=None, help="path to db-config.json (sqlite/postgres selector)")
+    ap.add_argument("--db-credentials", default=None, help="PostgreSQL component credential overlay (user/password only)")
     ap.add_argument("--auth-config", default=None, help="path to auth-config.json (login/OAuth/SAML)")
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=8080)
     args = ap.parse_args()
     DB_PATH = args.db
-    DB_CONFIG = dbmod.load_config(args.db_config, sqlite_fallback=args.db)
+    DB_CONFIG = dbmod.load_config(args.db_config, sqlite_fallback=args.db,
+                                  credentials_path=args.db_credentials)
     print(f"[db] backend: {dbmod.describe(DB_CONFIG)}")
-    dbmod.initialize(DB_CONFIG)
+    dbmod.ensure_runtime_ready(DB_CONFIG)
     init_auth(args.auth_config)
     print("[auth] login enabled; default admin/admin on first run (change forced)")
     start_triage_worker()

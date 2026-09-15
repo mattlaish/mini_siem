@@ -519,10 +519,21 @@ def run_archive_cycle(storage, config, now=None):
                     # this commit leaves duplicate hot+archive copies, never lost
                     # evidence; the unique occurrence id makes a retry idempotent.
                     status["hot_evicted"] = _remove_hot_copies_locked(storage, ids)
+                now_iso = _utc_now().isoformat()
                 dbmod.runtime_stat_upsert(
                     storage.conn, "archive_status", value_text=json.dumps(meta, separators=(",", ":"), sort_keys=True),
-                    updated_at=_utc_now().isoformat(),
+                    updated_at=now_iso,
                 )
+                if bool(cfg.get("verify_on_create", True)):
+                    verification = {
+                        "ok": True, "mode": "on_create", "checked_segments": 1,
+                        "failed_segments": 0, "segment_id": segment_id,
+                    }
+                    dbmod.runtime_stat_upsert(
+                        storage.conn, "archive_verify_status",
+                        value_text=json.dumps(verification, separators=(",", ":"), sort_keys=True),
+                        updated_at=now_iso,
+                    )
                 storage.conn.commit()
                 storage._pending = 0
                 storage._last_commit = time.time()

@@ -324,3 +324,158 @@ Implemented:
 - raw preservation on parser failure
 
 CEF events remain visible even when vendor-specific fields cannot be normalized.
+
+## PostgreSQL Privilege Boundary Hardening (2026-09-12)
+
+Status: **IMPLEMENTED / LIVE POSTGRES VALIDATION DEFERRED**.
+
+Implemented on the application mainline:
+
+- PostgreSQL runtime processes no longer call the schema migration/DDL path. `db.ensure_runtime_ready()` validates required tables and the migration ledger and fails closed when owner migration is required.
+- `db.load_config()` supports a separate component credential overlay containing only `postgres.user` and `postgres.password`; credential overlays cannot redirect host/port/database.
+- listener and dashboard accept `--db-credentials` and can run under separate PostgreSQL login identities.
+- secure PostgreSQL mode rejects combined `siem.py` listener+dashboard execution because one process would collapse the trust boundary.
+- `tools/postgres_privilege_boundary.py` provisions `minisiem_runtime`, `minisiem_ingest`, `minisiem_dashboard`, and `minisiem_maintenance`, removes owner credentials from the base config, writes per-component credential files, and verifies effective privileges.
+- runtime roles are read+append only on `logs`; `UPDATE`, `DELETE`, and `TRUNCATE` are denied. The maintenance role alone receives `DELETE` for verified hot-copy eviction.
+- PostgreSQL guard triggers provide defense in depth against accidental future grants: runtime UPDATE/TRUNCATE are rejected, and DELETE is accepted only from a maintenance-role member.
+- `schema_migrations` is runtime read-only. Schema change remains an explicit owner/migration operation.
+- `install-services.sh` detects secure PostgreSQL mode, passes split credentials to the two services, makes dashboard credentials readable by the dashboard account only, and keeps listener/maintenance credentials root-only.
+- archive execution selects/requires the maintenance credential in secure PostgreSQL mode; archive verification can use the dashboard read credential.
+
+Security boundary intent:
+
+```text
+PostgreSQL owner/migrator   schema/DDL only, not application runtime
+minisiem_ingest             SELECT + append logs; no UPDATE/DELETE/TRUNCATE logs
+minisiem_dashboard          SELECT + append logs; no UPDATE/DELETE/TRUNCATE logs
+minisiem_maintenance        runtime rights + DELETE logs for archive hot-copy eviction
+```
+
+Known residual boundary: the listener systemd service still runs as host root to bind port 514. Host-root compromise is therefore outside the database-credential containment guarantee and can read root-only local secret files. Dropping listener root privileges via a dedicated user/capability is a separate host-hardening slice.
+
+## Setup Troubleshoot: constrained syslog packet capture (2026-09-13)
+
+Status: **IMPLEMENTED / HOST-INTEGRATION VALIDATION REQUIRED**.
+
+Added a simple **Setup -> Troubleshoot** workflow to answer whether syslog packets from one source IP are reaching the SIEM host.
+
+Implementation invariants:
+
+- admin-only dashboard API: `POST /api/troubleshoot/syslog-capture`;
+- accepts only one validated IPv4/IPv6 source address;
+- capture duration is fixed at 4 seconds from the UI and helper hard-caps it at 5 seconds;
+- capture is limited to 50 packets and current configured syslog listen ports;
+- packet payload output is not requested (`tcpdump` header summaries only);
+- no user-supplied tcpdump expression, executable, interface, port, or shell command is accepted;
+- one capture may run at a time in the dashboard process;
+- the dashboard invokes a fixed root-owned helper with `sudo -n`, never `shell=True`;
+- `install-services.sh` copies the helper to `/usr/local/libexec/mini-siem-syslog-capture`, writes root-only `/etc/mini-siem/syslog-capture.json`, and installs `/etc/sudoers.d/mini-siem-troubleshoot`;
+- the dashboard service account cannot modify the root-owned helper or its helper configuration.
+
+This feature proves network arrival only. A positive packet capture does not prove parser success or database persistence.
+
+
+## PostgreSQL Runtime Migration Boundary
+
+Status:
+IMPLEMENTED
+
+Runtime identities must not repair or initialize database schema.
+
+Rules:
+- listener runtime role must not execute DDL
+- dashboard runtime role must not execute DDL
+- schema initialization is an owner/migrator operation
+- migrations must complete before runtime services start
+
+Startup model:
+
+owner/migrator
+    |
+    v
+schema and migration ledger ready
+    |
+    v
+listener/dashboard runtime identities start
+
+
+## SQLite to PostgreSQL Migration Invariant
+
+SQLite to PostgreSQL migration must not blindly copy `schema_migrations` as business data.
+
+The target PostgreSQL database must first be prepared by the target-version owner migration path.
+
+Data migration may copy:
+- logs
+- alerts
+- configuration data
+- required business records
+
+Migration history belongs to the target application schema version.
+
+## 2026-09-13 — Web Console Security/Runtime + Archive/Maintenance Observability
+
+Canonical parent baseline: `mini_siem_postgres_migration_boundary_docs_sync_2026-09-13.zip`.
+The previously generated `mini_siem_webconsole_observability_2026-09-13.zip` was rejected as a development parent after inspection showed stale lineage and runtime `initialize()` calls. This slice was rebuilt from the canonical privilege-boundary baseline instead.
+
+Implemented:
+- Cross-process listener health is persisted in `runtime_stats` and rendered on Health. Listener heartbeat includes READY/DEGRADED/FAILED state, ingest state, direct-worker mode, uptime, processed/failed/dropped counters, last event, and heartbeat age. A stale heartbeat is shown as STALE; the dashboard does not restart the listener automatically.
+- PostgreSQL Security & Schema Readiness is read-only and admin-only. It reports the effective dashboard DB role, raw-log SELECT/INSERT/DELETE/UPDATE/TRUNCATE capabilities, guard-trigger count, migration-ledger write capability, maintenance-role inheritance, current/expected migration versions, and pending versions.
+- Setup no longer recommends killing/relaunching `listener.py`; it uses `sudo systemctl restart mini-siem-listener`, preserving the service account and DB credential overlay.
+- Archive & Maintenance Health is read-only and admin-only. It shows archive policy, sealed segment/event totals, latest segment, last checksum verification, maintenance timing/errors, and the maintenance privilege boundary.
+- Archive execution remains CLI/maintenance-only; the Web Console has no endpoint that runs archive, checksum repair, raw-log eviction, privilege changes, or migrations.
+- PostgreSQL archive catalog mutation is restricted to the maintenance identity. Listener/dashboard identities are SELECT-only on `archive_segments` and `archive_occurrence_catalog`; maintenance may SELECT/INSERT/UPDATE/DELETE but not TRUNCATE.
+- Added missing portable foundations used by the existing archive code: `runtime_stats`, `archive_segments`, `archive_occurrence_catalog`, `Connection.executemany()`, `Connection.rollback()`, and conservative Storage batch/commit/rollback/close helpers.
+
+Schema/migration impact:
+- Migration ledger now has 26 versions. Versions 22-26 create `runtime_stats`, archive catalog tables, and their indexes.
+- PostgreSQL runtime identities still perform no DDL. Owner/migrator must apply the new migrations before services start.
+- After owner migration, rerun `tools/postgres_privilege_boundary.py` so the archive-catalog SELECT-only/maintenance-write boundary is applied to the new tables.
+
+Validation performed for this slice:
+- New observability/privilege/troubleshoot targeted set: 15 passed, 0 failed.
+- Existing `tests/test_evidence_archive_phase6.py`: 5 passed, 2 failed. The two failures are pre-existing baseline debt outside this slice: missing `hourly_log_stats` rollup infrastructure and missing legacy `_record_query_telemetry_safe` dashboard symbol. They are not counted as passed.
+- SQLite live archive smoke: sealed segment creation, checksum verification, catalog entry, `archive_status`, and `archive_verify_status` all succeeded.
+
+Final local validation update for this slice: broader targeted regression is 30 passed / 0 failed; static security scan is 0 findings; Python source compile, Health-page JavaScript syntax, and service-shell syntax pass. Full repository pytest is not green/complete in this environment because Flask/Werkzeug are absent and collection stops on 3 modules.
+
+## 2026-09-13 — Operational Readiness & Incident Diagnostics
+
+Implemented on the canonical `mini_siem_archive_maintenance_observability_2026-09-13.zip` baseline.
+
+Delivered implementation:
+- `operational_diagnostics.py` aggregates Database, Listener, Ingest, PostgreSQL security/schema, Archive/Maintenance, syslog socket and storage evidence into a read-only incident view with HEALTHY/WARNING/DEGRADED/FAILED/UNKNOWN states and dependency edges.
+- `GET /api/diagnostics/status` exposes the current read-only snapshot to administrators; `POST /api/diagnostics/run` performs the same bounded checks and records `DIAGNOSTIC_RUN` in the audit trail.
+- `POST /api/support/bundle` creates an in-memory, allow-listed support tarball and records `SUPPORT_BUNDLE_CREATED`. Credential files, passwords, API keys, private keys and raw event payloads are excluded. Raw service journals are intentionally omitted because listener stdout may contain event-message excerpts.
+- Listener runtime heartbeat now keeps bounded per-peer counters (`accepted`, `failed`, `last_seen`; maximum 64 peers) without event payloads. Setup > Troubleshoot uses them together with packet arrival and peer-IP storage correlation to report Network -> Listener -> Parser -> Storage -> Search stages.
+- Health Web Console now exposes Incident Diagnostics and dependency state; Setup includes a Support Bundle workflow.
+
+Security/architecture invariants retained:
+- Web diagnostics are observation-only. They cannot restart services, run owner migrations, repair schemas, change PostgreSQL privileges, execute archive maintenance or obtain maintenance credentials.
+- PostgreSQL runtime identities continue to use `ensure_runtime_ready()` rather than schema initialization.
+- Support artifacts use a fixed allow-list and secret minimization; arbitrary file paths/commands are not accepted from Web input.
+
+Initial verification in the build environment: targeted operational/security/database suite 31 passed, static security scan 0 findings. Full repository status and artifact-level packaging results are recorded in TESTING.md and the delivery manifest.
+
+
+## Phase 12.2 — Installation / Upgrade Workflow
+
+Status: IMPLEMENTED_TESTING_DEFERRED
+
+Added:
+- fresh installation workflow
+- upgrade procedure
+- migration ownership
+- backup requirement
+- rollback policy
+- service restart ordering
+
+## Phase 12.3 — Backup / Restore Readiness
+
+Status: IMPLEMENTED_TESTING_DEFERRED
+
+Added backup manifest/checksum validation workflow. Runtime identities do not perform schema migration or repair during restore.
+
+
+## Phase 12.4 Performance & Capacity Qualification
+Status: IMPLEMENTED_TESTING_DEFERRED

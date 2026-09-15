@@ -55,6 +55,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SHARED_GROUP="minisiem"
 SERVICE_USER="siem"
 SERVICE_HOME="/var/lib/mini-siem"
+CAPTURE_HELPER="/usr/local/libexec/mini-siem-syslog-capture"
+CAPTURE_CONFIG_DIR="/etc/mini-siem"
+CAPTURE_CONFIG="${CAPTURE_CONFIG_DIR}/syslog-capture.json"
+CAPTURE_SUDOERS="/etc/sudoers.d/mini-siem-troubleshoot"
 
 DASH_HOST="0.0.0.0"
 DASH_PORT="8080"
@@ -71,6 +75,8 @@ if [[ "${1:-}" == "uninstall" ]]; then
         systemctl disable "${svc}" 2>/dev/null || true
     done
     rm -f "${LISTENER_UNIT}" "${DASHBOARD_UNIT}"
+    rm -f "${CAPTURE_HELPER}" "${CAPTURE_SUDOERS}" "${CAPTURE_CONFIG}"
+    rmdir "${CAPTURE_CONFIG_DIR}" 2>/dev/null || true
     systemctl daemon-reload
     echo "Removed both mini-SIEM services. Database, files, '${SHARED_GROUP}', and service account '${SERVICE_USER}' were left untouched."
     exit 0
@@ -135,6 +141,33 @@ except Exception:
     print("sqlite")
 PY
 )"
+fi
+
+PG_PRIVILEGE_BOUNDARY=0
+LISTENER_DB_EXTRA=""
+DASHBOARD_DB_EXTRA=""
+if [[ "${DB_BACKEND}" == "postgres" ]]; then
+    PG_PRIVILEGE_BOUNDARY="$("${PYTHON_BIN}" - "${SCRIPT_DIR}/db-config.json" <<'PY' 2>/dev/null || echo 0
+import json, sys
+try:
+    cfg = json.load(open(sys.argv[1]))
+    print(1 if (cfg.get("postgres_privilege_boundary") or {}).get("enabled") else 0)
+except Exception:
+    print(0)
+PY
+)"
+    if [[ "${PG_PRIVILEGE_BOUNDARY}" == "1" ]]; then
+        for f in db-listener-credentials.json db-dashboard-credentials.json db-maintenance-credentials.json; do
+            if [[ ! -f "${SCRIPT_DIR}/${f}" ]]; then
+                echo "PostgreSQL privilege boundary is enabled but ${f} is missing." >&2
+                echo "Run: ${PYTHON_BIN} ${SCRIPT_DIR}/tools/postgres_privilege_boundary.py" >&2
+                exit 1
+            fi
+        done
+        LISTENER_DB_EXTRA="--db-config ${SCRIPT_DIR}/db-config.json --db-credentials ${SCRIPT_DIR}/db-listener-credentials.json"
+        DASHBOARD_DB_EXTRA="--db-config ${SCRIPT_DIR}/db-config.json --db-credentials ${SCRIPT_DIR}/db-dashboard-credentials.json"
+        echo "PostgreSQL privilege boundary: ENABLED (split listener/dashboard identities)."
+    fi
 fi
 
 # Imports every service must satisfy inside the venv. PostgreSQL adds psycopg2.
@@ -266,14 +299,21 @@ for f in "${SCRIPT_DIR}/db-config.json" "${SCRIPT_DIR}/siem.db" "${SCRIPT_DIR}/s
     fi
 done
 
-# Config files can carry secrets (PostgreSQL password, OAuth/SAML credentials).
-# Keep them readable by the service group but never world-readable.
+# Base/auth config is readable by the dashboard service group. In secure
+# PostgreSQL mode db-config.json is non-secret; component passwords live in
+# separate credential files with stricter ownership.
 for f in "${SCRIPT_DIR}/db-config.json" "${SCRIPT_DIR}/auth-config.json"; do
     if [[ -e "${f}" ]]; then
-        chgrp "${SHARED_GROUP}" "${f}"
+        chown root:"${SHARED_GROUP}" "${f}"
         chmod 640 "${f}"
     fi
 done
+if [[ "${PG_PRIVILEGE_BOUNDARY}" == "1" ]]; then
+    chown root:root "${SCRIPT_DIR}/db-listener-credentials.json" "${SCRIPT_DIR}/db-maintenance-credentials.json"
+    chmod 600 "${SCRIPT_DIR}/db-listener-credentials.json" "${SCRIPT_DIR}/db-maintenance-credentials.json"
+    chown root:"${SHARED_GROUP}" "${SCRIPT_DIR}/db-dashboard-credentials.json"
+    chmod 640 "${SCRIPT_DIR}/db-dashboard-credentials.json"
+fi
 
 if [[ -d "${SCRIPT_DIR}/backups" ]]; then
     chgrp -R "${SHARED_GROUP}" "${SCRIPT_DIR}/backups"
@@ -289,22 +329,77 @@ if command -v runuser >/dev/null 2>&1; then
         echo "Check venv path permissions and SELinux labels before retrying." >&2
         exit 1
     fi
-    # For PostgreSQL, confirm the service account actually resolves the intended
-    # backend (readable db-config.json) instead of silently falling back to SQLite.
+    # For PostgreSQL, confirm the dashboard account resolves the intended
+    # backend and, when enabled, only its own component credential file.
     if [[ "${DB_BACKEND}" == "postgres" ]]; then
-        resolved="$(runuser -u "${SERVICE_USER}" -- "${PYTHON_BIN}" -c \
-            "import db; print(db.load_config().get('backend','sqlite'))" 2>/dev/null || echo unknown)"
-        if [[ "${resolved}" != "postgres" ]]; then
-            echo "Service account '${SERVICE_USER}' resolves DB backend '${resolved}', not 'postgres'." >&2
-            echo "It likely cannot read ${SCRIPT_DIR}/db-config.json. Fix ownership/permissions" >&2
-            echo "(e.g. chown root:${SHARED_GROUP} db-config.json && chmod 640 db-config.json) and re-run." >&2
-            exit 1
+        if [[ "${PG_PRIVILEGE_BOUNDARY}" == "1" ]]; then
+            resolved="$(runuser -u "${SERVICE_USER}" -- "${PYTHON_BIN}" -c \
+                "import db; c=db.load_config('${SCRIPT_DIR}/db-config.json', credentials_path='${SCRIPT_DIR}/db-dashboard-credentials.json'); print(c.get('backend','sqlite'), c.get('_credentials_identity',''))" 2>/dev/null || echo unknown)"
+            if [[ "${resolved}" != "postgres dashboard" ]]; then
+                echo "Dashboard service account cannot resolve its split PostgreSQL credential: ${resolved}." >&2
+                exit 1
+            fi
+            if runuser -u "${SERVICE_USER}" -- test -r "${SCRIPT_DIR}/db-listener-credentials.json"; then
+                echo "VERIFY FAIL: dashboard service account can read listener PostgreSQL credentials." >&2
+                exit 1
+            fi
+            if runuser -u "${SERVICE_USER}" -- test -r "${SCRIPT_DIR}/db-maintenance-credentials.json"; then
+                echo "VERIFY FAIL: dashboard service account can read maintenance PostgreSQL credentials." >&2
+                exit 1
+            fi
+        else
+            resolved="$(runuser -u "${SERVICE_USER}" -- "${PYTHON_BIN}" -c \
+                "import db; print(db.load_config().get('backend','sqlite'))" 2>/dev/null || echo unknown)"
+            if [[ "${resolved}" != "postgres" ]]; then
+                echo "Service account '${SERVICE_USER}' resolves DB backend '${resolved}', not 'postgres'." >&2
+                exit 1
+            fi
+            echo "WARNING: PostgreSQL uses a shared legacy credential; raw-log DELETE containment is not enforced." >&2
+            echo "Run tools/postgres_privilege_boundary.py to enable split DB identities." >&2
         fi
     fi
     if ! runuser -u "${SERVICE_USER}" -- test -w "${SCRIPT_DIR}"; then
         echo "Service account '${SERVICE_USER}' cannot write ${SCRIPT_DIR}; SQLite WAL/SHM creation would fail." >&2
         exit 1
     fi
+fi
+
+# Install the constrained Setup -> Troubleshoot packet-capture helper outside
+# the project tree. It is root-owned so the dashboard account cannot replace
+# the executable that sudo is allowed to run.
+if [[ ! -f "${SCRIPT_DIR}/tools/syslog_capture_helper.py" ]]; then
+    echo "tools/syslog_capture_helper.py is missing from ${SCRIPT_DIR}." >&2
+    exit 1
+fi
+if ! command -v sudo >/dev/null 2>&1; then
+    echo "sudo is required for the constrained syslog troubleshooting capture." >&2
+    exit 1
+fi
+install -d -o root -g root -m 0755 "$(dirname "${CAPTURE_HELPER}")"
+install -o root -g root -m 0755 "${SCRIPT_DIR}/tools/syslog_capture_helper.py" "${CAPTURE_HELPER}"
+install -d -o root -g root -m 0755 "${CAPTURE_CONFIG_DIR}"
+"${PYTHON_BIN}" - "${CAPTURE_CONFIG}" "${SCRIPT_DIR}/db-config.json" <<'CONFIGPY'
+import json, os, sys
+out, db_config = sys.argv[1], os.path.realpath(sys.argv[2])
+with open(out, "w", encoding="utf-8") as fh:
+    json.dump({"db_config_path": db_config}, fh, indent=2)
+os.chmod(out, 0o600)
+CONFIGPY
+chown root:root "${CAPTURE_CONFIG}"
+cat > "${CAPTURE_SUDOERS}" <<EOF
+${SERVICE_USER} ALL=(root) NOPASSWD: ${CAPTURE_HELPER} *
+EOF
+chmod 0440 "${CAPTURE_SUDOERS}"
+chown root:root "${CAPTURE_SUDOERS}"
+if command -v visudo >/dev/null 2>&1; then
+    visudo -cf "${CAPTURE_SUDOERS}" >/dev/null
+else
+    echo "visudo is required to validate ${CAPTURE_SUDOERS}." >&2
+    exit 1
+fi
+if ! command -v tcpdump >/dev/null 2>&1; then
+    echo "WARNING: tcpdump is not installed; Setup -> Troubleshoot packet capture will report unavailable."
+    echo "On CentOS/RHEL install it with: sudo dnf install -y tcpdump"
 fi
 
 # Re-running this installer is the supported repair path.  Detect partial
@@ -329,7 +424,7 @@ User=root
 Group=${SHARED_GROUP}
 UMask=0002
 WorkingDirectory=${SCRIPT_DIR}
-ExecStart=${PYTHON_BIN} ${SCRIPT_DIR}/listener.py --db ${SCRIPT_DIR}/siem.db --port ${SYSLOG_PORT}
+ExecStart=${PYTHON_BIN} ${SCRIPT_DIR}/listener.py --db ${SCRIPT_DIR}/siem.db --port ${SYSLOG_PORT} ${LISTENER_DB_EXTRA}
 Restart=on-failure
 RestartSec=3
 
@@ -350,7 +445,7 @@ Group=${SHARED_GROUP}
 UMask=0002
 Environment=HOME=${SERVICE_HOME}
 WorkingDirectory=${SCRIPT_DIR}
-ExecStart=${PYTHON_BIN} ${SCRIPT_DIR}/dashboard.py --db ${SCRIPT_DIR}/siem.db --host ${DASH_HOST} --port ${DASH_PORT}
+ExecStart=${PYTHON_BIN} ${SCRIPT_DIR}/dashboard.py --db ${SCRIPT_DIR}/siem.db --host ${DASH_HOST} --port ${DASH_PORT} ${DASHBOARD_DB_EXTRA}
 Restart=on-failure
 RestartSec=3
 

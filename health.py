@@ -14,6 +14,8 @@ Everything here is read-only and cheap.
 import os
 import shutil
 import time
+
+import runtime_health as runtime_health_mod
 from datetime import datetime, timedelta, timezone
 
 try:
@@ -228,5 +230,6 @@ def collect(conn, db_config):
         "io": io_rates(),
         "udp": udp_stats(),
         "siem": siem_metrics(conn, db_config),
+        "runtime": runtime_health_mod.listener_snapshot_from_db(conn),
         "has_psutil": _HAS_PSUTIL,
     }

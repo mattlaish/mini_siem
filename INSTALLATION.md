@@ -250,3 +250,79 @@ For detailed SQLite migration notes and other operating details, see `README.md`
 ## 7. Uninstall behavior
 
 When the installer is used to remove the systemd services, the service account/group and application data are intentionally not assumed disposable. Review the script's uninstall output and remove `siem`, `minisiem`, databases, or backups manually only when you are certain they are no longer required.
+
+## PostgreSQL least-privilege setup
+
+For PostgreSQL, do not leave the owner/migration credential as the shared runtime credential. After `configure-db.py` has initialized/upgraded the schema, provision the runtime privilege boundary before starting services:
+
+```bash
+cd /opt/mini_siem
+./.venv/bin/python3 tools/postgres_privilege_boundary.py --db-config ./db-config.json
+sudo ./install-services.sh
+./.venv/bin/python3 tools/postgres_privilege_check.py --db-config ./db-config.json
+```
+
+The provisioning tool creates separate PostgreSQL identities for listener, dashboard, and maintenance and writes:
+
+```text
+db-listener-credentials.json
+db-dashboard-credentials.json
+db-maintenance-credentials.json
+```
+
+`db-config.json` remains the shared non-secret database/application configuration. The installer makes dashboard credentials readable by `siem:minisiem` but keeps listener and maintenance credentials root-only.
+
+In secure PostgreSQL mode:
+
+- listener/dashboard can read and append raw logs;
+- listener/dashboard cannot UPDATE, DELETE, or TRUNCATE raw logs;
+- maintenance alone can DELETE verified hot copies during archive move;
+- runtime processes cannot create/alter the schema or edit `schema_migrations`;
+- the combined `siem.py` process is intentionally rejected because it collapses the listener/dashboard trust boundary.
+
+Owner/migration credentials are intentionally not retained in the shared base config after privilege provisioning. Keep them in the operator's external secret store for controlled upgrades.
+
+## Setup -> Troubleshoot packet capture
+
+`install-services.sh` installs a constrained root-owned helper used by the dashboard's **Setup -> Troubleshoot** tab. The dashboard service account may sudo only that helper; the helper accepts one source IP and captures packet headers only on configured syslog ports for a short bounded window.
+
+The host also needs `tcpdump`:
+
+```bash
+sudo dnf install -y tcpdump
+sudo ./install-services.sh
+```
+
+The installer writes:
+
+```text
+/usr/local/libexec/mini-siem-syslog-capture
+/etc/mini-siem/syslog-capture.json
+/etc/sudoers.d/mini-siem-troubleshoot
+```
+
+Do not grant the dashboard account general `tcpdump` or unrestricted sudo access. If the Troubleshoot tab reports that the helper is missing, re-run `sudo ./install-services.sh`. If it reports that `tcpdump` is missing, install the package above and retry.
+
+
+## PostgreSQL Initialization Ownership
+
+Before starting listener/dashboard services:
+
+1. Run owner/migrator database initialization.
+2. Confirm schema_migrations is complete.
+3. Start runtime services.
+
+Runtime service accounts are intentionally unable to create or repair schema.
+
+## Upgrade note — observability/archive schema (2026-09-13)
+
+This source baseline extends the migration ledger to version 26 for `runtime_stats` and archive catalog objects. On PostgreSQL, apply schema changes with the owner/migrator identity before restarting runtime services. Then rerun privilege provisioning so listener/dashboard are SELECT-only on the archive catalog and maintenance retains the constrained mutation path:
+
+```bash
+./.venv/bin/python3 tools/postgres_privilege_boundary.py --db-config ./db-config.json
+./.venv/bin/python3 tools/postgres_privilege_check.py --db-config ./db-config.json
+sudo ./install-services.sh
+sudo systemctl restart mini-siem-listener mini-siem-dashboard
+```
+
+Do not grant CREATE/ALTER/migration capability to runtime identities to work around a pending migration error.

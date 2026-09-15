@@ -7,3 +7,8 @@ venv/
 .vscode/
 .idea/
 *.log
+# PostgreSQL split runtime credentials (generated locally; never commit)
+db-listener-credentials.json
+db-dashboard-credentials.json
+db-maintenance-credentials.json
+db-owner-credentials.json

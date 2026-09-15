@@ -106,7 +106,12 @@ def main():
         json.dump(cfg, f, indent=2)
     print(f"\nWrote {CONFIG_PATH}")
     print(f"Backend set to: {dbmod.describe(cfg)}")
-    print("Start the SIEM as usual (python3 siem.py) — it reads this file automatically.")
+    if cfg.get("backend") == "postgres":
+        print("\nSecurity next step (recommended before starting services):")
+        print("  python3 tools/postgres_privilege_boundary.py --db-config ./db-config.json")
+        print("This creates split listener/dashboard/maintenance DB identities and makes logs append-only for runtime roles.")
+    else:
+        print("Start the SIEM as usual (python3 siem.py) — it reads this file automatically.")
 
 
 if __name__ == "__main__":

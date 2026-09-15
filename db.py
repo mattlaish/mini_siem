@@ -25,7 +25,7 @@ import sqlite3
 import threading
 import time
 
-from sql_helpers import sqlite_integrity_pragma
+from sql_helpers import sqlite_integrity_pragma, placeholders
 
 # --------------------------------------------------------------------------
 # Config
@@ -44,7 +44,33 @@ DEFAULT_CONFIG = {
         "connect_retries": 5,
         "connect_retry_delay": 2,
     },
+    "archive": {
+        "enabled": False,
+        "directory": "archive",
+        "hot_days": 30,
+        "mode": "copy",
+        "batch_rows": 500,
+        "max_batches_per_cycle": 20,
+        "run_interval_seconds": 3600,
+        "verify_on_create": True,
+    },
+    "maintenance": {
+        "wal_checkpoint_mb": 256,
+        "incremental_vacuum_pages": 2000,
+        "quick_check_interval_seconds": 86400,
+    },
 }
+
+# Runtime components must never need PostgreSQL DDL/owner privileges.  The
+# owner/migration identity creates these objects; listener/dashboard identities
+# only validate that the expected schema is already present.
+RUNTIME_REQUIRED_TABLES = (
+    "logs", "alerts", "forwarders", "source_profiles", "app_config",
+    "api_pollers", "users", "iocs", "ioc_matches", "reports", "ioc_feeds",
+    "audit_log", "log_fields", "api_keys", "schema_migrations",
+    "runtime_stats", "archive_segments", "archive_occurrence_catalog",
+)
+
 
 
 def config_from_path(sqlite_path: str) -> dict:
@@ -56,11 +82,16 @@ def config_from_path(sqlite_path: str) -> dict:
     return cfg
 
 
-def load_config(config_path: str = None, sqlite_fallback: str = "siem.db") -> dict:
-    """Resolve DB config in priority order:
-       1. explicit config_path (JSON) if given and present
-       2. db-config.json next to the scripts, if present
-       3. default sqlite at sqlite_fallback
+def load_config(config_path: str = None, sqlite_fallback: str = "siem.db",
+                credentials_path: str = None) -> dict:
+    """Resolve DB config and optionally overlay a component credential file.
+
+    ``db-config.json`` remains the non-secret application/database settings
+    file.  A PostgreSQL privilege-boundary deployment passes a separate
+    credentials file for each process (listener/dashboard/maintenance).  Only
+    the PostgreSQL ``user`` and ``password`` values are accepted from that
+    overlay, so a compromised component cannot silently redirect itself to a
+    different database through the credential file.
     """
     candidates = []
     if config_path:
@@ -68,6 +99,7 @@ def load_config(config_path: str = None, sqlite_fallback: str = "siem.db") -> di
     here = os.path.dirname(os.path.abspath(__file__))
     candidates.append(os.path.join(here, "db-config.json"))
 
+    merged = None
     for path in candidates:
         if path and os.path.exists(path):
             with open(path) as f:
@@ -78,9 +110,38 @@ def load_config(config_path: str = None, sqlite_fallback: str = "siem.db") -> di
                     merged[k].update(v)
                 else:
                     merged[k] = v
-            return merged
+            break
 
-    return config_from_path(sqlite_fallback)
+    if merged is None:
+        merged = config_from_path(sqlite_fallback)
+
+    if credentials_path:
+        with open(credentials_path) as f:
+            cred = json.load(f)
+        pg = cred.get("postgres") if isinstance(cred, dict) else None
+        if not isinstance(pg, dict):
+            raise RuntimeError("DB credentials file must contain a 'postgres' object")
+        unexpected = set(pg) - {"user", "password"}
+        if unexpected:
+            raise RuntimeError(
+                "DB credentials file may contain only postgres.user/postgres.password; "
+                f"unexpected: {', '.join(sorted(unexpected))}"
+            )
+        if not pg.get("user"):
+            raise RuntimeError("DB credentials file is missing postgres.user")
+        merged["postgres"]["user"] = pg["user"]
+        merged["postgres"]["password"] = pg.get("password", "")
+        merged["_credentials_identity"] = str(cred.get("identity") or "")
+        merged["_credentials_path"] = os.path.abspath(credentials_path)
+
+    boundary = merged.get("postgres_privilege_boundary") or {}
+    if (merged.get("backend") == "postgres" and boundary.get("enabled")
+            and not credentials_path and not merged["postgres"].get("password")):
+        raise RuntimeError(
+            "PostgreSQL privilege boundary is enabled but no component credential file "
+            "was supplied. Use --db-credentials with the listener/dashboard credential file."
+        )
+    return merged
 
 
 def describe(config: dict) -> str:
@@ -120,6 +181,14 @@ class Connection:
             return cur
         return self.raw.execute(sql, params)
 
+    def executemany(self, sql: str, seq_of_params):
+        sql = self._sql(sql)
+        if self.backend == "postgres":
+            cur = self.raw.cursor()
+            cur.executemany(sql, seq_of_params)
+            return cur
+        return self.raw.executemany(sql, seq_of_params)
+
     def insert_returning_id(self, sql: str, params=()):
         """Run an INSERT and return the new row's integer id."""
         if self.backend == "postgres":
@@ -133,6 +202,9 @@ class Connection:
 
     def commit(self):
         self.raw.commit()
+
+    def rollback(self):
+        self.raw.rollback()
 
     def close(self):
         if self._closed:
@@ -342,6 +414,36 @@ def _schema_statements(backend: str):
             use_count   INTEGER DEFAULT 0
         )""",
         "CREATE INDEX IF NOT EXISTS idx_apikeys_hash ON api_keys(key_hash)",
+        """CREATE TABLE IF NOT EXISTS runtime_stats (
+            key        TEXT PRIMARY KEY,
+            value_num  REAL,
+            value_text TEXT,
+            updated_at TEXT NOT NULL
+        )""",
+        """CREATE TABLE IF NOT EXISTS archive_segments (
+            segment_id             TEXT PRIMARY KEY,
+            path                   TEXT NOT NULL,
+            manifest_path          TEXT,
+            state                  TEXT NOT NULL,
+            mode                   TEXT NOT NULL,
+            created_at             TEXT NOT NULL,
+            start_at               TEXT,
+            end_at                 TEXT,
+            min_log_id             INTEGER,
+            max_log_id             INTEGER,
+            event_count            INTEGER NOT NULL DEFAULT 0,
+            unique_payloads        INTEGER NOT NULL DEFAULT 0,
+            duplicate_occurrences  INTEGER NOT NULL DEFAULT 0,
+            sha256                 TEXT NOT NULL,
+            bytes                  INTEGER NOT NULL DEFAULT 0
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_archive_segments_end_at ON archive_segments(end_at)",
+        """CREATE TABLE IF NOT EXISTS archive_occurrence_catalog (
+            log_id      INTEGER PRIMARY KEY,
+            segment_id  TEXT NOT NULL,
+            archived_at TEXT NOT NULL
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_archive_occ_segment ON archive_occurrence_catalog(segment_id)",
     ]
     if backend != "postgres":
         # FTS5 full-text index over message text for fast search (replaces
@@ -502,6 +604,11 @@ def _migrations():
         "ALTER TABLE ioc_feeds ADD COLUMN query_param TEXT DEFAULT ''",
         "ALTER TABLE ioc_feeds ADD COLUMN basic_user TEXT DEFAULT ''",
         "ALTER TABLE ioc_feeds ADD COLUMN key_encrypted TEXT DEFAULT ''",
+        "CREATE TABLE IF NOT EXISTS runtime_stats (key TEXT PRIMARY KEY, value_num REAL, value_text TEXT, updated_at TEXT NOT NULL)",
+        "CREATE TABLE IF NOT EXISTS archive_segments (segment_id TEXT PRIMARY KEY, path TEXT NOT NULL, manifest_path TEXT, state TEXT NOT NULL, mode TEXT NOT NULL, created_at TEXT NOT NULL, start_at TEXT, end_at TEXT, min_log_id INTEGER, max_log_id INTEGER, event_count INTEGER NOT NULL DEFAULT 0, unique_payloads INTEGER NOT NULL DEFAULT 0, duplicate_occurrences INTEGER NOT NULL DEFAULT 0, sha256 TEXT NOT NULL, bytes INTEGER NOT NULL DEFAULT 0)",
+        "CREATE TABLE IF NOT EXISTS archive_occurrence_catalog (log_id INTEGER PRIMARY KEY, segment_id TEXT NOT NULL, archived_at TEXT NOT NULL)",
+        "CREATE INDEX IF NOT EXISTS idx_archive_segments_end_at ON archive_segments(end_at)",
+        "CREATE INDEX IF NOT EXISTS idx_archive_occ_segment ON archive_occurrence_catalog(segment_id)",
     ]
 
 
@@ -562,6 +669,8 @@ def postgres_schema_has_table(conn, table_name: str) -> bool:
             (table_name,),
         )
         row = cur.fetchone()
+        if isinstance(row, dict):
+            return bool(next(iter(row.values())))
         return bool(row[0])
     finally:
         cur.close()
@@ -584,6 +693,8 @@ def postgres_schema_has_column(conn, table_name: str, column_name: str) -> bool:
             (table_name, column_name),
         )
         row = cur.fetchone()
+        if isinstance(row, dict):
+            return bool(next(iter(row.values())))
         return bool(row[0])
     finally:
         cur.close()
@@ -686,6 +797,42 @@ def postgres_validate_application_state(conn, required_tables):
     Validate application-required tables before runtime activation.
     """
     return postgres_required_tables_present(conn, required_tables) == []
+
+
+def ensure_runtime_ready(config: dict, required_tables=None):
+    """Prepare a database for application runtime without PostgreSQL DDL.
+
+    SQLite keeps the historical zero-setup behavior and initializes itself.
+    PostgreSQL is fail-closed: a runtime login only validates the owner-created
+    schema and migration ledger.  Missing/pending schema must be repaired with
+    an owner/migration credential, never by listener/dashboard credentials.
+    """
+    if config.get("backend") != "postgres":
+        initialize(config)
+        return
+
+    tables = tuple(required_tables or RUNTIME_REQUIRED_TABLES)
+    conn = connect(config)
+    try:
+        missing = postgres_required_tables_present(conn.raw, tables)
+        if missing:
+            raise RuntimeError(
+                "PostgreSQL runtime schema is incomplete; owner migration required. "
+                "Missing tables: " + ", ".join(missing)
+            )
+        rows = conn.execute(
+            "SELECT version FROM schema_migrations ORDER BY version"
+        ).fetchall()
+        applied = {int(r["version"] if isinstance(r, dict) else r[0]) for r in rows}
+        pending = [v for v in range(1, len(_migrations()) + 1) if v not in applied]
+        if pending:
+            raise RuntimeError(
+                "PostgreSQL runtime schema has pending migrations: "
+                + ", ".join(map(str, pending))
+                + ". Run migrations with the owner identity before starting services."
+            )
+    finally:
+        conn.close()
 
 
 def initialize(config: dict):
@@ -797,6 +944,58 @@ def rebuild_fts(config: dict, progress=None):
         return row["n"] if row else 0
     finally:
         conn.close()
+
+
+def runtime_stat_upsert(conn: Connection, key: str, value_num=None, value_text=None, updated_at=None):
+    """Insert/update one lightweight operational status value.
+
+    Runtime stats are observability metadata, not security evidence.  The helper
+    is backend-portable and deliberately keeps arbitrary SQL out of callers.
+    """
+    if updated_at is None:
+        from datetime import datetime, timezone
+        updated_at = datetime.now(timezone.utc).isoformat()
+    conn.execute(
+        """INSERT INTO runtime_stats(key,value_num,value_text,updated_at)
+           VALUES (?,?,?,?)
+           ON CONFLICT(key) DO UPDATE SET
+             value_num=excluded.value_num,
+             value_text=excluded.value_text,
+             updated_at=excluded.updated_at""",
+        (str(key), value_num, value_text, str(updated_at)),
+    )
+
+
+def read_runtime_stats(conn: Connection, keys=None):
+    """Return runtime_stats rows keyed by name."""
+    if keys:
+        wanted = [str(k) for k in keys]
+        placeholders_sql = placeholders(len(wanted))
+        sql = (
+            "SELECT key,value_num,value_text,updated_at FROM runtime_stats "
+            "WHERE key IN (" + placeholders_sql + ")"
+        )
+        rows = conn.execute(sql, wanted).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT key,value_num,value_text,updated_at FROM runtime_stats"
+        ).fetchall()
+    return {str(row["key"]): dict(row) for row in rows}
+
+
+def migration_readiness(conn: Connection):
+    """Return read-only schema migration readiness for Health/Web Console."""
+    rows = conn.execute("SELECT version FROM schema_migrations ORDER BY version").fetchall()
+    applied = sorted({int(r["version"] if isinstance(r, dict) else r[0]) for r in rows})
+    expected = len(_migrations())
+    pending = [v for v in range(1, expected + 1) if v not in set(applied)]
+    return {
+        "applied_versions": applied,
+        "current_version": max(applied) if applied else 0,
+        "expected_version": expected,
+        "pending_versions": pending,
+        "ready": not pending,
+    }
 
 
 def integrity_check(config: dict, quick: bool = True):

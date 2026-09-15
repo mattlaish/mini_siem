@@ -769,3 +769,39 @@ The PostgreSQL migration effort identified several operational requirements:
 - schema handling must support existing databases
 - administrator bootstrap behavior must be migration-safe
 - deployment readiness requires both infrastructure and application validation
+
+## PostgreSQL raw-log privilege boundary
+
+For PostgreSQL production deployments, use split runtime identities instead of one shared owner credential:
+
+```bash
+python3 configure-db.py
+python3 tools/postgres_privilege_boundary.py --db-config ./db-config.json
+sudo ./install-services.sh
+python3 tools/postgres_privilege_check.py --db-config ./db-config.json
+```
+
+This makes the `logs` table append-only for listener/dashboard identities. They can SELECT and INSERT events but cannot UPDATE, DELETE, or TRUNCATE raw logs. Only the dedicated maintenance identity has DELETE for archive hot-copy eviction. PostgreSQL schema migrations remain an explicit owner operation and are not performed by runtime services. See `SECURITY.md` and `INSTALLATION.md` for the full boundary and deployment requirements.
+
+## Setup Troubleshoot
+
+The Setup page includes a **Troubleshoot** tab for a bounded live packet check. Enter a sender IPv4/IPv6 address and mini-SIEM listens for four seconds for UDP/TCP packets from that source to the configured syslog listener ports. The result shows whether packets were seen, packet counts, protocol counts, and a few packet-header summaries; syslog payloads are not displayed.
+
+This requires the root-owned helper installed by `sudo ./install-services.sh` and the host `tcpdump` package. On CentOS/RHEL: `sudo dnf install -y tcpdump`.
+
+### Web Console operational observability (2026-09-13)
+
+The Health page now reports the separate listener process heartbeat, PostgreSQL effective security/schema readiness, and archive/maintenance status. These surfaces are observation-only: owner migrations, DB privilege provisioning, archive execution, and raw-log eviction remain explicit CLI/maintenance operations. Setup uses the installed systemd listener service for restarts so component DB credentials are preserved.
+
+## Operational incident diagnostics
+
+Administrators now have a read-only incident workflow in the Web Console:
+- **Health -> Incident diagnostics** aggregates database, listener, ingest, PostgreSQL security/schema, archive and syslog-socket state and shows dependency health.
+- **Setup -> Troubleshoot** correlates the bounded packet capture with listener peer counters and newly stored peer-IP events across Network -> Listener -> Parser -> Storage -> Search.
+- **Setup -> Support bundle** downloads a sanitized diagnostics tarball for escalation. Credentials, private keys, API secrets, raw events and copied service journals are excluded by design.
+
+These features are observability only; owner migrations, privilege changes, archive maintenance and service restarts remain outside the Web Console.
+
+
+## Phase 12.4 Performance & Capacity Qualification
+Status: IMPLEMENTED_TESTING_DEFERRED

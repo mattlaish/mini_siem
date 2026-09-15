@@ -94,6 +94,8 @@
  <div class="setup-layout">
   <nav class="setup-nav" id="setupNav">
     <a data-target="sec-listen" class="active">Listen ports</a>
+    <a data-target="sec-troubleshoot">Troubleshoot</a>
+    <a data-target="sec-support">Support bundle</a>
     <a data-target="sec-selfmon">Monitor this host</a>
     <a data-target="sec-pollers">API poller connectors</a>
     <a data-target="sec-mapping">Source field mapping</a>
@@ -112,8 +114,8 @@
     <div id="portsRestartBanner" style="display:none;background:var(--warn-soft);border:1px solid var(--warn);border-radius:8px;padding:12px;margin-bottom:12px;">
       <div style="font-weight:600;margin-bottom:4px;">Restart required</div>
       <div style="font-size:13px;color:var(--ink-soft);">Listen ports saved as <strong id="portsSavedVal"></strong>. Restart the listener process for this to take effect. It's a separate process from this dashboard, so restarting it won't interrupt the console. For example:</div>
-      <pre class="mono" style="background:var(--canvas);padding:8px;border-radius:6px;margin-top:8px;">sudo pkill -f listener.py
-sudo python3 listener.py --db siem.db &amp;</pre>
+      <pre class="mono" style="background:var(--canvas);padding:8px;border-radius:6px;margin-top:8px;">sudo systemctl restart mini-siem-listener</pre>
+      <div class="hint">Use the installed systemd service so the configured database and component credential overlay are preserved.</div>
     </div>
 
     <div class="fld-row">
@@ -122,6 +124,32 @@ sudo python3 listener.py --db siem.db &amp;</pre>
       <div class="fld" style="align-self:end;"><button id="savePortsBtn">Save ports</button></div>
     </div>
     <span class="status-line" id="portsStatus"></span>
+  </div>
+
+  <div class="panel" data-section="sec-troubleshoot">
+    <h2>Syslog troubleshoot</h2>
+    <p class="sub">Check one source across the syslog path. A short <strong>4-second</strong> packet-header capture verifies network arrival, then the console correlates bounded listener counters and newly stored events for the same peer IP. It does not display syslog payloads and does not accept custom packet filters.</p>
+    <div class="warn-note">Pipeline correlation is diagnostic evidence, not packet-to-row proof. Network, listener, parser, storage and search stages are reported separately; UNKNOWN means the available telemetry cannot prove that stage.</div>
+    <div class="fld-row" style="display:flex;gap:10px;align-items:flex-end;max-width:620px;">
+      <div class="fld" style="flex:1;">
+        <label>Source IP <span class="hint">(IPv4 or IPv6)</span></label>
+        <input type="text" id="troubleSourceIp" class="mono" placeholder="192.0.2.25" autocomplete="off" spellcheck="false">
+      </div>
+      <div class="fld"><button id="troubleCaptureBtn">Capture 4 seconds</button></div>
+    </div>
+    <div id="troubleCaptureStatus" style="margin-top:14px;"></div>
+    <div id="troublePipeline" style="display:none;margin-top:12px;"></div>
+    <pre id="troubleCaptureSamples" class="mono" style="display:none;background:var(--canvas);padding:10px;border-radius:6px;white-space:pre-wrap;word-break:break-word;font-size:11px;max-height:220px;overflow:auto;"></pre>
+  </div>
+
+  <div class="panel" data-section="sec-support">
+    <h2>Support bundle</h2>
+    <p class="sub">Generate a bounded diagnostics archive for incident handoff. The bundle contains health, runtime, PostgreSQL security/schema status, archive status, service state and sanitized configuration summary.</p>
+    <div class="warn-note"><strong>Data minimization:</strong> credential files, database passwords, API keys, private keys and raw log/event payloads are excluded. Service journal contents are intentionally omitted because listener stdout may contain event-message excerpts.</div>
+    <div style="margin-top:14px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+      <button id="supportBundleBtn">Generate support bundle</button>
+      <span class="status-line" id="supportBundleStatus"></span>
+    </div>
   </div>
 
   <div class="panel" data-section="sec-selfmon">
@@ -781,6 +809,96 @@ document.getElementById('apiKeyCopy').addEventListener('click', () => {
   setTimeout(() => { document.getElementById('apiKeyCopy').textContent = 'Copy'; }, 1500);
 });
 
+// ---- Syslog packet-capture troubleshoot ----
+async function runSyslogTroubleshoot() {
+  const ip = document.getElementById('troubleSourceIp').value.trim();
+  const btn = document.getElementById('troubleCaptureBtn');
+  const st = document.getElementById('troubleCaptureStatus');
+  const samples = document.getElementById('troubleCaptureSamples');
+  if (!ip) {
+    st.innerHTML = '<span class="status-line err">Enter a source IP first.</span>';
+    samples.style.display = 'none';
+    return;
+  }
+  btn.disabled = true;
+  btn.textContent = 'Capturing…';
+  st.innerHTML = '<span class="status-line">Listening for syslog packets from ' + esc(ip) + '…</span>';
+  samples.style.display = 'none';
+  samples.textContent = '';
+  const pipe = document.getElementById('troublePipeline'); if (pipe) { pipe.style.display='none'; pipe.innerHTML=''; }
+  try {
+    const r = await fetch('/api/troubleshoot/syslog-capture', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({source_ip: ip})
+    });
+    const d = await r.json();
+    if (!r.ok || d.error) throw new Error(d.error || 'capture failed');
+    const ports = Array.isArray(d.ports) ? d.ports.join(', ') : 'configured ports';
+    if (d.seen) {
+      st.innerHTML = '<div style="background:var(--ok-soft);border:1px solid var(--ok);color:var(--ok);border-radius:8px;padding:10px 12px;">' +
+        '<strong>Syslog traffic seen.</strong> ' + esc(d.packets) + ' packet(s) from <span class="mono">' + esc(d.source_ip) +
+        '</span> reached port(s) <span class="mono">' + esc(ports) + '</span>. UDP: ' + esc(d.udp_packets) + ', TCP: ' + esc(d.tcp_packets) + '.</div>';
+    } else {
+      st.innerHTML = '<div style="background:var(--warn-soft);border:1px solid var(--warn);color:var(--warn);border-radius:8px;padding:10px 12px;">' +
+        '<strong>No matching syslog packets seen in this 4-second window.</strong> Verify the sender, routing/firewall, destination IP, protocol and configured port(s): <span class="mono">' + esc(ports) + '</span>.</div>';
+    }
+    const pipe = document.getElementById('troublePipeline');
+    const stages = d.pipeline || {};
+    const labels = [['network','Network'],['listener','Listener'],['parser','Parser'],['storage','Storage'],['search','Search']];
+    if (pipe && Object.keys(stages).length) {
+      pipe.innerHTML = '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:8px;">' + labels.map(([key,label]) => {
+        const v = stages[key] || {}; const good = v.status === 'PASS'; const warn = v.status === 'WARNING';
+        const bg = good ? 'var(--ok-soft)' : warn ? 'var(--warn-soft)' : 'var(--canvas)';
+        const border = good ? 'var(--ok)' : warn ? 'var(--warn)' : 'var(--line)';
+        return '<div style="background:'+bg+';border:1px solid '+border+';border-radius:8px;padding:9px 10px;">' +
+          '<div style="font-weight:700;font-size:12px;">'+esc(label)+' · '+esc(v.status||'UNKNOWN')+'</div>' +
+          '<div class="hint" style="margin-top:4px;">'+esc(v.detail||'')+'</div></div>';
+      }).join('') + '</div>';
+      pipe.style.display = 'block';
+    } else if (pipe) { pipe.style.display = 'none'; }
+    if (Array.isArray(d.samples) && d.samples.length) {
+      samples.textContent = d.samples.join('\n');
+      samples.style.display = 'block';
+    }
+  } catch (e) {
+    st.innerHTML = '<span class="status-line err">' + esc(e.message || 'Capture failed.') + '</span>';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Capture 4 seconds';
+  }
+}
+document.getElementById('troubleCaptureBtn').addEventListener('click', runSyslogTroubleshoot);
+document.getElementById('troubleSourceIp').addEventListener('keydown', e => {
+  if (e.key === 'Enter') { e.preventDefault(); runSyslogTroubleshoot(); }
+});
+
+// ---- Sanitized support bundle ----
+async function generateSupportBundle() {
+  const btn = document.getElementById('supportBundleBtn');
+  const st = document.getElementById('supportBundleStatus');
+  btn.disabled = true; st.textContent = 'Collecting…'; st.className = 'status-line';
+  try {
+    const r = await fetch('/api/support/bundle', {method:'POST'});
+    if (!r.ok) {
+      let msg = 'Support bundle failed.';
+      try { const d = await r.json(); msg = d.error || msg; } catch(e) {}
+      throw new Error(msg);
+    }
+    const blob = await r.blob();
+    const cd = r.headers.get('Content-Disposition') || '';
+    const m = cd.match(/filename="?([^";]+)"?/i);
+    const name = m ? m[1] : 'mini-siem-support.tar.gz';
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href = url; a.download = name; document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(url);
+    st.textContent = 'Generated ' + name + ' (' + Math.ceil(blob.size/1024) + ' KB).'; st.className = 'status-line ok';
+  } catch(e) {
+    st.textContent = e.message || 'Support bundle failed.'; st.className = 'status-line err';
+  } finally { btn.disabled = false; }
+}
+const supportBundleBtn = document.getElementById('supportBundleBtn');
+if (supportBundleBtn) supportBundleBtn.addEventListener('click', generateSupportBundle);
+
 // ---- Syslog listen ports ----
 async function loadListenPorts() {
   try {
@@ -1076,7 +1194,7 @@ document.getElementById('pwBtn').addEventListener('click', async () => {
     const addBtn = document.getElementById('addUserBtn');
     if (addBtn) {
       const form = addBtn.closest('.panel');
-      ['nuName','nuPass','nuRole','addUserBtn'].forEach(id => {
+      ['nuName','nuPass','nuRole','addUserBtn','supportBundleBtn','troubleCaptureBtn'].forEach(id => {
         const el = document.getElementById(id); if (el) el.disabled = true;
       });
       const note = document.createElement('p');

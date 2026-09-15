@@ -47,14 +47,21 @@ def main():
     ap.add_argument("--protocol", choices=["udp", "tcp", "both"], default="both")
     ap.add_argument("--db", default="siem.db", help="SQLite path (fallback if no db-config.json / --db-config)")
     ap.add_argument("--db-config", default=None, help="path to db-config.json (sqlite/postgres selector)")
+    ap.add_argument("--db-credentials", default=None, help="PostgreSQL credential overlay; secure split deployments should use separate services")
     ap.add_argument("--auth-config", default=None, help="path to auth-config.json (login/OAuth/SAML)")
     ap.add_argument("--dashboard-host", default="127.0.0.1")
     ap.add_argument("--dashboard-port", type=int, default=8080)
     ap.add_argument("--no-dashboard", action="store_true", help="run the listener only")
     args = ap.parse_args()
 
-    db_cfg = dbmod.load_config(args.db_config, sqlite_fallback=args.db)
+    db_cfg = dbmod.load_config(args.db_config, sqlite_fallback=args.db,
+                               credentials_path=args.db_credentials)
     print(f"[db] backend: {dbmod.describe(db_cfg)}")
+    boundary = db_cfg.get("postgres_privilege_boundary") or {}
+    if db_cfg.get("backend") == "postgres" and boundary.get("enabled") and not args.no_dashboard:
+        print("[error] PostgreSQL privilege boundary requires separate listener and dashboard processes; "
+              "the combined siem.py process would share both trust domains.", file=sys.stderr)
+        sys.exit(2)
 
     # Resolve syslog listen ports. Precedence:
     #   1. --port on the command line (explicit override), else

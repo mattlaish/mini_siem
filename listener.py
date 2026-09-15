@@ -459,7 +459,7 @@ class Storage:
 
     def __init__(self, db_path: str = None, db_config: dict = None):
         cfg = db_config if db_config is not None else dbmod.config_from_path(db_path)
-        dbmod.initialize(cfg)
+        dbmod.ensure_runtime_ready(cfg)
         self.conn = dbmod.connect(cfg)
         self.backend = self.conn.backend
         self.lock = threading.Lock()
@@ -539,6 +539,62 @@ class Storage:
             )
             self._maybe_commit_locked()
             return new_id
+
+    def insert_log_batch(self, items):
+        """Insert ``(event, fields)`` pairs atomically enough for archive tooling.
+
+        This is the conservative batch API expected by archive/performance
+        helpers.  It returns ``(ids, commit_ms)`` and never bypasses the same
+        configured database identity.
+        """
+        started = time.monotonic()
+        ids = []
+        with self.lock:
+            try:
+                for event, fields in items:
+                    log_id = self.conn.insert_returning_id(
+                        """INSERT INTO logs
+                           (received_at, source_ip, peer_ip, format, priority, facility, severity,
+                            device_timestamp, hostname, destination, app_name, proc_id, msg_id, message, raw)
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        (
+                            event["received_at"], event["source_ip"], event.get("peer_ip", ""),
+                            event["format"], event["priority"], event["facility"], event["severity"],
+                            event["device_timestamp"], event["hostname"], event.get("destination", ""),
+                            event["app_name"], event["proc_id"], event["msg_id"], event["message"], event["raw"],
+                        ),
+                    )
+                    ids.append(int(log_id))
+                    for field, value in (fields or {}).items():
+                        self.conn.execute(
+                            "INSERT INTO log_fields(log_id,field,value) VALUES (?,?,?)",
+                            (int(log_id), str(field), "" if value is None else str(value)),
+                        )
+                self.conn.commit()
+                self._pending = 0
+                self._last_commit = time.time()
+            except Exception:
+                self.rollback_locked()
+                raise
+        return ids, round((time.monotonic() - started) * 1000.0, 3)
+
+    def commit_locked(self):
+        self.conn.commit()
+        self._pending = 0
+        self._last_commit = time.time()
+
+    def rollback_locked(self):
+        try:
+            self.conn.rollback()
+        finally:
+            self._pending = 0
+            self._last_commit = time.time()
+
+    def close(self):
+        with self.lock:
+            if self._pending > 0:
+                self.commit_locked()
+            self.conn.close()
 
     def insert_alert(self, rule_name: str, severity: str, source_ip: str,
                       description: str, log_ids: list) -> int:
@@ -678,6 +734,117 @@ def tcp_listener(host: str, port: int, on_message):
 
 
 # --------------------------------------------------------------------------
+# Cross-process runtime heartbeat
+# --------------------------------------------------------------------------
+
+class ListenerRuntimeReporter:
+    """Publish bounded listener health into runtime_stats for the Web Console."""
+
+    def __init__(self, db_config, interval=2.0):
+        self.db_config = db_config
+        self.interval = max(1.0, float(interval))
+        self.started = time.time()
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._threads = []
+        self._stats = {
+            "processed_events": 0, "failed_events": 0,
+            "dropped_events": 0, "dropped_udp": 0,
+            "last_event_at": None, "detail": "starting",
+        }
+        # Bounded per-peer counters support Setup > Troubleshoot correlation
+        # without storing payloads in runtime health telemetry.
+        self._sources = {}
+        self._thread = threading.Thread(target=self._run, daemon=True, name="runtime-health")
+
+    def set_threads(self, threads):
+        self._threads = list(threads or [])
+
+    def start(self):
+        self._write()
+        self._thread.start()
+
+    def _record_source(self, source_ip, field):
+        if not source_ip:
+            return
+        now = datetime.now(timezone.utc).isoformat()
+        entry = self._sources.setdefault(str(source_ip), {"accepted": 0, "failed": 0, "last_seen": now})
+        entry[field] = int(entry.get(field) or 0) + 1
+        entry["last_seen"] = now
+        if len(self._sources) > 64:
+            oldest = sorted(self._sources, key=lambda key: self._sources[key].get("last_seen") or "")[:16]
+            for key in oldest:
+                self._sources.pop(key, None)
+
+    def record_success(self, event_at=None, source_ip=None):
+        with self._lock:
+            self._stats["processed_events"] += 1
+            self._stats["last_event_at"] = event_at or datetime.now(timezone.utc).isoformat()
+            self._stats["detail"] = ""
+            self._record_source(source_ip, "accepted")
+
+    def record_failure(self, exc=None, source_ip=None):
+        with self._lock:
+            self._stats["failed_events"] += 1
+            self._record_source(source_ip, "failed")
+            if exc is not None:
+                self._stats["detail"] = f"last ingest error: {type(exc).__name__}"
+
+    def snapshot(self):
+        with self._lock:
+            payload = dict(self._stats)
+            payload["sources"] = {key: dict(value) for key, value in self._sources.items()}
+        alive = [t.is_alive() for t in self._threads]
+        if not alive:
+            listener_state = "STARTING"
+        elif all(alive):
+            listener_state = "READY"
+        elif any(alive):
+            listener_state = "DEGRADED"
+        else:
+            listener_state = "FAILED"
+        payload.update({
+            "database": "READY",
+            "listener": listener_state,
+            "ingest": "RUNNING" if listener_state == "READY" else listener_state,
+            "worker": "DIRECT",
+            "queue_depth": 0,
+            "uptime_seconds": round(max(0.0, time.time() - self.started), 1),
+            "heartbeat_at": datetime.now(timezone.utc).isoformat(),
+        })
+        return payload
+
+    def _write(self):
+        payload = self.snapshot()
+        conn = None
+        try:
+            conn = dbmod.connect(self.db_config)
+            dbmod.runtime_stat_upsert(
+                conn, "listener_health", value_text=json.dumps(payload, separators=(",", ":"), sort_keys=True),
+                updated_at=payload["heartbeat_at"],
+            )
+            conn.commit()
+        except Exception as exc:
+            print(f"[health] heartbeat write failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+
+    def _run(self):
+        while not self._stop.wait(self.interval):
+            self._write()
+
+    def stop(self):
+        self._stop.set()
+        self._write()
+        if self._thread.is_alive():
+            self._thread.join(timeout=1)
+
+
+# --------------------------------------------------------------------------
 # Main
 # --------------------------------------------------------------------------
 
@@ -689,9 +856,11 @@ def main():
     ap.add_argument("--protocol", choices=["udp", "tcp", "both"], default="both")
     ap.add_argument("--db", default="siem.db", help="SQLite database path (used only when no db-config.json / --db-config selects a backend)")
     ap.add_argument("--db-config", default=None, help="path to db-config.json (sqlite/postgres selector)")
+    ap.add_argument("--db-credentials", default=None, help="PostgreSQL component credential overlay (user/password only)")
     args = ap.parse_args()
 
-    db_cfg = dbmod.load_config(args.db_config, sqlite_fallback=args.db)
+    db_cfg = dbmod.load_config(args.db_config, sqlite_fallback=args.db,
+                               credentials_path=args.db_credentials)
     print(f"[db] backend: {dbmod.describe(db_cfg)}")
 
     # Resolve listen ports. --port on the command line wins; otherwise use
@@ -714,16 +883,22 @@ def main():
     forwarders = ForwarderManager(storage, listen_port=ports[0])
     ioc = IOCMatcher(storage)
     fields = FieldIndexer(storage)
+    runtime_reporter = ListenerRuntimeReporter(db_cfg)
 
     def on_message(raw: str, source_ip: str):
-        event = parse_syslog(raw, source_ip)
-        log_id = storage.insert_log(event)
-        engine.process(log_id, event)
-        ioc.process(log_id, event)
-        fields.process(log_id, event)
-        forwarders.forward(event)  # relay the original raw message downstream
-        sev = event["severity"] or "-"
-        print(f"[{event['received_at']}] {source_ip} [{sev}] {event['message'][:120]}")
+        try:
+            event = parse_syslog(raw, source_ip)
+            log_id = storage.insert_log(event)
+            engine.process(log_id, event)
+            ioc.process(log_id, event)
+            fields.process(log_id, event)
+            forwarders.forward(event)  # relay the original raw message downstream
+            runtime_reporter.record_success(event.get("received_at"), source_ip=source_ip)
+            sev = event["severity"] or "-"
+            print(f"[{event['received_at']}] {source_ip} [{sev}] {event['message'][:120]}")
+        except Exception as exc:
+            runtime_reporter.record_failure(exc, source_ip=source_ip)
+            raise
 
     threads = []
     for p in ports:
@@ -738,6 +913,8 @@ def main():
 
     for t in threads:
         t.start()
+    runtime_reporter.set_threads(threads)
+    runtime_reporter.start()
 
     print(f"mini-SIEM listener running. DB: {args.db}. Press Ctrl+C to stop.")
     try:
@@ -745,6 +922,8 @@ def main():
             time.sleep(1)
     except KeyboardInterrupt:
         print("\nShutting down.")
+    finally:
+        runtime_reporter.stop()
 
 
 if __name__ == "__main__":

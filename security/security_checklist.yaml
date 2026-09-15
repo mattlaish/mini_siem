@@ -1,0 +1,7 @@
+controls:
+  - authentication
+  - rbac
+  - database_privilege_boundary
+  - secret_handling
+  - tenant_isolation
+  - audit_security
