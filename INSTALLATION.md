@@ -123,8 +123,10 @@ The Phase 4 main ingest path also has a dedicated database writer:
 The installer does not need a new OS account or service for the DB writer; it is a
 thread inside the existing listener process. `siem` remains the non-login Dashboard
 service account and the listener remains `root:minisiem` when privileged syslog port
-514 is used. After upgrade, re-running `install-services.sh` is safe and reconciles
-the existing service definitions without replacing the repository's `.git/`.
+514 is used. `install-services.sh` is the service-definition/bootstrap helper for the current
+development baseline. Do **not** treat re-running it as the final production
+upgrade workflow: the canonical operational-install -> `update.sh` separation
+remains a P4 requirement and is not yet qualified in this baseline.
 
 This prevents systemd/journald from duplicating every SIEM event. While traffic is
 active, the listener emits a compact aggregate processed/received/dropped/failed,
@@ -236,14 +238,15 @@ On SELinux-enforcing CentOS/RHEL systems, a project copied from a home directory
 
 ## 6. Upgrades
 
-For an existing installation:
+The final production update/resume state machine is still a P4 requirement. An
+operational installation must ultimately use `update.sh`; `install.sh --resume`
+will be reserved only for the same interrupted fresh installation. The current
+source does not yet claim that complete workflow as `TESTED`.
 
-1. keep the existing `.git/` metadata if this is a Git checkout;
-2. stop the services before replacing application files when doing a manual upgrade;
-3. preserve configuration and the complete cleanly-closed SQLite `siem.db` database;
-4. replace/merge application files, not `.git/`;
-5. re-run `sudo ./install-services.sh` so service definitions, service-account checks, permissions, and runtime paths are reconciled;
-6. verify both service identities and health after the upgrade.
+Until P4 is completed and qualified, treat manual upgrades as controlled
+development/maintenance work: back up first, preserve configuration/secrets/data,
+apply PostgreSQL owner migrations before runtime startup, and do not use a fresh
+bootstrap over an operational database.
 
 For detailed SQLite migration notes and other operating details, see `README.md`.
 
@@ -253,14 +256,37 @@ When the installer is used to remove the systemd services, the service account/g
 
 ## PostgreSQL least-privilege setup
 
-For PostgreSQL, do not leave the owner/migration credential as the shared runtime credential. After `configure-db.py` has initialized/upgraded the schema, provision the runtime privilege boundary before starting services:
+`configure-db.py` records only the PostgreSQL host, port and database name. It
+does not collect or persist a customer DBA password and does not initialize the
+PostgreSQL schema.
+
+For a **new/empty** PostgreSQL deployment:
 
 ```bash
 cd /opt/mini_siem
-./.venv/bin/python3 tools/postgres_privilege_boundary.py --db-config ./db-config.json
-sudo ./install-services.sh
+python3 configure-db.py
+MINISIEM_PG_BOOTSTRAP_USER=<customer-admin> sudo -E ./install-services.sh --bootstrap-postgres
 ./.venv/bin/python3 tools/postgres_privilege_check.py --db-config ./db-config.json
 ```
+
+The customer administrator password is read from
+`MINISIEM_PG_BOOTSTRAP_PASSWORD` or an interactive protected prompt and is never
+written to runtime configuration. The bootstrap creates/uses `minisiem_owner`
+for schema DDL/migrations, uses the temporary customer role-admin authority for
+runtime-role creation, then writes only split component credentials.
+
+For an **existing/legacy** PostgreSQL deployment, do not run the fresh bootstrap.
+Inspect first:
+
+```bash
+MINISIEM_PG_BOOTSTRAP_USER=<customer-admin> \
+  ./.venv/bin/python3 tools/postgres_bootstrap.py \
+  --mode inspect-existing --db-config ./db-config.json \
+  --bootstrap-user <customer-admin>
+```
+
+The inspection is non-mutating. Controlled legacy ownership/privilege migration
+remains P1B work and must include backup evidence before mutation.
 
 The provisioning tool creates separate PostgreSQL identities for listener, dashboard, and maintenance and writes:
 
@@ -316,7 +342,7 @@ Runtime service accounts are intentionally unable to create or repair schema.
 
 ## Upgrade note — observability/archive schema (2026-09-13)
 
-This source baseline extends the migration ledger to version 26 for `runtime_stats` and archive catalog objects. On PostgreSQL, apply schema changes with the owner/migrator identity before restarting runtime services. Then rerun privilege provisioning so listener/dashboard are SELECT-only on the archive catalog and maintenance retains the constrained mutation path:
+This source baseline extends the migration ledger to version 30. Versions 22-26 cover `runtime_stats` and archive catalog objects; versions 27-30 add AI usage audit storage and indexes. On PostgreSQL, apply schema changes with the owner/migrator identity before restarting runtime services. Then rerun privilege provisioning so listener/dashboard are SELECT-only on the archive catalog and maintenance retains the constrained mutation path:
 
 ```bash
 ./.venv/bin/python3 tools/postgres_privilege_boundary.py --db-config ./db-config.json
@@ -326,3 +352,11 @@ sudo systemctl restart mini-siem-listener mini-siem-dashboard
 ```
 
 Do not grant CREATE/ALTER/migration capability to runtime identities to work around a pending migration error.
+## AI provider secret at rest
+
+`install-services.sh` provisions `/var/lib/mini-siem/ai-secret-master.key` as the dashboard service account with mode `0600` and injects it through `MINISIEM_AI_SECRET_MASTER_FILE`. Do not copy this master into `db-config.json`, `app_config`, support bundles, source archives, or backups intended to be independently portable. The database contains only the encrypted AI provider key. Preserve the master when restoring the same deployment, otherwise existing encrypted AI credentials cannot be decrypted and must be replaced.
+
+
+### AI secret master backup / restore
+
+External-provider API keys are encrypted with a deployment master outside the database. Back up `/var/lib/mini-siem/ai-secret-master.key` together with deployment secrets, but store it separately from ordinary DB backups. Preserve mode 0600. Restoring an encrypted DB without the original master fails closed; the application will not silently generate a replacement decryption key.

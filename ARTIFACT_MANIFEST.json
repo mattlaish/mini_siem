@@ -1,724 +1,1705 @@
 {
-  "artifact": "mini_siem_phase12_final_release_candidate.zip",
-  "phase": "12.17",
-  "parent": "mini_siem_phase12_16_release_engineering.zip",
+  "artifact": "mini_siem_openai_egress_hardened_2026-09-18.zip",
+  "generated_at_utc": "2026-09-18T03:57:46.547040+00:00",
+  "parent": "mini_siem_placeholder_truth_aligned_2026-09-18.zip",
   "status": "IMPLEMENTED_TESTING_DEFERRED",
   "scope": [
-    "release candidate consolidation",
-    "capability matrix",
-    "known limitations",
-    "delivery checklist",
-    "final lineage metadata"
+    "OpenAI egress hardening convergence",
+    "opt-in gpt-5.6-luna Responses qualification"
   ],
+  "validation": {
+    "date": "2026-09-18",
+    "scope": "OpenAI egress hardening convergence and opt-in live Responses qualification",
+    "status": "IMPLEMENTED_TESTING_DEFERRED",
+    "implemented": {
+      "external_https_fail_closed": true,
+      "explicit_insecure_loopback_dev_exception": "MINISIEM_AI_ALLOW_INSECURE_LOOPBACK_EXTERNAL=1",
+      "external_redaction_policies": [
+        "strict",
+        "identifiers",
+        "none"
+      ],
+      "external_redaction_default": "strict",
+      "responses_failed_incomplete_fail_closed": true,
+      "openai_chat_completions_parameter": "max_completion_tokens",
+      "generic_chat_completions_parameter": "max_tokens",
+      "transient_network_retry": true,
+      "total_timeout_budget": true,
+      "connection_probe_max_output_tokens": 128,
+      "responses_store": false
+    },
+    "validation": {
+      "openai_provider_mocked": {
+        "passed": 19,
+        "failed": 0,
+        "skipped": 1
+      },
+      "ai_progressive_focused": {
+        "passed": 41,
+        "failed": 0,
+        "skipped": 1
+      },
+      "dependency_available_repository": {
+        "passed": 98,
+        "failed": 41,
+        "skipped": 1,
+        "inherited_failures": 41
+      },
+      "full_pytest_collection": {
+        "status": "BLOCKED",
+        "collection_errors": 3,
+        "reason": "execution environment lacks flask/werkzeug",
+        "modules": [
+          "tests/test_admin_bootstrap.py",
+          "tests/test_dashboard_routes.py",
+          "tests/test_log_search_logic.py"
+        ]
+      },
+      "compileall": "PASS",
+      "shell_syntax": "PASS",
+      "ai_inline_javascript_syntax": "PASS",
+      "placeholder_truth_gate": "PASS",
+      "static_security_scan": {
+        "status": "PASS",
+        "files_scanned": 29,
+        "findings": 0
+      }
+    },
+    "live_openai": {
+      "opt_in": true,
+      "target_api": "Responses API",
+      "target_model": "gpt-5.6-luna",
+      "probe_contains_siem_data": false,
+      "status": "NOT_RUN_DEFERRED",
+      "reason": "OPENAI_API_KEY is absent in the execution environment"
+    },
+    "truth_boundary": "Mocked/provider tests do not constitute live OpenAI qualification. Overall product is not TESTED or RELEASED.",
+    "artifact_gate": {
+      "status": "PASS",
+      "clean_extract": true,
+      "zip_crc": "PASS",
+      "path_traversal": "PASS",
+      "symlink_check": "PASS",
+      "required_files": "PASS",
+      "source_extracted_sha256_parity": "PASS",
+      "python_syntax_files": 107,
+      "shell_syntax_files": 4,
+      "javascript_syntax_files": 1,
+      "placeholder_truth_gate": "PASS",
+      "extracted_focused_suite": {
+        "passed": 41,
+        "failed": 0,
+        "skipped": 1
+      }
+    }
+  },
+  "manifest_hash_scope": "all packaged files except ARTIFACT_MANIFEST.json itself",
+  "file_count_excluding_manifest": 321,
   "files": [
-    ".git/COMMIT_EDITMSG",
-    ".git/FETCH_HEAD",
-    ".git/HEAD",
-    ".git/ORIG_HEAD",
-    ".git/config",
-    ".git/description",
-    ".git/hooks/applypatch-msg.sample",
-    ".git/hooks/commit-msg.sample",
-    ".git/hooks/fsmonitor-watchman.sample",
-    ".git/hooks/post-update.sample",
-    ".git/hooks/pre-applypatch.sample",
-    ".git/hooks/pre-commit.sample",
-    ".git/hooks/pre-merge-commit.sample",
-    ".git/hooks/pre-push.sample",
-    ".git/hooks/pre-rebase.sample",
-    ".git/hooks/pre-receive.sample",
-    ".git/hooks/prepare-commit-msg.sample",
-    ".git/hooks/push-to-checkout.sample",
-    ".git/hooks/sendemail-validate.sample",
-    ".git/hooks/update.sample",
-    ".git/index",
-    ".git/info/exclude",
-    ".git/logs/HEAD",
-    ".git/logs/refs/heads/main",
-    ".git/logs/refs/remotes/origin/HEAD",
-    ".git/logs/refs/remotes/origin/claude/test-onxon1",
-    ".git/logs/refs/remotes/origin/main",
-    ".git/objects/00/093cfe92b2e04563099812eddf13581efff4fa",
-    ".git/objects/00/315d565420c398e6ded415b4358dbf389225c2",
-    ".git/objects/00/3dd6c98f26f37e57bdd162d328b98849ef5034",
-    ".git/objects/00/a35137388f4268bb27144a64b873b3c6147975",
-    ".git/objects/02/6b1c513542afb13937963a2b82208ff10f4989",
-    ".git/objects/03/40edf7e7b5c6190bfa0ce4258736c35b946d58",
-    ".git/objects/03/897b316bf7e2c06b192b8ca5d5d962e7048041",
-    ".git/objects/03/95084a6a7ec612cc7ad390244abcfc12739582",
-    ".git/objects/04/5dc51714d93a6e95986ba2792dd0d5b0ea0f40",
-    ".git/objects/04/afc3ca83594e7576c8c8db18467df72d2cd8c4",
-    ".git/objects/05/ea68d83353153f63cbe6e29fefba51c0db6ef0",
-    ".git/objects/06/d59de945e024f11884f415c6ebf191a85993e8",
-    ".git/objects/06/d70da078b9e45158b2ab8cf4ccd692edad6a8c",
-    ".git/objects/06/e51e456b6a547a4bf5b6f60260173f1bbed15d",
-    ".git/objects/06/e718dc555d1f3b461554cd7da3c2cbc31bb446",
-    ".git/objects/06/f097a496f06f205305391b6f5edf52edf9c15b",
-    ".git/objects/07/6127c1b583c8fd75e8271c6b69ca9774d8870c",
-    ".git/objects/08/05876411eba9c6efee308677a0530a7588ada5",
-    ".git/objects/08/cf90d7f32adb894bf0c1c5da6e10404d856a22",
-    ".git/objects/09/60797ced40a82a9d8ca2c8fa63cfd46e5dc274",
-    ".git/objects/09/f3f63b90a200a90664e3997f72f849ad5a6d0d",
-    ".git/objects/0a/13fd7b6ca69cbc8ae497eba155d10e3c0f5697",
-    ".git/objects/0a/86d0b219a7fceca741b15b2a3e4c359bdd5ab9",
-    ".git/objects/0a/8ccdc93c253868a15a0eeecb7d0ff16c1ebd6b",
-    ".git/objects/0a/e29f29213bfd93c20575f7b50049b2f0614b45",
-    ".git/objects/0c/285659c1b820584f628d06cce1cac12befe618",
-    ".git/objects/0c/63c62fff2b2c61bca5df65c4feff22f400dc26",
-    ".git/objects/0c/94e1547dd1da4e978aca621407f0cf74f4b106",
-    ".git/objects/0d/2893c67f0a9cb321553eb503e25d1134cefe25",
-    ".git/objects/10/286626a845be1882dfd22638687b77dc546951",
-    ".git/objects/10/b64862e205a92775fa137eca664be43b8100ee",
-    ".git/objects/11/8693b6e262fff15ed32d4c9d9dee62bab0b5f1",
-    ".git/objects/11/94fc05dadca05fe3c3e284e5c4ba70d190cd88",
-    ".git/objects/11/ef16cc01e1b0f3d9cc26a1e25471cd2d5ba8c0",
-    ".git/objects/12/2c0e4d93c8a748a39c506be416e72f3e92b261",
-    ".git/objects/13/00547b0dae4a2937ef63bb59b6cef949432a29",
-    ".git/objects/13/be9bb5415c92d33cf711235038b3ea9bca58a3",
-    ".git/objects/14/e2d0fc76cf7f8f1865ff83680fcfeb0dce162d",
-    ".git/objects/16/767878eeebb1567d878eab82d16426e217a674",
-    ".git/objects/17/6c75b35cd603342b0a15f1e1c71d09405005ad",
-    ".git/objects/18/1bf8357b863c2e00467b9d9c56a6f856dfbb44",
-    ".git/objects/18/99a0a9cc9510aa14d1953aedf18c87866e3f20",
-    ".git/objects/18/f198de108d76bfd3e3bc5f1afad40842c7534f",
-    ".git/objects/19/39d339f5c726dd271204cc8fdfb2d4ca0691e9",
-    ".git/objects/19/46963a3e11186a6c51f4f27c1058defaca6ee5",
-    ".git/objects/19/8e277cff2dfb0c361f03635cff9b1c35b9aa9c",
-    ".git/objects/19/cf1ef8ab4aca758257452b0fc36ab3fe0fcbd5",
-    ".git/objects/19/e45df7694b4fa537e48449c6adbb27d0888feb",
-    ".git/objects/1b/77a63be72b2190b43ecb6ed2e83a3f7179c8a5",
-    ".git/objects/1b/a8c570a4a746c5749d6a3b7d950c40aa1daef5",
-    ".git/objects/1d/49fb5779a831c7c1f07a069e8e876505101b7d",
-    ".git/objects/1e/392cd241c5f98ee25c2635aa7358702c9fd7fd",
-    ".git/objects/1e/7f999625c5139b34040ba6b23e03b5c0cd770a",
-    ".git/objects/1f/eda9a6af0ef905ebafba0372ad39af6cb97798",
-    ".git/objects/21/13caabfc0b1dac4902b8b161d34f4f4c3d62d9",
-    ".git/objects/21/6c476ae9c2583d7c1a97971e0b9e275c3c7c88",
-    ".git/objects/24/106e3af91bd72436b007e19cde37dd6a12112a",
-    ".git/objects/24/56bf778e44f890ccf627cbc7457bd0598c86e1",
-    ".git/objects/25/68b6284e2440fd85e587e634847fa251e41844",
-    ".git/objects/26/49cde4da6f210e2c586f025e486ed6d0da1931",
-    ".git/objects/26/9239429033831de4ca318320b9753d15c48d04",
-    ".git/objects/28/cbbfd38a4ba19891c0ca91fec7e61d16bb908c",
-    ".git/objects/29/6ef60e81b00ade82b8f39c09990496f8df35d0",
-    ".git/objects/29/916bf982ed79a96d0f0d8a64935a10a233fcd8",
-    ".git/objects/29/dbdeb76088c13ab375b8c7a7f320d3fc7a8325",
-    ".git/objects/2b/7bb29c714ae45d7b65d97699b7218952dbd1ed",
-    ".git/objects/2c/082ff9f0f5ca9a3e2c7eb3437de37d31144fac",
-    ".git/objects/2c/bec206c65c9a1c345c117f45bea683747e0c58",
-    ".git/objects/2d/32af8946f28e17e1c910a682a2293dba10082b",
-    ".git/objects/2e/f8cce6c28f2f38f357811c5ec339d19c791d96",
-    ".git/objects/2f/5e318941fa516938f5490d490801646b944a79",
-    ".git/objects/2f/e6a3c0933ccde3192f146582898d7c2a9e668d",
-    ".git/objects/30/18f694d01f56ad10a1a8a0a6863e7bb39db4dc",
-    ".git/objects/31/31a64842dbf89202ad73a596c03746f5c1ee50",
-    ".git/objects/31/9ee98e46b9d8fc0427851a5169109b7c927c8a",
-    ".git/objects/31/e3f9eb578d764df908c028f324802008babab2",
-    ".git/objects/34/4d4cf5e667cf8cc034d9a2370095cbba317af9",
-    ".git/objects/34/6d3db73cd947c6f298046c8cdcba4a066469e6",
-    ".git/objects/35/35a29041c875b96808064e832b2d465d5154b0",
-    ".git/objects/35/a14ce3a9e2518d681cae53f6b81a6bdeed2ca8",
-    ".git/objects/35/c3270e690567f597e3ad96d7baa33e2d56c8d3",
-    ".git/objects/36/66d57098c4401a642c86c0c58be25f8b24fc66",
-    ".git/objects/38/5c5a0538d22d6d23c110148a274bc884dda496",
-    ".git/objects/38/8d28d9a3693f1821789a1bb8f51e9b64df1e91",
-    ".git/objects/38/c67cabdecd947f13abdef5f715589ba51b0577",
-    ".git/objects/39/39a883038a06c22e203ad5085833df6540226a",
-    ".git/objects/3a/57ec074b276ad12e3b1ad104d82a75244575b7",
-    ".git/objects/3c/72b9965d53758705f7aaab17b4dbdbcfb1097b",
-    ".git/objects/3d/d94754a90a8d59a1e3d3d4bce86d3c2fea08a7",
-    ".git/objects/3e/9f8ca98728711bdfc39df517e1d1fa212737f6",
-    ".git/objects/3f/c3d696275acc729dbc5fd6e30b61c344dd1cfa",
-    ".git/objects/40/4cf7d886d0a3a3c838c9b3b166a559efc25cdd",
-    ".git/objects/40/80fc30965f3d6c30c1f73967552810aa4690d7",
-    ".git/objects/40/ac04051166f5e3d294bb9ad8fc7a1d063bde01",
-    ".git/objects/40/bd61aeeda76df10f0ff25685f03760bea03aad",
-    ".git/objects/41/5ada401a09224f15aeedc7e15ff649e2449e68",
-    ".git/objects/41/97314bb657d45dcf6b0daf7cf1a2b4c8bd922e",
-    ".git/objects/41/aec241466213cb91e886bb87f887fa63ad9f52",
-    ".git/objects/42/c09799923098a2aa7f789074a06ccce523e3d6",
-    ".git/objects/43/a828855da8525e1024425466b7ebfe94fbd9a1",
-    ".git/objects/43/cc93cfed52ab7b917847c45b4f28c6c536cccd",
-    ".git/objects/43/f95dae3c466d479a3a5d3245a710c44db48231",
-    ".git/objects/44/12d363e25a9a001ef053d732324a96491182a9",
-    ".git/objects/44/9a6868e4092db9ee59340d1f53e524beae5962",
-    ".git/objects/45/db0cbb7b08d18591ac9f0647164bb490b71e10",
-    ".git/objects/46/c9b9e77c9813032b716f2f84c20a6e7f19323b",
-    ".git/objects/47/19e8a215ab5f6fcb995c10210f29dc9ee87f7f",
-    ".git/objects/48/5609807682f4893c896fe5c23e8331d42d23c6",
-    ".git/objects/48/cb43aa61816d3b849c12c448c6e75868179834",
-    ".git/objects/49/d9000684354aca69b3d27c06afcf3f5de20ca7",
-    ".git/objects/4a/821c05b0141d8a99a29514e70ddeb759d4af26",
-    ".git/objects/4a/89de46c100ed57bd761bad40f700140d8f6b41",
-    ".git/objects/4a/d243e728ce2d83954cf17d2a9dc38b950984a3",
-    ".git/objects/4b/5d455479a1113ccd6f3a632716cd0af25f02f5",
-    ".git/objects/4c/837b707ce7103beabc0925b2d9d7bf9b58ac3d",
-    ".git/objects/4c/c2810a35f37e745a51b826badd1d0a918ca92d",
-    ".git/objects/4d/7ad95373427f970e0dc099396eb49752c18a47",
-    ".git/objects/4d/b8d8aae2119c1267c35a5ff2cb3ba01b50a5ae",
-    ".git/objects/50/28a0eb437ce2b78f40b3a76fd7cafa8ddc9f6c",
-    ".git/objects/50/6095004501d94b2f4c5b8e90e8a1196e65b333",
-    ".git/objects/51/0201c18e56f540431081157f4f93452ae8843b",
-    ".git/objects/51/b1424f2c07009694e0ae9125b8c9f2d27924fd",
-    ".git/objects/51/c4ea9d594b347954ba0aba9ac4b8d7dd03e59d",
-    ".git/objects/52/c07cb0ef5f438b7a1a41a7b67b1f1a2b5962a5",
-    ".git/objects/52/c5a94ab73a487c3642b75cfa276d8410944642",
-    ".git/objects/52/ff961d7659b93e61ba58c4b6484d66c16f8171",
-    ".git/objects/54/2e5ea760c7eb12a9d321a06fecaea0f55b345c",
-    ".git/objects/54/5db47ee48e9198963df36a4945c719baae53a1",
-    ".git/objects/54/f185c9473aa269e4482c3ff53b999b0a38e786",
-    ".git/objects/56/fd3aa0c4bb1c59c057509d649299ad8397f78b",
-    ".git/objects/57/0d4258077ea001792a168be32ca4b4192a5f39",
-    ".git/objects/57/89640e17740a4f7de2fda3b53a41339cf6b495",
-    ".git/objects/57/9b958a54913bc566c7d2ed27f085b01e162a56",
-    ".git/objects/57/d3b83546942ec56ccea1c388577be6d315d8fa",
-    ".git/objects/59/3f7469a34a25071a33c8a7ac013ea3bf6aa870",
-    ".git/objects/59/7ea052646b599b1267b3f209abb4eebc80b45b",
-    ".git/objects/59/f68cbdf92b5c50a36cd95d086c1b16452979f4",
-    ".git/objects/5b/7d40216f1293438479172414656fd94a0212f9",
-    ".git/objects/5b/ba8f2d44b4bc961034d032cfad4c17904eaac9",
-    ".git/objects/5c/96870cf4d90d8664325609e6c32c36d7463200",
-    ".git/objects/5c/cd98a4e9bfa3ddd5e42b6c02c930f2d6ebf3a7",
-    ".git/objects/5d/2ef8d28d0b7acc47cfff0529d0825cec2da3bb",
-    ".git/objects/5d/4ce4c7f5e00ff360a00d158fa7429eb4edef1d",
-    ".git/objects/5d/6079c4526019f9b1f244b661632dfbb2f5e3e4",
-    ".git/objects/5e/38b53330fb8661c4645a8800d6e20421afce60",
-    ".git/objects/5f/4c54b5211fee1f499eac0e4725993eb340564b",
-    ".git/objects/5f/859f55f3eb4c141dc903079a894c61305b1b56",
-    ".git/objects/60/d0573c2ecd24a48561401c3a046a37966f026f",
-    ".git/objects/61/ab7a9c0c57a0d07d3b89e5e3ae817e8195b711",
-    ".git/objects/62/bd6eab4d900e55edd4d5f8bd531aa6491d3776",
-    ".git/objects/64/adcd0fd1b4ee8888c2ecf7851538023e61d8c5",
-    ".git/objects/65/51e14174c1b5b546ccd115662ab88581b47c50",
-    ".git/objects/66/08fb628e71e6a66494a4e9aac00bc08bb5b0b7",
-    ".git/objects/66/4d91de5e1075072b11d3218fd50a850fc22aa9",
-    ".git/objects/67/3724e52f66b9199e8640fd51673c79f5dee25c",
-    ".git/objects/67/bebfa95617199d92fe23aa70dee8a6d6ab2f8b",
-    ".git/objects/69/98b42c8ed82d50e40faf460041a341478cb925",
-    ".git/objects/69/c8cabc0d575a52ce4c801ce0f7d6b6961cdb86",
-    ".git/objects/69/d7d224f6614c39b205e5768760c482af5bcbec",
-    ".git/objects/6a/7b37f5bdb83a8fdd1b2145d693f12f9245eede",
-    ".git/objects/6a/aa19e9398e8b48147f1afd2145420079177bb5",
-    ".git/objects/6c/bde6ebafa876b39e1a019371e0836b6632f52d",
-    ".git/objects/6f/78ade30100e44e2aa8628012849a08603826d6",
-    ".git/objects/6f/d9f52216afc2433c923c1bab4c2a3289589243",
-    ".git/objects/70/b877cce5135da551ab914d949ea4a86c2bd1b3",
-    ".git/objects/71/7ff226f05a452e7ffec771f68737b127e24ffb",
-    ".git/objects/72/3c67a833a16c58b00b75800623ad56914709f9",
-    ".git/objects/72/7653fcd130cfc3b0ec23423337ecd661cd06fb",
-    ".git/objects/74/6b69c5db72d8859b41d61c04b68d45c4735788",
-    ".git/objects/74/bcf7c802e1bec8d01c9fece1855ab57bd7fca0",
-    ".git/objects/75/bfed5e46753abc107bba1c1318fd9f1db93f6f",
-    ".git/objects/76/a6bdd4e32d1be8b6d4b649115be7113ba3ec55",
-    ".git/objects/77/08e6acf4a7f83d43d2388a526314624af234c5",
-    ".git/objects/77/2c6051a7f03fa72fc801f09dbb2ce3d42c6baf",
-    ".git/objects/7a/d887bc460fda7e48d292cf4300fc28e83fa514",
-    ".git/objects/7b/05bc6f2d28cbbc159e4a0a33f7e22a5a87ff5d",
-    ".git/objects/7b/f55af2a80953f935bf36e493e29ca650788728",
-    ".git/objects/7c/403ebfaa4b315ded18ab862aedb3f42218a5d3",
-    ".git/objects/7d/72fe75d211cfeb78a8aa9ebd9fc71e89fbfad0",
-    ".git/objects/7d/7be1878cb0bd9757145c5c626f2b66c429c85f",
-    ".git/objects/7e/2bdbf51c868f2ee38db65b6e594f34dcacd150",
-    ".git/objects/7e/3a49f11f81fc4650379d53d5f8d2549f9ac3d7",
-    ".git/objects/7f/19c12c8944a21d5ae5bff78c815713e936b282",
-    ".git/objects/80/2dfff2c270ba8a4aff273624f2ab06d009d6fb",
-    ".git/objects/81/85b21de6a1db76cd074dc6bde7c8675d9926d1",
-    ".git/objects/82/41c05f5763f01ddf91b21658647e11f163a83a",
-    ".git/objects/82/cfb9a58f2eab22bd4b2dd447f22dde236389f8",
-    ".git/objects/82/d9519f8589d227fe716b97871913c3fe905744",
-    ".git/objects/83/06f22466c143e481428af930343fb8f595d165",
-    ".git/objects/86/38278ae0d2cb3b43695639dd1c968f1fcc187e",
-    ".git/objects/86/c03322dfd24d96eb927c3fc29d2501e56a11c4",
-    ".git/objects/87/17f6464532edb303352114812a92074f8f152b",
-    ".git/objects/8a/74887bc09e946bb8c853dde16e4b1c8460b703",
-    ".git/objects/8a/a964d560122e7cb897cc839b88135e4d1818c7",
-    ".git/objects/8b/08d27fd047e1fced6533a651b75d1ede515cae",
-    ".git/objects/8c/b5999f08ff4f1b8aef4b908c5edff8ba860771",
-    ".git/objects/8d/0b5e9f203ffc98ce6a56058070af2f740933d5",
-    ".git/objects/8d/6840596cd80da006a30833211e64bfaaa880df",
-    ".git/objects/8d/93004e69215320af95d373e9a4740477b90386",
-    ".git/objects/8d/fd8137755184891eb43b46e946672601d3a98e",
-    ".git/objects/8e/0cdc2622f5ffc4d4d7d8aa402ebd1090a11d6e",
-    ".git/objects/8e/3c0d57fc90e604317c6b444defae67eda95c45",
-    ".git/objects/8e/dfba10d39c9d76228e6cc7d369c1e5411ba3e2",
-    ".git/objects/8f/7e35e155313572bcdf771a5f7446219d62e6a7",
-    ".git/objects/90/d9308116359e76084065f755973148f2cd6a66",
-    ".git/objects/91/83935fd2667c9123b24b93d699eb012d7de5bd",
-    ".git/objects/92/c6512ee07d7e9e35fe4f1151a88eadc8c38939",
-    ".git/objects/92/f6a9719b6757147a7d658ea5c12a56418adaf5",
-    ".git/objects/94/c9bc3b0d23942759801fa6e9e90370fd8296fc",
-    ".git/objects/95/3a7613629325b243cd8a3cf29129ca691a8c33",
-    ".git/objects/95/4dda9d3ce18aff89f77ea51a22fcf672c1a03e",
-    ".git/objects/95/95d21345515fd6b087b0523d3c7e29a30f64d2",
-    ".git/objects/97/47def4c956cb95d2ba1164d89d41c3e29df9e6",
-    ".git/objects/97/696ad2eed14acb35464e678c5e1214291b720e",
-    ".git/objects/97/960dba4b58971d4b772ed91a53d9c937cdbf88",
-    ".git/objects/98/ce43480f909c7b595ebd91af30133271cc4317",
-    ".git/objects/99/451ba66cc8a98ac0c673af35a3c12a89b9af43",
-    ".git/objects/99/7603b54af921933a36b535a6c0bf35dd82578d",
-    ".git/objects/9c/22e6708cc8db0ed53bb0e217beb5d70da6c021",
-    ".git/objects/9c/e726a08a50fe363474ac6676da408829679cd3",
-    ".git/objects/9e/93997bdb5bcb76108bd29692a6c052a1982692",
-    ".git/objects/9e/b480ae6ce6a0412a73d5f4cdaf704af4a9357b",
-    ".git/objects/9f/3ddf76da11fdd7bdd2c609b501e15e6f44d4be",
-    ".git/objects/9f/7df6493ebfde9edeacfcb350e34bad1b0be237",
-    ".git/objects/9f/c3424fb308afc8e23d2f8cb6d623cf3a45b1d2",
-    ".git/objects/a0/8d65f3c133a2184974e7429fb4a1a809cf80b5",
-    ".git/objects/a1/9fa646ecd357e9e75f2277c4247d2177662149",
-    ".git/objects/a1/ae9b45e77329a96e131b2ab723f5ecee284152",
-    ".git/objects/a2/1d73c34ef454abeb43285d4c44102eef0ebc5d",
-    ".git/objects/a2/65e494cb7ce11aab6aa04aceba835eb17691d0",
-    ".git/objects/a2/c89c937bbf0538e3f8b0ae44d462fede16137d",
-    ".git/objects/a3/232a902ddb5690ec041fadf1a9c771cb44002e",
-    ".git/objects/a3/35c2e82418f3d7fe5f66c74ae5efbfd838bc89",
-    ".git/objects/a3/9b6cb63537b8d89bffc2ab953a54e2efd8ec32",
-    ".git/objects/a3/c2926737a5d7ee3c785b125d7ae5bed7a19aec",
-    ".git/objects/a7/43715c2e77e6ee3bc6bc0a9ca236bd39431359",
-    ".git/objects/a8/326125d7c84dc0d4c79ceb385ffe7c26082559",
-    ".git/objects/a9/1d1427b6014e6fa2a85e14499366405ae57b7d",
-    ".git/objects/a9/799f51369ca4eb4761fed204ec496355e3c36d",
-    ".git/objects/aa/07fc7c0ffd7fc1b1243c145a64c93c7a43eea1",
-    ".git/objects/aa/e82e2d611232605fb4d68dce864307d06868c0",
-    ".git/objects/ab/2f72b8fe9b2ee36ce258e1ba16bbe98284c13c",
-    ".git/objects/ab/fa10620c4caa15b41913d29f08c3b948423e70",
-    ".git/objects/ad/6840bde5ba4efda4bf6020d8f44a1f4a939700",
-    ".git/objects/b0/2c1aba975b86c4b7a5be4568abcae95a747a3b",
-    ".git/objects/b1/1ca565461f7c86a7f6790e24544ed1a42f631c",
-    ".git/objects/b1/881b21edd243abea5fb2d4910e0cc91d1d7ce3",
-    ".git/objects/b2/330aed8a8c27dd2c0d595e048efd69c8fb4127",
-    ".git/objects/b2/46bb1916f8f81b78881d634aeb722a5d67e1fd",
-    ".git/objects/b3/8595308a84fb16e15ca9ba543a0de53755972f",
-    ".git/objects/b3/faaf57c8c75fa6d24f7faa102c684da8634259",
-    ".git/objects/b5/4873acd32ca6fddb1d79efb433ca446f2acb1b",
-    ".git/objects/b5/d0fce6cc1b17ef3189842bf62d7d6ad84e8175",
-    ".git/objects/b6/3292b9ffd19559fe0a75147203851617700f6e",
-    ".git/objects/b8/20ab67edef7f778b8c6cb1a38934ff3264803d",
-    ".git/objects/b8/78aec6f7fb69357c8b1a5f98f7f5ebb452533e",
-    ".git/objects/b9/5e03d8fa90e18a76182e0911ce21d3eceb1e17",
-    ".git/objects/b9/c008d150f6293f83deeb22e80bce1d74eee89b",
-    ".git/objects/bc/c78f416cdbdcbfea7e4d97e8621944b68e6a6a",
-    ".git/objects/bd/6e6cabe00df78eb1f8eea9ddec2ad61eafb0ca",
-    ".git/objects/be/693d2c408c8c0ebf142e64e8a5a3c0b505760e",
-    ".git/objects/be/7af4770a782a419dd86b6af8c6a2ca8dc26976",
-    ".git/objects/bf/136c98fd02198be781f41930cbc08a3ec74cd2",
-    ".git/objects/c0/185ba3eb6679db9ac981bd6f2921e5eee4cdea",
-    ".git/objects/c0/2b61de3c859b505522c0a181828d47913db33f",
-    ".git/objects/c0/ede68876ab1e3fa791266e61bf86b918ab8e0e",
-    ".git/objects/c1/ed825d045d57c873269417154ddbfc2bcbb4f3",
-    ".git/objects/c2/2be330994005764360e169ae1a920def636004",
-    ".git/objects/c2/e9b6f4448cb61aacab57b671f4dff05efa9d2e",
-    ".git/objects/c4/5d3d4444e65c03b3b1c16bdf1e747c3549265f",
-    ".git/objects/c5/79c54428b8ee50b1bbfbaed1cc49fe2136051c",
-    ".git/objects/c5/ceccc8957b64a92914c575b457df1892fed8bd",
-    ".git/objects/c5/e5e8a2df96736ae0ac691560636cb8fe02bc8d",
-    ".git/objects/c6/d8c748ce510eb637a5c3d728f3080fdd052122",
-    ".git/objects/c7/b6baf57de8ca25e9e8dcc82d1df5d7b9fce1c6",
-    ".git/objects/c7/d45eebf25a9a60c9a75d2232ea422572eb8fd0",
-    ".git/objects/c8/4ba3e5dad37356de60371f3d517c30eb32a37d",
-    ".git/objects/c8/c50c0b2eed8d806717b09e271ebeccc1129532",
-    ".git/objects/c8/d2288e1f580b511c288e552c2fb887bcb68991",
-    ".git/objects/c8/f4568225e3a9aa6e7d7a9cbd8fac1c32528944",
-    ".git/objects/c9/992bb728b20ffa5afc4b5dc6cd46f868374b6a",
-    ".git/objects/c9/c0a26248703cd89297d5b0135823c6b5b7ed98",
-    ".git/objects/ca/1642b3898f146028c807c436d4c411cd55e3df",
-    ".git/objects/ca/41e4b9489f57c1cd54e330527831123ce1474e",
-    ".git/objects/ca/61ceac2dfd853fa33176a206fc7fe250de0a99",
-    ".git/objects/ca/7ae20589ab1b41843a75c62893b3fdad6ac702",
-    ".git/objects/cb/9c118c6be2b3f6483a1ff01939394cba4329ec",
-    ".git/objects/cb/ec1fbd6d4bebe3663f7751249e56e24a293157",
-    ".git/objects/cc/3ee49da955ab272bc2c1ccc50ea9993877ea18",
-    ".git/objects/cc/90067b8847719e6b16d1b9958f5122fea2bbc9",
-    ".git/objects/cd/00c29399fc715e92e1d9b0d7d87245f3f50fd4",
-    ".git/objects/cd/cdf7dd0a1bd6c378f4d6d6fa0b13987e5179ff",
-    ".git/objects/ce/4008d3a53888aed79cbb0029ec41600cc16a88",
-    ".git/objects/ce/b486e837f9c948bf7679659ada2c5f8ac2ebcd",
-    ".git/objects/cf/80d029350340dec66dd6d00c4af3d2990a8c49",
-    ".git/objects/cf/d4e486093773f6312c4ec6001d15f49e78a7ca",
-    ".git/objects/d0/46b5a1a90a1d8db41003b7bb2d4910a265685b",
-    ".git/objects/d0/6bdb5ebbc8f98b485082820ae1d47d3d1b8513",
-    ".git/objects/d4/b2203a5fd680709ae0fbe943d146c8754178e9",
-    ".git/objects/d8/ac77fe047803d34c907434dcccb895d0b435e4",
-    ".git/objects/d9/811d58f3bae385c9e8c31530a226cd0e45fe7b",
-    ".git/objects/dd/85b0d22da7def9fb81484a3aab0d3e25087ef2",
-    ".git/objects/de/370e22825adabb13a99aabf9b4089c5eb41be6",
-    ".git/objects/de/3fa5a658a2fa4b5a2b3c2dc71575c0f0e41307",
-    ".git/objects/de/655497a1c9f6de2234a69b6e55e1cc4113bb1c",
-    ".git/objects/e1/73807f61a67d065fbc90e8ff2abf4f70d2e072",
-    ".git/objects/e1/c96ab4600e60430fcad01a933179e97aeba350",
-    ".git/objects/e2/12afa1f021de1500311f48022445303a6ba260",
-    ".git/objects/e2/50a4dedc419845114404786b0a1cb97c921e8f",
-    ".git/objects/e3/0e3aabf7e83bd9cfb00288e2f4b732186def80",
-    ".git/objects/e3/593edeb4c90e7b09bacedaada61976e836c183",
-    ".git/objects/e4/585237fec2d432e1d4831252e489d2c369f6ef",
-    ".git/objects/e4/c341544ecea71cbb883d2e0dd0477f17237a3f",
-    ".git/objects/e5/d5885f4db32f1cfa7daf695542498385bff764",
-    ".git/objects/e6/9de29bb2d1d6434b8b29ae775ad8c2e48c5391",
-    ".git/objects/e6/e454abf86589449053bfc74be98dfd74049022",
-    ".git/objects/e8/8c8ff01b600007ae58797a7419554551a12cb6",
-    ".git/objects/e9/a4a9c53fefcfb603e9ded05794e75bc8dd40bb",
-    ".git/objects/ea/2b662f09ea26376dc286755dfdc7a11fc73bc1",
-    ".git/objects/ec/cda1facb1008819cfa91d1c3d932bd4d6b1c3b",
-    ".git/objects/ef/8d1f9afb23118ea87abade18ee7a4b146c4ae4",
-    ".git/objects/ef/e08c4125e25c2cca7ff789298fec220b1ccf68",
-    ".git/objects/f0/168416b30f9e21fe3386f9546426521a61f334",
-    ".git/objects/f4/b653536a0702e040ae4f57e8e6c973e8451b10",
-    ".git/objects/f5/2df7c0dfff723f58fefd30b64861a2cb52e51b",
-    ".git/objects/f8/124f470470c5d5014050e3c66cb3622c6ec6ee",
-    ".git/objects/f9/6c2c9475ca23558c00cd4b82d28f11be1a8b4a",
-    ".git/objects/f9/a33aa1742ee7b40ebb6cf16ba5e5ac558bd6f6",
-    ".git/objects/fa/8e99d5cccf37c3b4ea1a470941d8f1da50189e",
-    ".git/objects/fa/9fc07773748dbf1ed18ee0728aa2855daaaa29",
-    ".git/objects/fa/c43475eefa6bea17ca5a8a18b9d37f2c4b3299",
-    ".git/objects/fb/090c80caaf0788a8c38ae801720e8e6738af21",
-    ".git/objects/fb/36cdf685625e2f6a8b4954f78c3bd6203b8f25",
-    ".git/objects/fb/4e3b865332d8e06c97f93bdf12d7ba26e11ef3",
-    ".git/objects/fb/61507b96df15134dea65e6b0993cccd858a5d4",
-    ".git/objects/fb/fd82bbca0a618961a98e7ae69ebb295be2117a",
-    ".git/objects/fc/3d0b663daeb131b520b9c3984f3edf1f788caa",
-    ".git/objects/fd/0b28ec61e233ab51cab3a6a0fd7d7f741637bf",
-    ".git/objects/fd/dc0542871ef1a51812adddbe95d226515fcb90",
-    ".git/objects/fe/1f64de93b2b5bc4ae1c5598e17bdb34e490f5a",
-    ".git/objects/fe/2ba99f079a8a967dd186c1ad329131c5afb35f",
-    ".git/objects/fe/513cb4fc19aaa0a18deb439c1ee5d7113d1893",
-    ".git/objects/fe/b654f5f9884c4526078cb619e1995026c330d8",
-    ".git/objects/pack/pack-f44e6ab873e7f973e9015a4fedc363c6d52b49ed.idx",
-    ".git/objects/pack/pack-f44e6ab873e7f973e9015a4fedc363c6d52b49ed.pack",
-    ".git/objects/pack/pack-f44e6ab873e7f973e9015a4fedc363c6d52b49ed.rev",
-    ".git/packed-refs",
-    ".git/refs/heads/main",
-    ".git/refs/remotes/origin/HEAD",
-    ".git/refs/remotes/origin/claude/test-onxon1",
-    ".git/refs/remotes/origin/main",
-    ".github/workflows/test.yml",
-    ".gitignore",
-    "AGENTS.md",
-    "AI_HANDOFF.md",
-    "AI_HANDOVER.md",
-    "ALERT_LIFECYCLE.md",
-    "ARTIFACT_MANIFEST.json",
-    "CLAUDE.md",
-    "DEPLOYMENT.md",
-    "DETECTION_RULE_MANAGEMENT.md",
-    "DEVELOPMENT.md",
-    "ENTITY_CONTEXT_MODEL.md",
-    "INSTALLATION.md",
-    "INVESTIGATION_WORKSPACE.md",
-    "OPERATION.md",
-    "PHASE12_11_IMPLEMENTATION_STATUS.md",
-    "PHASE12_13_IMPLEMENTATION_STATUS.md",
-    "PHASE12_14_VALIDATION_COMPLETION.md",
-    "PHASE12_15_OPERATIONAL_HARDENING_STATUS.md",
-    "PHASE12_16_RELEASE_ENGINEERING_STATUS.md",
-    "PHASE12_1_DELIVERY_STATUS.md",
-    "PHASE12_2_DELIVERY_STATUS.md",
-    "PHASE12_3_DELIVERY_STATUS.md",
-    "PHASE12_4_DELIVERY_STATUS.md",
-    "PHASE12_5_DELIVERY_STATUS.md",
-    "PHASE12_6_DELIVERY_STATUS.md",
-    "PHASE12_TRUTH_ALIGNMENT.md",
-    "PRODUCT.md",
-    "PRODUCTION_VALIDATION_STATUS.md",
-    "README.md",
-    "RELEASE_BASELINE_STATUS.md",
-    "RELEASE_CANDIDATE_STATUS.md",
-    "RELEASE_HANDOVER.md",
-    "RELEASE_MANIFEST_INSTALLER_FIX.txt",
-    "ROADMAP.md",
-    "RUNTIME_HEALTH_HANDOFF.md",
-    "SECURITY.md",
-    "SOC_CASE_WORKFLOW.md",
-    "SOC_METRICS_DASHBOARD.md",
-    "SYSLOG-RELAY.md",
-    "TESTING.md",
-    "TEST_STATUS_RECONCILIATION.md",
-    "ai_soc.py",
-    "ai_worker.py",
-    "alert_lifecycle/ALERT_LIFECYCLE.md",
-    "alert_lifecycle/alert_audit_events.py",
-    "alert_lifecycle/alert_model.py",
-    "alert_lifecycle/alert_state_machine.py",
-    "api_poller.py",
-    "archive.py",
-    "auth-config.json",
-    "auth.py",
-    "backup_restore.py",
-    "configure-db.py",
-    "correlations.py",
-    "dashboard.py",
-    "db-config.json",
-    "db-maintenance.sh",
-    "db.py",
-    "deployment/ACCEPTANCE_CHECKLIST.md",
-    "deployment/DEPLOYMENT_VALIDATION_REPORT.md",
-    "deployment/ENVIRONMENT_PROFILE.json",
-    "detection_rule_management/DETECTION_RULE_MANAGEMENT.md",
-    "detection_rule_management/rule_api_extension.md",
-    "detection_rule_management/rule_metrics.py",
-    "detection_rule_management/rule_model.py",
-    "detection_rule_management/rule_tuning.py",
-    "detection_rule_management/rule_versioning.py",
-    "docs/ACTUAL_TABLE_WRITER_IMPLEMENTATION_PHASE.md",
-    "docs/CONTROLLED_IMPORT_ENGINE_PHASE.md",
-    "docs/CONTROLLED_POSTGRES_MIGRATION_EXECUTION_PHASE.md",
-    "docs/CONTROLLED_POSTGRES_WRITE_EXECUTION_PHASE.md",
-    "docs/CONTROLLED_POSTGRES_WRITE_IMPORTER_PHASE.md",
-    "docs/CONTROLLED_TABLE_IMPORT_ENGINE_PHASE.md",
-    "docs/DATA_TRANSFER_VERIFICATION_PHASE.md",
-    "docs/INDIVIDUAL_POSTGRES_WRITERS_PHASE.md",
-    "docs/MIGRATION_COMPLETION_VERIFICATION_CUTOVER_PHASE.md",
-    "docs/MIGRATION_DRY_RUN_ENGINE_PHASE.md",
-    "docs/MIGRATION_FINAL_RELEASE_PHASE.md",
-    "docs/MIGRATION_VALIDATION_GATE_PHASE.md",
-    "docs/POSTGRESQL_ADVANCED_RELIABILITY_HA_PREPARATION_PHASE.md",
-    "docs/POSTGRESQL_DATA_MIGRATION_PLAN.md",
-    "docs/POSTGRESQL_ENTERPRISE_OPERATIONS_BASELINE_PHASE.md",
-    "docs/POSTGRESQL_LIFECYCLE_HARDENING_NOTES.md",
-    "docs/POSTGRESQL_MIGRATION_MAPPING_PHASE.md",
-    "docs/POSTGRESQL_OPERATIONAL_AUTOMATION_PHASE.md",
-    "docs/POSTGRESQL_PERFORMANCE_SCALING_HARDENING_PHASE.md",
-    "docs/POSTGRESQL_PRODUCTION_READY_V1_PHASE.md",
-    "docs/POSTGRESQL_RUNTIME_HARDENING_PHASE.md",
-    "docs/POSTGRESQL_TRANSACTIONAL_IMPORT_PHASE.md",
-    "docs/POSTGRES_DATA_TRANSFER_EXECUTION_PHASE.md",
-    "docs/POSTGRES_MIGRATION_RUNBOOK_PHASE.md",
-    "docs/POSTGRES_READ_VALIDATION_UNLOCK_PHASE.md",
-    "docs/POST_MIGRATION_HARDENING_RECOVERY_VALIDATION_PHASE.md",
-    "docs/PRODUCTION_MIGRATION_FINALIZATION_PHASE.md",
-    "docs/REAL_MIGRATION_TRANSACTION_EXECUTION_PHASE.md",
-    "docs/REAL_POSTGRES_WRITER_ACTIVATION_PHASE.md",
-    "docs/TRANSACTIONAL_IMPORT_VERIFICATION_PHASE.md",
-    "docs/VALIDATED_POSTGRES_TABLE_WRITER_PHASE.md",
-    "entity_context_intelligence/ENTITY_CONTEXT_MODEL.md",
-    "entity_context_intelligence/entity_api_extension.md",
-    "entity_context_intelligence/entity_model.py",
-    "entity_context_intelligence/relationship_model.py",
-    "entity_context_intelligence/risk_context.py",
-    "final_release_candidate/CAPABILITY_STATUS.md",
-    "final_release_candidate/COMPONENT_MATRIX.md",
-    "final_release_candidate/DELIVERY_CHECKLIST.md",
-    "final_release_candidate/KNOWN_LIMITATIONS.md",
-    "final_release_candidate/RELEASE_CANDIDATE.md",
-    "forwarder.py",
-    "handover/ADMIN_GUIDE.md",
-    "handover/BACKUP_RECOVERY_GUIDE.md",
-    "handover/INCIDENT_GUIDE.md",
-    "handover/OPERATIONS_GUIDE.md",
-    "handover/SYSTEM_OVERVIEW.md",
-    "handover/TROUBLESHOOTING_GUIDE.md",
-    "health.py",
-    "install-service.sh",
-    "install-services.sh",
-    "integrations/__init__.py",
-    "integrations/sophos_poller_bundle.zip",
-    "integrations/sophos_poller_bundle/INTEGRATION.md",
-    "integrations/sophos_poller_bundle/__init__.py",
-    "integrations/sophos_poller_bundle/api_poller.py",
-    "integrations/sophos_poller_bundle/integration_example.py",
-    "integrations/sophos_poller_bundle/schema.postgresql.sql",
-    "integrations/sophos_poller_bundle/schema.sqlite.sql",
-    "integrations/sophos_poller_bundle/sophos-poller.example.json",
-    "integrations/sophos_poller_bundle/test_bundle.py",
-    "investigation_profiles.py",
-    "investigation_workspace/INVESTIGATION_WORKSPACE.md",
-    "investigation_workspace/entity_context.py",
-    "investigation_workspace/evidence_reference.py",
-    "investigation_workspace/investigation_api_extension.md",
-    "investigation_workspace/investigation_model.py",
-    "linux_agent/README.md",
-    "linux_agent/agent-config.json",
-    "linux_agent/install-linux-agent.sh",
-    "linux_agent/minisiem-agent.py",
-    "listener.py",
-    "maintenance.py",
-    "normalize.py",
-    "operational_diagnostics.py",
-    "operational_hardening/LOGGING_STANDARD.md",
-    "operational_hardening/audit_events.py",
-    "operational_hardening/config_validation.py",
-    "operational_hardening/error_handling.py",
-    "operational_hardening/runtime_diagnostics.py",
-    "operations/DAILY_OPERATIONS.md",
-    "operations/ESCALATION_GUIDE.md",
-    "operations/INCIDENT_RESPONSE.md",
-    "operations/MAINTENANCE_PROCEDURES.md",
-    "operations/OPERATIONS_ACCEPTANCE_CHECKLIST.md",
-    "patch.md",
-    "performance/README.md",
-    "performance/archive/archive_benchmark.py",
-    "performance/benchmark_config.yaml",
-    "performance/collectors/metrics.py",
-    "performance/ingest/ingest_benchmark.py",
-    "performance/query/query_benchmark.py",
-    "performance_runtime/benchmark.py",
-    "performance_runtime_v2/benchmark_runner.py",
-    "phase12_truth_alignment/PERFORMANCE_STATUS.md",
-    "phase12_truth_alignment/PHASE12_CAPABILITY_AUDIT.md",
-    "phase12_truth_alignment/PHASE12_STATUS_RECONCILIATION.md",
-    "phase12_truth_alignment/RESILIENCE_STATUS.md",
-    "phase12_truth_alignment/SECURITY_STATUS.md",
-    "phase12_truth_alignment/TEST_STATUS_RECONCILIATION.md",
-    "profiles.py",
-    "qualification_evidence/BENCHMARK_PLAN.md",
-    "qualification_evidence/HEALTH_CHECK_EVIDENCE.md",
-    "qualification_evidence/QUALIFICATION_EVIDENCE.md",
-    "qualification_evidence/QUALIFICATION_MATRIX.md",
-    "qualification_evidence/RBAC_EVIDENCE.md",
-    "qualification_evidence/SECRET_HANDLING_EVIDENCE.md",
-    "qualification_evidence/TENANT_ISOLATION_EVIDENCE.md",
-    "release/HANDOVER_PACKAGE.md",
-    "release/KNOWN_LIMITATIONS.md",
-    "release/RELEASE_ACCEPTANCE_CHECKLIST.md",
-    "release/RELEASE_APPROVAL_RECORD.md",
-    "release/RELEASE_CHECKLIST.md",
-    "release/RELEASE_NOTES.md",
-    "release/VERSION.json",
-    "release_engineering/CHANGELOG.md",
-    "release_engineering/RELEASE_CHECKLIST.md",
-    "release_engineering/RELEASE_MANIFEST.json",
-    "release_engineering/VERSION.json",
-    "release_engineering/artifact_provenance.py",
-    "release_engineering/release_gate.py",
-    "release_engineering/upgrade_assurance.md",
-    "requirements-dev.txt",
-    "requirements.txt",
-    "resilience/README.md",
-    "resilience/failure_scenarios.yaml",
-    "resilience/health_collector.py",
-    "resilience/recovery_checklist.md",
-    "resilience/resilience_report.py",
-    "resilience_runtime/health_collector.py",
-    "resilience_runtime_v2/health_engine.py",
-    "rules.py",
-    "runtime_health.py",
-    "secretbox.py",
-    "security/README.md",
-    "security/controls/database.py",
-    "security/controls/rbac.py",
-    "security/controls/secrets.py",
-    "security/controls/tenant.py",
-    "security/reports/security_report.py",
-    "security/scanners/artifact_scan.py",
-    "security/security_checklist.yaml",
-    "security_dynamic_scan.py",
-    "security_runtime/authorization.py",
-    "security_runtime/redaction.py",
-    "security_runtime/tenant_guard.py",
-    "security_runtime_v2/rbac_engine.py",
-    "security_runtime_v2/secret_pipeline.py",
-    "security_runtime_v2/tenant_enforcement.py",
-    "security_static_scan.py",
-    "severity.py",
-    "siem.py",
-    "soc_case_management/SOC_CASE_WORKFLOW.md",
-    "soc_case_management/ticket_api_extension.md",
-    "soc_case_management/ticket_model.py",
-    "soc_case_management/ticket_timeline.py",
-    "soc_metrics_dashboard/SOC_METRICS_DASHBOARD.md",
-    "soc_metrics_dashboard/alert_metrics.py",
-    "soc_metrics_dashboard/case_metrics.py",
-    "soc_metrics_dashboard/dashboard_api_extension.md",
-    "soc_metrics_dashboard/metrics_model.py",
-    "soc_metrics_dashboard/rule_effectiveness.py",
-    "sophos_poller_bundle.zip",
-    "sql_helpers.py",
-    "static/csrf.js",
-    "telemetry.py",
-    "templates/ai.html",
-    "templates/audit.html",
-    "templates/change_password.html",
-    "templates/correlate.html",
-    "templates/health.html",
-    "templates/help.html",
-    "templates/index.html",
-    "templates/login.html",
-    "templates/setup.html",
-    "templates/threatintel.html",
-    "tests/test_admin_bootstrap.py",
-    "tests/test_admin_bootstrap_preservation.py",
-    "tests/test_backup_restore_readiness.py",
-    "tests/test_cef_parser.py",
-    "tests/test_dashboard_live_refresh.py",
-    "tests/test_dashboard_routes.py",
-    "tests/test_db.py",
-    "tests/test_evidence_archive_phase6.py",
-    "tests/test_imports.py",
-    "tests/test_ingest_performance.py",
-    "tests/test_investigation_profiles.py",
-    "tests/test_log_search_logic.py",
-    "tests/test_operational_diagnostics.py",
-    "tests/test_performance_phase3.py",
-    "tests/test_performance_phase4.py",
-    "tests/test_performance_phase5.py",
-    "tests/test_postgres_idempotent_migration.py",
-    "tests/test_postgres_migration_state.py",
-    "tests/test_postgres_privilege_boundary.py",
-    "tests/test_postgres_runtime_options.py",
-    "tests/test_postgres_schema_safety.py",
-    "tests/test_resilience_qualification.py",
-    "tests/test_sql_helpers.py",
-    "tests/test_syslog_troubleshoot.py",
-    "tests/test_text_search_backend.py",
-    "tests/test_timeline_dialog_structure.py",
-    "tests/test_warning_ai_context.py",
-    "tests/test_webconsole_observability_slice.py",
-    "threatintel.py",
-    "tools/archive_now.py",
-    "tools/archive_verify.py",
-    "tools/controlled-import-engine.py",
-    "tools/controlled-postgres-migration-execution.py",
-    "tools/controlled-postgres-write-executor.py",
-    "tools/controlled-postgres-write-importer.py",
-    "tools/controlled-table-import.py",
-    "tools/data-transfer-verifier.py",
-    "tools/individual-postgres-writers.py",
-    "tools/inspect-migration-mapping.py",
-    "tools/migrate-sqlite-to-postgres.py",
-    "tools/migration-completion-cutover.py",
-    "tools/migration-dry-run-engine.py",
-    "tools/migration-final-release-check.py",
-    "tools/migration-validation-gate.py",
-    "tools/post-migration-hardening-recovery.py",
-    "tools/postgres-data-transfer-executor.py",
-    "tools/postgres-enterprise-operations-check.py",
-    "tools/postgres-ha-reliability-check.py",
-    "tools/postgres-migration-preflight.py",
-    "tools/postgres-operational-automation-check.py",
-    "tools/postgres-performance-scaling-check.py",
-    "tools/postgres-production-readiness-check.py",
-    "tools/postgres-read-validation.py",
-    "tools/postgres-runtime-hardening-check.py",
-    "tools/postgres-transactional-import.py",
-    "tools/postgres_phase4_validation.py",
-    "tools/postgres_phase5_validation.py",
-    "tools/postgres_privilege_boundary.py",
-    "tools/postgres_privilege_check.py",
-    "tools/production-migration-finalization.py",
-    "tools/real-migration-transaction-execution.py",
-    "tools/real-postgres-writer-activation.py",
-    "tools/syslog_capture_helper.py",
-    "tools/table-writer-engine.py",
-    "tools/transactional-import-verification.py",
-    "tools/validated-postgres-table-writer.py",
-    "validation_completion/DATABASE_RBAC_VALIDATION.md",
-    "validation_completion/FAILURE_INJECTION_RECOVERY_DRILL.md",
-    "validation_completion/MULTI_TENANT_INTEGRATION_TEST.md",
-    "validation_completion/TEST_RECONCILIATION.md",
-    "web_blueprints/__init__.py",
-    "web_blueprints/ai.py",
-    "web_blueprints/db_health.py",
-    "web_blueprints/ioc_feeds.py",
-    "web_blueprints/reports.py",
-    "web_blueprints/tickets.py",
-    "web_blueprints/users.py",
-    "wef/Setup-WEF-Test.ps1",
-    "wef/Subscription.xml",
-    "wef/WEF-README.md",
-    "wef/nxlog.conf",
-    "wef/wef-agent-config.json",
-    "windows_agent/Install-ScheduledTask.ps1",
-    "windows_agent/MiniSiemAgent.ps1",
-    "windows_agent/README.md",
-    "windows_agent/agent-config.json",
-    "workers.py"
+    {
+      "path": ".github/workflows/test.yml",
+      "size": 618,
+      "sha256": "504ac2aa163d7dd00ea2515dbb1e8c2ceb85bb4c3d90f7efdca6d6885ca2ab4d"
+    },
+    {
+      "path": ".gitignore",
+      "size": 268,
+      "sha256": "737bcca1484381bed807bd4ac394f87aaed73ae8dc099ce04bd15c457779a827"
+    },
+    {
+      "path": "AGENTS.md",
+      "size": 922,
+      "sha256": "fa5ad8205ac1eb8d39f2685c749f24227f23aa12fe7f630288a39b7065d197f3"
+    },
+    {
+      "path": "AI_HANDOFF.md",
+      "size": 2264,
+      "sha256": "94b7da9c1c2d38ea9acd3e751d649e0d9aec4321cd5a4cf092b135433fe54fa7"
+    },
+    {
+      "path": "AI_HANDOVER.md",
+      "size": 11065,
+      "sha256": "018a84a2f37e93b3a70f69acca847e4ebed7231d69924f0a51e248fefcd0c6cc"
+    },
+    {
+      "path": "ALERT_LIFECYCLE.md",
+      "size": 124,
+      "sha256": "f9d372a09d2523af259b6a4d2ecdc49c0ac56c5a874d23e78642d42baa676a06"
+    },
+    {
+      "path": "CLAUDE.md",
+      "size": 652,
+      "sha256": "85a7e76acbdad58f2eda3b72bc1fb28d692d7d045489020705bc00c49c392486"
+    },
+    {
+      "path": "DEPLOYMENT.md",
+      "size": 4415,
+      "sha256": "5620c2f801e1681f67bc8bc90ec928010bf08bbbab9731881a2090c6eecfb0fb"
+    },
+    {
+      "path": "DETECTION_RULE_MANAGEMENT.md",
+      "size": 109,
+      "sha256": "13b844f2d0385839a577fb326806443cd8ce58742b82bf81430dd380ce6d6451"
+    },
+    {
+      "path": "DEVELOPMENT.md",
+      "size": 39280,
+      "sha256": "5978b79c4e98f3d71df97dc19e62dd88dd341fd90b529b82a347f4cef85a0ea9"
+    },
+    {
+      "path": "ENTITY_CONTEXT_MODEL.md",
+      "size": 119,
+      "sha256": "bc99ef5f360864f352d30e931764f9800460b6cc5b5f4e51d233d4b27bff706a"
+    },
+    {
+      "path": "INSTALLATION.md",
+      "size": 15016,
+      "sha256": "4e838146aeb73dbac24c3785a78f55b7abd524d903026129a443c06ea0f08088"
+    },
+    {
+      "path": "INVESTIGATION_WORKSPACE.md",
+      "size": 117,
+      "sha256": "646c002977472971c996c36eb12485729ffac0563f68edd5f990de913441ba13"
+    },
+    {
+      "path": "OPENAI_INTEGRATION_QUALIFICATION_2026-09-18.json",
+      "size": 2544,
+      "sha256": "6d7737d300b133cab75358bd8c873025ff4d31223df4c1a503ce4c2dda392bc5"
+    },
+    {
+      "path": "OPERATION.md",
+      "size": 12601,
+      "sha256": "3e5ebd4023dc2e671de98c49fa7f6603d382bb7ae36b3be9317d4c8d1c73d42e"
+    },
+    {
+      "path": "P0_P1_VALIDATION_2026-09-18.json",
+      "size": 1806,
+      "sha256": "a95692008682a857273a1f8592627666692ca0d28c027068475c1b78700d3709"
+    },
+    {
+      "path": "PHASE12_11_IMPLEMENTATION_STATUS.md",
+      "size": 565,
+      "sha256": "56e2e9ffc244b0023e7e666af241e364d646fe6ae414868987d77abfdd757c08"
+    },
+    {
+      "path": "PHASE12_13_IMPLEMENTATION_STATUS.md",
+      "size": 636,
+      "sha256": "2316d0865a5ec8f17022b60d3b5b0253f5e8b112c9eb3339b1e45dda0d016ada"
+    },
+    {
+      "path": "PHASE12_14_VALIDATION_COMPLETION.md",
+      "size": 514,
+      "sha256": "9a045e593a74ce620f1a42b52807cb53b180ec4394101de7351d825b6901c92f"
+    },
+    {
+      "path": "PHASE12_15_OPERATIONAL_HARDENING_STATUS.md",
+      "size": 574,
+      "sha256": "4601a2fc47997d98f640439b9b1aa850ab4df57c47d5bb007c70ce05f32add0a"
+    },
+    {
+      "path": "PHASE12_16_RELEASE_ENGINEERING_STATUS.md",
+      "size": 508,
+      "sha256": "3d0bf725ee4b7501a7a048c6d3a9e1f7a01d9556f97d184e0a501683f1efbfaf"
+    },
+    {
+      "path": "PHASE12_1_DELIVERY_STATUS.md",
+      "size": 687,
+      "sha256": "8a93303d4248b8cec994ff8f160512e4ff03ddb64a35d0cbb1a5493368687b76"
+    },
+    {
+      "path": "PHASE12_2_DELIVERY_STATUS.md",
+      "size": 828,
+      "sha256": "4b35bad176c3b97c38936eef29e54b331d6793582eaba56f1908f713a4540508"
+    },
+    {
+      "path": "PHASE12_3_DELIVERY_STATUS.md",
+      "size": 517,
+      "sha256": "149ea25497c54bd89a19d49adf37ac6b0947ec335f0c66ca082af52feae9f006"
+    },
+    {
+      "path": "PHASE12_4_DELIVERY_STATUS.md",
+      "size": 775,
+      "sha256": "0bd63af067ef94b94993ced96736d3274291753d5d88c03e1b58b631d7447c51"
+    },
+    {
+      "path": "PHASE12_5_DELIVERY_STATUS.md",
+      "size": 657,
+      "sha256": "7c99d6ee2b5e0b4ddd1636d63d081c995f6bb15e09869bda90483e3b1aae6bdb"
+    },
+    {
+      "path": "PHASE12_6_DELIVERY_STATUS.md",
+      "size": 697,
+      "sha256": "0fb62436ad0403971989e355d71c9d5226b3caeb2455c32cd11a7485c61b562c"
+    },
+    {
+      "path": "PHASE12_TRUTH_ALIGNMENT.md",
+      "size": 450,
+      "sha256": "4b506ff4da1cb87a087cd1168f992bbfae80b7b41d9933259c264c4986dec1fc"
+    },
+    {
+      "path": "PHASE13_PLACEHOLDER_RECLASSIFICATION.md",
+      "size": 757,
+      "sha256": "7289ea564d909029099f49cb6959497c8119e5015af5eddbdb85c67839110078"
+    },
+    {
+      "path": "PLACEHOLDER_TRUTH_ALIGNMENT.md",
+      "size": 4850,
+      "sha256": "ddeab9f133ae1f2b225a92d17cdde39be1d79b9ff649f284dc01b24475a8f0c3"
+    },
+    {
+      "path": "PLACEHOLDER_TRUTH_INVENTORY.json",
+      "size": 2262,
+      "sha256": "26aabdb8ff5109c8dbeaed557c0f340dc677d945cea2bd82fc5483e469f9811d"
+    },
+    {
+      "path": "PLACEHOLDER_TRUTH_VALIDATION_2026-09-18.json",
+      "size": 2103,
+      "sha256": "6f8c2e9657b9bac7f67ff05871c9bc2b5ccd0da71abfae9c06f871b268c9a658"
+    },
+    {
+      "path": "PRODUCT.md",
+      "size": 5856,
+      "sha256": "34e9328e4b47e3b4ddf0899d80b948c02922795504f3fb8798d6c9730c0fddef"
+    },
+    {
+      "path": "PRODUCTION_VALIDATION_STATUS.md",
+      "size": 519,
+      "sha256": "e59a9c509f1f73749b9ef1b587140247adc42ea1da9b70904e2dd91d4565f8a5"
+    },
+    {
+      "path": "README.md",
+      "size": 41558,
+      "sha256": "759d30e51dbb7fc7b1ff2abe09d286c6e88f622bdeb622d5d6b417d1dd2ea33e"
+    },
+    {
+      "path": "RELEASE_BASELINE_STATUS.md",
+      "size": 568,
+      "sha256": "490f31d2c9415750ff27347cdb3671e9569f22db093b56e2e8bddad254db6de7"
+    },
+    {
+      "path": "RELEASE_CANDIDATE_STATUS.md",
+      "size": 440,
+      "sha256": "807b8cab7f90244c88516bee584908a2dbe154eaadf3c40b0692b879d86c68bb"
+    },
+    {
+      "path": "RELEASE_HANDOVER.md",
+      "size": 471,
+      "sha256": "d44b5799eb4ca2fe368bb8991d67f95d56e72edf4fb65541ebdb5427262121f7"
+    },
+    {
+      "path": "RELEASE_MANIFEST_INSTALLER_FIX.txt",
+      "size": 1909,
+      "sha256": "3c9f453d97e61fa0cca8e338b9fa15c87d6272790176d6eb2d45a4131fabf241"
+    },
+    {
+      "path": "ROADMAP.md",
+      "size": 10976,
+      "sha256": "86325c2c1abe70152d04128bfea2e644bbda533a2b0f13516d10cd2c5a721d60"
+    },
+    {
+      "path": "RUNTIME_HEALTH_HANDOFF.md",
+      "size": 510,
+      "sha256": "a1225f81fb1ed21411f43ab618be2a554c3c14a62a4234db3acb35f1cfff0a19"
+    },
+    {
+      "path": "SECURITY.md",
+      "size": 8305,
+      "sha256": "1b5dd532ee8970bfd57b3051a1092f9ab43752e4443a4ec9ef59d35951e6d9da"
+    },
+    {
+      "path": "SOC_CASE_WORKFLOW.md",
+      "size": 136,
+      "sha256": "bb2002785220f60f98e3517eba7cc137389399e7c435a615ac43caf684943950"
+    },
+    {
+      "path": "SOC_METRICS_DASHBOARD.md",
+      "size": 144,
+      "sha256": "ed34538ec567c947c3b05c1fc742e68b4983008bd07706c7b85e9d51e307897d"
+    },
+    {
+      "path": "SYSLOG-RELAY.md",
+      "size": 8159,
+      "sha256": "8fcbaf3a923b6fca904451125bae9828d39dc4c5ea5753ad63b3294347ed6a9f"
+    },
+    {
+      "path": "TESTING.md",
+      "size": 10751,
+      "sha256": "6bb930e91284e7b32c173f4a86b8f3bfd4830cc3c5f7b8e0c86501d17809a294"
+    },
+    {
+      "path": "TEST_STATUS_RECONCILIATION.md",
+      "size": 426,
+      "sha256": "961772f28ea8b7fb24996b83cc4fc4a60fc2c14fa4316f2e7ec7b2cbc82975a2"
+    },
+    {
+      "path": "ai_config_store.py",
+      "size": 3503,
+      "sha256": "a0667759c2483fa831270d95fe256f8f5161d66bb2044233d6dac2cc313c620e"
+    },
+    {
+      "path": "ai_secret.py",
+      "size": 3596,
+      "sha256": "6588cf32ca86db926fea0e6127015f2b9b9dd1d5cbf17755caee41a65b0c8374"
+    },
+    {
+      "path": "ai_soc.py",
+      "size": 46359,
+      "sha256": "9733644309e17bf3099174e007bb786ae98a8565007c4d6c4484e9199abdb07d"
+    },
+    {
+      "path": "ai_worker.py",
+      "size": 9199,
+      "sha256": "3c27cb2136e280390aabf93d97ed940df8278f31550993093b2724c6f8ea17e2"
+    },
+    {
+      "path": "alert_lifecycle/ALERT_AUDIT_EVENTS_REFERENCE.md",
+      "size": 117,
+      "sha256": "bcdd6e7b79f4811c2440d2c20d14deb0b953212060159c9f51412abcd4d28e9a"
+    },
+    {
+      "path": "alert_lifecycle/ALERT_LIFECYCLE.md",
+      "size": 191,
+      "sha256": "c24c9d5345d8909337133caf1622ec9f55e9a92af12ecf7ea0d91c985d228192"
+    },
+    {
+      "path": "alert_lifecycle/ALERT_MODEL_REFERENCE.md",
+      "size": 142,
+      "sha256": "5128365260f21c81404d1bb55a1a4c0ce1a2a9064c81d5502e4bfc54b43c3c66"
+    },
+    {
+      "path": "alert_lifecycle/ALERT_STATE_MACHINE_REFERENCE.md",
+      "size": 92,
+      "sha256": "164ca8116a4bc584a2be631fa5ee55195e2960b97c62a1a7455f9231a141a27b"
+    },
+    {
+      "path": "api_poller.py",
+      "size": 12476,
+      "sha256": "164aa0be2b6c35602a11741a387754be3c29d43d9cee5e4f239c525b939f3864"
+    },
+    {
+      "path": "archive.py",
+      "size": 24119,
+      "sha256": "db138075170be0340c8191bb134b8c7ea9633f4ba63873fe22f08d07fc53375f"
+    },
+    {
+      "path": "auth-config.json",
+      "size": 468,
+      "sha256": "5b55dfab182ebe2bb2ea09ea713adb0e8a1471b04a576e77d613739e1936e86b"
+    },
+    {
+      "path": "auth.py",
+      "size": 13882,
+      "sha256": "7c5f0ea46cc4a0ae163ad34f3aa4cf4b9724e60d08e61a380d82370292a6ec36"
+    },
+    {
+      "path": "backup_restore.py",
+      "size": 691,
+      "sha256": "3d51399aedcfc9d4bffaa669b9d763b6b8f76a15e8fb94707b318aa36850c5aa"
+    },
+    {
+      "path": "configure-db.py",
+      "size": 4174,
+      "sha256": "ffab1148979fd9801c7c94b443e683af75852aebc2e67c6169001e618f281532"
+    },
+    {
+      "path": "correlations.py",
+      "size": 32179,
+      "sha256": "b29398342e0d605f3458f434ff41666a8ed92d5ec28a9c31d4acba7cabab9863"
+    },
+    {
+      "path": "dashboard.py",
+      "size": 120492,
+      "sha256": "75e8ef5a8d402727d90c0ac7348833f2eba4b09a773a414513d37796ca11f70d"
+    },
+    {
+      "path": "db-config.json",
+      "size": 213,
+      "sha256": "eeb227398f780a44324530644b73c38113fef0765975bf8162ee9b95f5ed6d24"
+    },
+    {
+      "path": "db-maintenance.sh",
+      "size": 3576,
+      "sha256": "4b01cee8dfa72890da9a8b4a3050f8eb4cc0498a4352bde11a990980d6de6856"
+    },
+    {
+      "path": "db.py",
+      "size": 43540,
+      "sha256": "e187ae51dc1d9f1a78902fd425f4e58d87d0c6da6ff5e03ee99013dd7ea1bedb"
+    },
+    {
+      "path": "deployment/ACCEPTANCE_CHECKLIST.md",
+      "size": 285,
+      "sha256": "3fb3f23b87d25ec0f0de701ddabe9c7d5f91376b16cd4e769e3528ddfebc7af6"
+    },
+    {
+      "path": "deployment/DEPLOYMENT_VALIDATION_REPORT.md",
+      "size": 392,
+      "sha256": "d904565b8b067bdf94ed80fee04f5ada2422e0bab1dd365d2ae9bf7e2141c6c1"
+    },
+    {
+      "path": "deployment/ENVIRONMENT_PROFILE.json",
+      "size": 108,
+      "sha256": "52df641170b1a964e7ccce337feb8fe03ac59a2068cc01f735bf45099af529d5"
+    },
+    {
+      "path": "detection_rule_management/DETECTION_RULE_MANAGEMENT.md",
+      "size": 283,
+      "sha256": "4ff62db04c54418ed5557f68d362447f368dcc565a53e25d74ebfe5eaa4f81a9"
+    },
+    {
+      "path": "detection_rule_management/RULE_METRICS_REFERENCE.md",
+      "size": 131,
+      "sha256": "1b8c2689f87191e82bcd5c7ad3d470ea512d66bd16d17cd21f2aed47448b9457"
+    },
+    {
+      "path": "detection_rule_management/RULE_MODEL_REFERENCE.md",
+      "size": 195,
+      "sha256": "f0598e95b8a434fe0e5e0095db88cfdbde4106aedf14295fcd80799d3bef1e81"
+    },
+    {
+      "path": "detection_rule_management/RULE_TUNING_REFERENCE.md",
+      "size": 119,
+      "sha256": "573c347064a4912400fc6b9cda2ec11ee6b61ea009fbf796b6b101598d0ff9b3"
+    },
+    {
+      "path": "detection_rule_management/RULE_VERSIONING_REFERENCE.md",
+      "size": 148,
+      "sha256": "7c2079a384c5cbe0b73406b812220239bf502950b65529bbee562418d5d7cf4e"
+    },
+    {
+      "path": "detection_rule_management/rule_api_extension.md",
+      "size": 254,
+      "sha256": "cdddbb52ace07c3fcef150ac807bc67b6d63504e29602078072b13f4171c766b"
+    },
+    {
+      "path": "docs/ACTUAL_TABLE_WRITER_IMPLEMENTATION_PHASE.md",
+      "size": 656,
+      "sha256": "d516e7e9f556d89c7251739580e24e6125580fb4549fbd11d30263eb1c53c6ba"
+    },
+    {
+      "path": "docs/CONTROLLED_IMPORT_ENGINE_PHASE.md",
+      "size": 783,
+      "sha256": "116f92f8345dd98ad8dcb3ed4633a3de15278092b3d2ac4c93de89b8c65ada83"
+    },
+    {
+      "path": "docs/CONTROLLED_POSTGRES_MIGRATION_EXECUTION_PHASE.md",
+      "size": 777,
+      "sha256": "91f7ebe64f0dcdd8b05f919dc034059453808339f986dfbb00ed24a35f8525b1"
+    },
+    {
+      "path": "docs/CONTROLLED_POSTGRES_WRITE_EXECUTION_PHASE.md",
+      "size": 802,
+      "sha256": "11ee4dd675ca4ababfa180662869386cfb32d2afd3dfd9a0fa347464d4bbc70e"
+    },
+    {
+      "path": "docs/CONTROLLED_POSTGRES_WRITE_IMPORTER_PHASE.md",
+      "size": 797,
+      "sha256": "e2b4a73e5752fa5b2e01020aede327af329b332600ff2859c06d4e4b514635a8"
+    },
+    {
+      "path": "docs/CONTROLLED_TABLE_IMPORT_ENGINE_PHASE.md",
+      "size": 793,
+      "sha256": "6672bdd97c7aa0e6cb7cdb648fde44410fd087e7d9fb4a4a43bb65d4e5c67558"
+    },
+    {
+      "path": "docs/DATA_TRANSFER_VERIFICATION_PHASE.md",
+      "size": 586,
+      "sha256": "e5bf2cebbe7a208e87990b8cb8b81718196cc3a689e5fc62217c2ca3e6e2b5ae"
+    },
+    {
+      "path": "docs/INDIVIDUAL_POSTGRES_WRITERS_PHASE.md",
+      "size": 763,
+      "sha256": "595d3681ebd3823863630cca3f709ad79096e719bd85ea1eb866694dea2f9f4d"
+    },
+    {
+      "path": "docs/MIGRATION_COMPLETION_VERIFICATION_CUTOVER_PHASE.md",
+      "size": 915,
+      "sha256": "b79fcad0a8c766c48ea4406a3ea5b123b62a307b27b3edb37d6381c63217587c"
+    },
+    {
+      "path": "docs/MIGRATION_DRY_RUN_ENGINE_PHASE.md",
+      "size": 617,
+      "sha256": "ee7e1f3046d9b7b9321cf247405412bdb21845a5a4661a716c3c833a2762bd23"
+    },
+    {
+      "path": "docs/MIGRATION_FINAL_RELEASE_PHASE.md",
+      "size": 636,
+      "sha256": "92e71752747ea1822f800daf67d69820f7b7a459c0c86eeb747d878cfb424b85"
+    },
+    {
+      "path": "docs/MIGRATION_VALIDATION_GATE_PHASE.md",
+      "size": 752,
+      "sha256": "78cd14ba7cada5170509a17ca9c30c30229465a237db45f3ac0392f30945a97b"
+    },
+    {
+      "path": "docs/POSTGRESQL_ADVANCED_RELIABILITY_HA_PREPARATION_PHASE.md",
+      "size": 931,
+      "sha256": "1bc3ef74303112c68a90c73fa0b8ba3ee70963a17222064d5523e34a205acbb1"
+    },
+    {
+      "path": "docs/POSTGRESQL_DATA_MIGRATION_PLAN.md",
+      "size": 755,
+      "sha256": "af4da28cdbced8f73e694aa9e39877c92582d6f8ffb43d6d25b6d9c40bf0fc13"
+    },
+    {
+      "path": "docs/POSTGRESQL_ENTERPRISE_OPERATIONS_BASELINE_PHASE.md",
+      "size": 870,
+      "sha256": "b3a929e2bcbec00572a79333530f2e87d5dd0918f085793bd921b45bc6b61ec5"
+    },
+    {
+      "path": "docs/POSTGRESQL_LIFECYCLE_HARDENING_NOTES.md",
+      "size": 1001,
+      "sha256": "c909fd41cf0b1e85a3ed5b129f648c47a2eacbbb4ab53974fd5ca5cde4ef0766"
+    },
+    {
+      "path": "docs/POSTGRESQL_MIGRATION_MAPPING_PHASE.md",
+      "size": 817,
+      "sha256": "8fd3aec524be05fe30d77c0ec5935e3ddd745d91a30855664b4b684394df111b"
+    },
+    {
+      "path": "docs/POSTGRESQL_OPERATIONAL_AUTOMATION_PHASE.md",
+      "size": 856,
+      "sha256": "0b298db83218995cdc763b7bc3c0cd1e793ecf82f253a911c1b8da864ae647cf"
+    },
+    {
+      "path": "docs/POSTGRESQL_PERFORMANCE_SCALING_HARDENING_PHASE.md",
+      "size": 815,
+      "sha256": "49ff5a88288b115143dd4510652b5c46d44a009505e22ccb01a3101a4adda882"
+    },
+    {
+      "path": "docs/POSTGRESQL_PRODUCTION_READY_V1_PHASE.md",
+      "size": 906,
+      "sha256": "e468dc16d8bf9b36443bd0f3d8a4857cb935a757a68f4e6d81c4cadae2bb3cd0"
+    },
+    {
+      "path": "docs/POSTGRESQL_RUNTIME_HARDENING_PHASE.md",
+      "size": 785,
+      "sha256": "a36cf1a97a979ea4e3848ef05ae09c1712bbf19ae815e943f4a4d22faac14d46"
+    },
+    {
+      "path": "docs/POSTGRESQL_TRANSACTIONAL_IMPORT_PHASE.md",
+      "size": 679,
+      "sha256": "1aa07ef0c7228dbe5cd65a6fb14d0ec490acb8427f223fe3a59b5d63c07469dd"
+    },
+    {
+      "path": "docs/POSTGRES_DATA_TRANSFER_EXECUTION_PHASE.md",
+      "size": 740,
+      "sha256": "b0ed118ae19e9a3b13830927e9311b464862f33cc9255d5b1b4247581cdeecf5"
+    },
+    {
+      "path": "docs/POSTGRES_MIGRATION_RUNBOOK_PHASE.md",
+      "size": 683,
+      "sha256": "bb7d5b314b246ae120b58b840e4df86e90fae3909bebcac2479598d5e838ffdf"
+    },
+    {
+      "path": "docs/POSTGRES_READ_VALIDATION_UNLOCK_PHASE.md",
+      "size": 666,
+      "sha256": "0b593c49d83a1f3a8b3608e9827e6360ef0c2cd175f4bff33e2456cce71c6586"
+    },
+    {
+      "path": "docs/POST_MIGRATION_HARDENING_RECOVERY_VALIDATION_PHASE.md",
+      "size": 753,
+      "sha256": "eb69aeeef2cd61619512fc3ad1bd40de12db1accf9d3ee8f8ac977ec4138d48f"
+    },
+    {
+      "path": "docs/PRODUCTION_MIGRATION_FINALIZATION_PHASE.md",
+      "size": 749,
+      "sha256": "8b5bb74fc8abba13bd1181cfe98a6aa94faaaeca2e08183a01d1b8746b8f9b4f"
+    },
+    {
+      "path": "docs/REAL_MIGRATION_TRANSACTION_EXECUTION_PHASE.md",
+      "size": 729,
+      "sha256": "e729c3e704ea38d5023ee39b6d5a7e83102e290b12c8e308e2d694b23c9eb067"
+    },
+    {
+      "path": "docs/REAL_POSTGRES_WRITER_ACTIVATION_PHASE.md",
+      "size": 731,
+      "sha256": "295694578ef5401579ed9c012887cd8d1cbb2efa651d198a2ce3468370002add"
+    },
+    {
+      "path": "docs/TRANSACTIONAL_IMPORT_VERIFICATION_PHASE.md",
+      "size": 552,
+      "sha256": "3dfa6dcb547a98c0f2b24d1a49d7284e8d2fa9817a25ac0c9c24f260a8ee41c9"
+    },
+    {
+      "path": "docs/VALIDATED_POSTGRES_TABLE_WRITER_PHASE.md",
+      "size": 837,
+      "sha256": "b6ae10d5342c1e9bdda6fc7b6c468fcc59bd22cfd24e8a979d96622bfd2c865c"
+    },
+    {
+      "path": "docs/placeholder_archive/MIGRATION_AND_RELEASE_TOOL_SCAFFOLDS.md",
+      "size": 6198,
+      "sha256": "6c957d8d24e420217ef1cb7e14108ba08ad213f37b2c433f2902ce0c431af44e"
+    },
+    {
+      "path": "entity_context_intelligence/ENTITY_CONTEXT_MODEL.md",
+      "size": 301,
+      "sha256": "6d57a3ab0e89209dadfcdfe1387349c59101fd30f980ffc69beb5879f9eaef49"
+    },
+    {
+      "path": "entity_context_intelligence/ENTITY_MODEL_REFERENCE.md",
+      "size": 205,
+      "sha256": "2839984cd859a85f1cc518fa4736620449b09b421734cd2a4c9206b1e33c237f"
+    },
+    {
+      "path": "entity_context_intelligence/RELATIONSHIP_MODEL_REFERENCE.md",
+      "size": 122,
+      "sha256": "9fa228c101bc795ac74459d7496746393dadfffa438b678f455f8dc77c36f58d"
+    },
+    {
+      "path": "entity_context_intelligence/RISK_CONTEXT_REFERENCE.md",
+      "size": 136,
+      "sha256": "11ef806eb09507c6aec10913e9c2742621abd9e7487a2de0596ff6229879e3d5"
+    },
+    {
+      "path": "entity_context_intelligence/entity_api_extension.md",
+      "size": 269,
+      "sha256": "3a4371126bb5dd2c235377c2388846163092cb28da8aed55435e494efb4b2790"
+    },
+    {
+      "path": "final_release_candidate/CAPABILITY_STATUS.md",
+      "size": 488,
+      "sha256": "f0128f90cb7dace27736d4f7a77b7b31cbd5ead422c7f1585358902afaceb0c6"
+    },
+    {
+      "path": "final_release_candidate/COMPONENT_MATRIX.md",
+      "size": 826,
+      "sha256": "138c018ffee2e870c988e4aabda7f1ea10666e6f334e67c2230c261b218a05ab"
+    },
+    {
+      "path": "final_release_candidate/DELIVERY_CHECKLIST.md",
+      "size": 431,
+      "sha256": "d6f7b78c6e2a5b22186204b028cfbf9428fde14251b25c94a0533bf60cd8b028"
+    },
+    {
+      "path": "final_release_candidate/KNOWN_LIMITATIONS.md",
+      "size": 425,
+      "sha256": "0bbedb57df20ceb6f1752767d3796034d5de32cb24a92576abc792b7bdb0b2c0"
+    },
+    {
+      "path": "final_release_candidate/RELEASE_CANDIDATE.md",
+      "size": 648,
+      "sha256": "405ef6ea90cfab9ebc017f77b21213109dd239a5e2df02946bda4d58d46c74e8"
+    },
+    {
+      "path": "forwarder.py",
+      "size": 13731,
+      "sha256": "62c54611ebd954e94b98b38cfa01f18ad33e58ea3d63e67dc93b2226bfcf45dc"
+    },
+    {
+      "path": "handover/ADMIN_GUIDE.md",
+      "size": 57,
+      "sha256": "0de967d7c5828c608e5f26b9ce5f2ab06a0df3800084711fc051190b9e5051b8"
+    },
+    {
+      "path": "handover/BACKUP_RECOVERY_GUIDE.md",
+      "size": 55,
+      "sha256": "26a206eac261f5e6e29c55fba5d5e608d105513e990ae1a26347f4fb4b80c31e"
+    },
+    {
+      "path": "handover/INCIDENT_GUIDE.md",
+      "size": 46,
+      "sha256": "800a5f8a176428fde4640808bf42b833efc8d5b9a3adea1a475a118f24b2cfc3"
+    },
+    {
+      "path": "handover/OPERATIONS_GUIDE.md",
+      "size": 64,
+      "sha256": "e397e53d7243a3233a452270b7cefbc9376c5a06ad7ea87acfd29d7d3c3e7124"
+    },
+    {
+      "path": "handover/SYSTEM_OVERVIEW.md",
+      "size": 49,
+      "sha256": "17cfcc5620054c00aaa32e0fa19d361d146feb2a08e34be91db327fbde7fa74b"
+    },
+    {
+      "path": "handover/TROUBLESHOOTING_GUIDE.md",
+      "size": 64,
+      "sha256": "515e92af35317f207c799d9219b36d03df7f32c35effafe754e126fb3f58ec76"
+    },
+    {
+      "path": "health.py",
+      "size": 8380,
+      "sha256": "f17f7e65a5b41e160f3020ec8fb85331cd8e56a3e9a684cc1dcab70b8775eff5"
+    },
+    {
+      "path": "install-service.sh",
+      "size": 2772,
+      "sha256": "304a10eb54c97b5a3351e364fed6f09ff1a72b5a747360fbbd3be9d878dcff74"
+    },
+    {
+      "path": "install-services.sh",
+      "size": 26687,
+      "sha256": "5837b882eba27fb49acc45e58dabe645d081500dc012cc19ae0a313120490c1d"
+    },
+    {
+      "path": "integrations/__init__.py",
+      "size": 75,
+      "sha256": "dedeb793cca865cfd374405f0ccb9a34760a548b856218a26f18a056a0aeb9af"
+    },
+    {
+      "path": "integrations/sophos_poller_bundle/INTEGRATION.md",
+      "size": 6044,
+      "sha256": "733680f64e2c893251684b083714e885f4830667ba76df7e2156ec4a8f35c368"
+    },
+    {
+      "path": "integrations/sophos_poller_bundle/__init__.py",
+      "size": 122,
+      "sha256": "bae5bbe222e8ffad1fe16aa1ff4db4f99cbfb83bf5ff47b1b5642e47729d1292"
+    },
+    {
+      "path": "integrations/sophos_poller_bundle/api_poller.py",
+      "size": 12630,
+      "sha256": "30abee972e8f7506a6eb72b95068bb4f1cba8471a295b09d9e5018dc5dc06d75"
+    },
+    {
+      "path": "integrations/sophos_poller_bundle/integration_example.py",
+      "size": 2120,
+      "sha256": "d97ccb66cb0be67f71b986c6caa8562bc34eb3bfa5778e6e6550190ecdbb1813"
+    },
+    {
+      "path": "integrations/sophos_poller_bundle/schema.postgresql.sql",
+      "size": 951,
+      "sha256": "6a3c4e89772c0128b2bd05c2772b2be5802eecf7228738cce0ec98c69bfb6958"
+    },
+    {
+      "path": "integrations/sophos_poller_bundle/schema.sqlite.sql",
+      "size": 963,
+      "sha256": "fec7c3d8a7e5a9670b26b6b27ff5260fa4931e107d48911ff0ea410fca19a98b"
+    },
+    {
+      "path": "integrations/sophos_poller_bundle/sophos-poller.example.json",
+      "size": 460,
+      "sha256": "44a72a2a44168d866acf07c1b5853f0846c0d6689d9977084626c3e490a5156c"
+    },
+    {
+      "path": "integrations/sophos_poller_bundle/test_bundle.py",
+      "size": 3132,
+      "sha256": "0d9e9e9de672cf992234fc1668e209be3b9f2408dc44e70e29eb3854a03cf639"
+    },
+    {
+      "path": "integrations/sophos_poller_bundle.zip",
+      "size": 11386,
+      "sha256": "e40388cb2284d3547c3d2c3b2b0f742d2a9efb6323f379ba48bd1f661e737542"
+    },
+    {
+      "path": "investigation_profiles.py",
+      "size": 5544,
+      "sha256": "11b4405d8ec56e737ebf5cd5535d11504dfb8274dece10e9fe8392c1505194e9"
+    },
+    {
+      "path": "investigation_workspace/ENTITY_CONTEXT_REFERENCE.md",
+      "size": 97,
+      "sha256": "333a7328a344dbdc7b6b0cbddda961122fc2b1209ed694501269f99b6e7887cb"
+    },
+    {
+      "path": "investigation_workspace/EVIDENCE_REFERENCE.md",
+      "size": 87,
+      "sha256": "b50d081dc87951df840ac73fd275f7af2855e6a8d74090d45463af8d07884899"
+    },
+    {
+      "path": "investigation_workspace/INVESTIGATION_MODEL_REFERENCE.md",
+      "size": 175,
+      "sha256": "b46d3913763e96ba1e99d909f7509f2e2e46b23dc9a59e473bffe1b78d176b45"
+    },
+    {
+      "path": "investigation_workspace/INVESTIGATION_WORKSPACE.md",
+      "size": 338,
+      "sha256": "2c9288dd054034adab1128d059b6794e77babe834c900aa85b5c2d98cd87655d"
+    },
+    {
+      "path": "investigation_workspace/investigation_api_extension.md",
+      "size": 269,
+      "sha256": "bcd9759af1c979ecbc4be755340cda3b91c0c6f6dbbd284b44e97e76c274e7ed"
+    },
+    {
+      "path": "linux_agent/README.md",
+      "size": 4276,
+      "sha256": "ebd37af9fbc62777a7bc9474130de27494adc3ba36f23427b0a76af4ae1be8fb"
+    },
+    {
+      "path": "linux_agent/agent-config.json",
+      "size": 566,
+      "sha256": "af799e6fb8da5486034dc8f90e8d7a4d7ec88cd927f5e57fddd5510fa4317e94"
+    },
+    {
+      "path": "linux_agent/install-linux-agent.sh",
+      "size": 5384,
+      "sha256": "dff365ef2bfdcc4cf50c18fdc2532fc74317ba97219fdbc4d9faa86363dc1d85"
+    },
+    {
+      "path": "linux_agent/minisiem-agent.py",
+      "size": 17473,
+      "sha256": "0df16f5db46c8684c0199f8917b13285767328969f6baa0c0f8a7ae873b86181"
+    },
+    {
+      "path": "listener.py",
+      "size": 37896,
+      "sha256": "62997f55dde83dd6a1da906abc9a126f5c9ef58ed09dc4ec69865e32aa168b4e"
+    },
+    {
+      "path": "maintenance.py",
+      "size": 8270,
+      "sha256": "84908a1a729b20e2738fa50d128d24eeb91c6faf66192204f7bc73ab42988507"
+    },
+    {
+      "path": "normalize.py",
+      "size": 8853,
+      "sha256": "cfd057af0a4b781ea593ad30e2cae5c073038c03eac8e925a18a7ddfa6f16ad4"
+    },
+    {
+      "path": "operational_diagnostics.py",
+      "size": 15463,
+      "sha256": "e35d2098bd3fa56bfda5ecd2fb3e6ba3a06e0fbeca3010de1be05201563f1a4d"
+    },
+    {
+      "path": "operational_hardening/LOGGING_STANDARD.md",
+      "size": 272,
+      "sha256": "a81770a20a470f39fa86056955ac4833e9f9f06af139d56bc88d83571a18de7b"
+    },
+    {
+      "path": "operational_hardening/audit_events.py",
+      "size": 123,
+      "sha256": "724c58893405c958fa6730670934b9e493c8b9f33e60f7d4eec1a8ebc82f6d64"
+    },
+    {
+      "path": "operational_hardening/config_validation.py",
+      "size": 95,
+      "sha256": "02a6b74e848e9886f37da63d0f7224cc3d3b607375940534b58526c008cbd6f8"
+    },
+    {
+      "path": "operational_hardening/error_handling.py",
+      "size": 147,
+      "sha256": "3a866e8d4c613361067afe97f38e0ce042fa1fac3f0f2f3c4817cb7583810f5e"
+    },
+    {
+      "path": "operational_hardening/runtime_diagnostics.py",
+      "size": 110,
+      "sha256": "5f156a6b94692c1290f11eaa4379c005c41b6e70ad16283be3b3591b92059eb6"
+    },
+    {
+      "path": "operations/DAILY_OPERATIONS.md",
+      "size": 148,
+      "sha256": "d680d6a50a4c767f818b6d719f6ffcd63f5f81def05578acf79777e964ae3cd9"
+    },
+    {
+      "path": "operations/ESCALATION_GUIDE.md",
+      "size": 91,
+      "sha256": "c54d9f0c0174378072365a69aff37faad2bc3870e31fdc4b409e736a48d1018c"
+    },
+    {
+      "path": "operations/INCIDENT_RESPONSE.md",
+      "size": 113,
+      "sha256": "f1ea1333a824405e0b798ccaf65144028794fc084540003eb30abf1cdd64ead1"
+    },
+    {
+      "path": "operations/MAINTENANCE_PROCEDURES.md",
+      "size": 97,
+      "sha256": "371e1ef85a6354ba895cf1924fe4f5f7a23a923a06adb0fff6bda7793ccf297d"
+    },
+    {
+      "path": "operations/OPERATIONS_ACCEPTANCE_CHECKLIST.md",
+      "size": 216,
+      "sha256": "df43212f7e25b6392cfa9a3a683cf9fe821b9d8987e2d76671da033ab8cf2b89"
+    },
+    {
+      "path": "patch.md",
+      "size": 33099,
+      "sha256": "b31c988f3d280f6b07ae4b8532c1ba80774c5aa8d9dad9c9934010dec0acb8ae"
+    },
+    {
+      "path": "performance/README.md",
+      "size": 485,
+      "sha256": "723aa8bcb9f3399cf1ae98d6f9a7be393eaf25f6b47144531c6ce0a122e998c0"
+    },
+    {
+      "path": "performance/archive/ARCHIVE_BENCHMARK_CONTRACT.md",
+      "size": 423,
+      "sha256": "a51fa9dd6ace15bcda98e766087a7b71256e07fec78002d3a43dc60b4db886d2"
+    },
+    {
+      "path": "performance/benchmark_config.yaml",
+      "size": 93,
+      "sha256": "f935b53a549c4471f79607facbbbfd6b84e0a75c26aed01173630c7b830aa711"
+    },
+    {
+      "path": "performance/collectors/metrics.py",
+      "size": 186,
+      "sha256": "d64680ea6d23dd2764cda12be8fa9ed35ef194bd2b57425f625d1221ee41d568"
+    },
+    {
+      "path": "performance/ingest/INGEST_BENCHMARK_CONTRACT.md",
+      "size": 452,
+      "sha256": "872feec701bd4f7d51dbdc1a7c139e3aeabc5d7ee810e4096ff3d34d556a4f4e"
+    },
+    {
+      "path": "performance/query/QUERY_BENCHMARK_CONTRACT.md",
+      "size": 432,
+      "sha256": "428dba9018f04479a6b6bac8cf2efa579b4983cb123c01d469b1da3dcc0ad3dd"
+    },
+    {
+      "path": "performance_runtime/benchmark.py",
+      "size": 234,
+      "sha256": "9cb71b4311e2b9035b1655be0a4455b4eb56051c1a464d980527fccbf935c959"
+    },
+    {
+      "path": "performance_runtime_v2/benchmark_runner.py",
+      "size": 253,
+      "sha256": "27f304803f414779743df580922e2d8666eaaf4a12e4fab97fdf8226736bea3c"
+    },
+    {
+      "path": "phase12_truth_alignment/PERFORMANCE_STATUS.md",
+      "size": 462,
+      "sha256": "2954f051c4313508fb84e0d28871261d37dcacc44c81e23207245b5ba8481273"
+    },
+    {
+      "path": "phase12_truth_alignment/PHASE12_CAPABILITY_AUDIT.md",
+      "size": 983,
+      "sha256": "30a67ebb5e9a83fba154769ebe6669e5542aeb84b5433fd83e06db1bcdbe3435"
+    },
+    {
+      "path": "phase12_truth_alignment/PHASE12_STATUS_RECONCILIATION.md",
+      "size": 586,
+      "sha256": "561412389d55a17ad948a49cd19420bbe4edf6fd2bad6f6e5f71fd0554463e05"
+    },
+    {
+      "path": "phase12_truth_alignment/RESILIENCE_STATUS.md",
+      "size": 481,
+      "sha256": "eabb97ec7505322a080c9b3e4a45db7782dff82e4ab2ba82a3ff3926fd4ae292"
+    },
+    {
+      "path": "phase12_truth_alignment/SECURITY_STATUS.md",
+      "size": 568,
+      "sha256": "932ad23d1f93cbd06ee730c1ee9e499f75e224129106d166e7b694e952e6add2"
+    },
+    {
+      "path": "phase12_truth_alignment/TEST_STATUS_RECONCILIATION.md",
+      "size": 539,
+      "sha256": "bcbfd4d900c6276214b3be39b69ca72b741af5f1653376c073a9302eca72337d"
+    },
+    {
+      "path": "profiles.py",
+      "size": 6436,
+      "sha256": "8eb44ec3a2465c52c7f62f2867a69a0ae4f0da93a69380568959b5e783172b96"
+    },
+    {
+      "path": "qualification_evidence/BENCHMARK_PLAN.md",
+      "size": 232,
+      "sha256": "ac32510724975a2bbe078c0e7a1410b8dd7074a2413ca982aadee4fbf2bb64c2"
+    },
+    {
+      "path": "qualification_evidence/HEALTH_CHECK_EVIDENCE.md",
+      "size": 143,
+      "sha256": "214afa965ee8cf16e4369deb58a267fe77b6db70f4814719dc1db0ed432d3b35"
+    },
+    {
+      "path": "qualification_evidence/QUALIFICATION_EVIDENCE.md",
+      "size": 310,
+      "sha256": "55d5c370ccc32637e2d31204294f0aec062ba8f5cdf5c2ea8ce5fbb740327269"
+    },
+    {
+      "path": "qualification_evidence/QUALIFICATION_MATRIX.md",
+      "size": 164,
+      "sha256": "7251f7b3dfc51d0c8bbd6d16b3f254507b409af6acd5296b6ec188124aecf9d2"
+    },
+    {
+      "path": "qualification_evidence/RBAC_EVIDENCE.md",
+      "size": 201,
+      "sha256": "7522ac204acf93b326efa51787a38a81d687a0ea61630cbe07147806c00dbe28"
+    },
+    {
+      "path": "qualification_evidence/SECRET_HANDLING_EVIDENCE.md",
+      "size": 194,
+      "sha256": "4e4a0edd1ef9d10d478f8078dd4af6e56c3b1dafb8b999d28a321fe14d5bba84"
+    },
+    {
+      "path": "qualification_evidence/TENANT_ISOLATION_EVIDENCE.md",
+      "size": 198,
+      "sha256": "11cf241ed1e67bc80c8172dc90cc56964815b3fdba977f86008680b66d1901f7"
+    },
+    {
+      "path": "release/HANDOVER_PACKAGE.md",
+      "size": 409,
+      "sha256": "628f9b0943c6cdd6185569efae11630fd22904e30315d3f3c07f113e4ca97a77"
+    },
+    {
+      "path": "release/KNOWN_LIMITATIONS.md",
+      "size": 411,
+      "sha256": "4157ac67ea851076357cb49a6c7e6f9ef0249a567dc150ae42d686bc1021d60e"
+    },
+    {
+      "path": "release/RELEASE_ACCEPTANCE_CHECKLIST.md",
+      "size": 482,
+      "sha256": "415f3b0925bdda032484213769cbdf135a9bbf575eb761c0ffe7d164ff51e611"
+    },
+    {
+      "path": "release/RELEASE_APPROVAL_RECORD.md",
+      "size": 408,
+      "sha256": "790e504987645e0441c0204da095a45748d18ecde343a86665d7a75a0115ce74"
+    },
+    {
+      "path": "release/RELEASE_CHECKLIST.md",
+      "size": 655,
+      "sha256": "0501c3b3645f9ff55b1ba9b9cb4bc4a0db7426999edf97cd910c4bb0772412c1"
+    },
+    {
+      "path": "release/RELEASE_NOTES.md",
+      "size": 419,
+      "sha256": "738aba2493449b0a552583a15e49c61159145402a46fedb9065603ad6830826d"
+    },
+    {
+      "path": "release/VERSION.json",
+      "size": 179,
+      "sha256": "09ce2f0e08d882703c54f59ab2e389791cc6ce06d0a9e073f2bc7d39577e9177"
+    },
+    {
+      "path": "release_engineering/CHANGELOG.md",
+      "size": 449,
+      "sha256": "de7e654063bbe11a9dceb6c58d7876c94260f67f100586e8c948d7798d410e43"
+    },
+    {
+      "path": "release_engineering/RELEASE_CHECKLIST.md",
+      "size": 428,
+      "sha256": "00746317b0b2f0b96aca9825b40633a2599b753622940a6d34fcf9048c7a0565"
+    },
+    {
+      "path": "release_engineering/RELEASE_MANIFEST.json",
+      "size": 895,
+      "sha256": "4b1d111d7338ba650f6be2cfa4d1db87a25b8efb8e9cd52f911a90d0788dc8b0"
+    },
+    {
+      "path": "release_engineering/VERSION.json",
+      "size": 110,
+      "sha256": "984b61b6aa32b773f25e5feb3279e7d23b118c0cbd166b5de4d799c5df989fe2"
+    },
+    {
+      "path": "release_engineering/artifact_provenance.py",
+      "size": 184,
+      "sha256": "0cd4084ba3adffd41f1a3518615447bb9c12c0fd29a1b0bab6b30980c0bc7a1e"
+    },
+    {
+      "path": "release_engineering/release_gate.py",
+      "size": 168,
+      "sha256": "636e0895c48771f2c4b7965014e13e159b7b1cc05bba05c48e1a10cd9ddf9fbb"
+    },
+    {
+      "path": "release_engineering/upgrade_assurance.md",
+      "size": 375,
+      "sha256": "cd4917e785099f5fe5356de418b5a8e122b0ba2cb093cc36180f29b796862d0c"
+    },
+    {
+      "path": "requirements-dev.txt",
+      "size": 37,
+      "sha256": "62cc9560e23208ea92bf1665c48e381b29b03dd69e89a88e8a1978dd3953767d"
+    },
+    {
+      "path": "requirements.txt",
+      "size": 455,
+      "sha256": "305639b006ade7a4690da70d29e4a93cd1d6629dc074f169fe5435735d059b94"
+    },
+    {
+      "path": "resilience/HEALTH_COLLECTOR_CONTRACT.md",
+      "size": 463,
+      "sha256": "8993c7aa082f1ae5df6d4eed3fb94a8f10959aecde159b06f77b5f61cdfd68c4"
+    },
+    {
+      "path": "resilience/README.md",
+      "size": 509,
+      "sha256": "ba567a5bf445f453b6671eb114781d8a47fc4e48ac5927f273240086a9c8d4ee"
+    },
+    {
+      "path": "resilience/RESILIENCE_REPORT_CONTRACT.md",
+      "size": 403,
+      "sha256": "21a64b1700d607bcf92bc261f6575a71a2dcf8ae009795b582f2c078722cc8ac"
+    },
+    {
+      "path": "resilience/failure_scenarios.yaml",
+      "size": 362,
+      "sha256": "461554a7fc35a829e91a91417e600b73457e1eef92d30d85af8e457be1e54bc4"
+    },
+    {
+      "path": "resilience/recovery_checklist.md",
+      "size": 178,
+      "sha256": "d503ec4dc82c35b2cbd159e4d8f319d9a76ec7b6c48d29c1f82c91aadcb2ba5e"
+    },
+    {
+      "path": "resilience_runtime/health_collector.py",
+      "size": 361,
+      "sha256": "ae11ef17476732de6f47d7c386b6c47df8839b4fa7e362ae389c1be5d2d57461"
+    },
+    {
+      "path": "resilience_runtime_v2/health_engine.py",
+      "size": 167,
+      "sha256": "720cd6848fbeb6575eb961c2c25f03da3ab8468d26d648923a21310516a34448"
+    },
+    {
+      "path": "rules.py",
+      "size": 7233,
+      "sha256": "43feb4984b4675cd3a46736ce4507f9913219cf271e155c36fdc95837b6e9ac9"
+    },
+    {
+      "path": "runtime_health.py",
+      "size": 4079,
+      "sha256": "ff5e7544ab2e4bb190e103961699fcff58c3cbd14ef6463e65b3e7e017ad3faf"
+    },
+    {
+      "path": "secretbox.py",
+      "size": 3418,
+      "sha256": "79bf4452d25ce89dc6904da4c394792e300cb5964d7039ff287e1b9ee1687139"
+    },
+    {
+      "path": "security/README.md",
+      "size": 526,
+      "sha256": "1e77beaa6294744cc138eae8841071878678972275f53c1c4ead67141ead0e9c"
+    },
+    {
+      "path": "security/controls/RBAC_QUALIFICATION_CONTRACT.md",
+      "size": 466,
+      "sha256": "b90e8a313e2715f01fac77c11fdc6cee1c0edc276fc35de05d0b87b8a0932259"
+    },
+    {
+      "path": "security/controls/database.py",
+      "size": 149,
+      "sha256": "ed120be06017185b6f8462d148e976137f4f92901b5d4cf6c8256598ba47992b"
+    },
+    {
+      "path": "security/controls/secrets.py",
+      "size": 135,
+      "sha256": "a0c7291cbebcefd7bfdf448e50c9a11b4c4755d4ef06313df4b475f37433fb51"
+    },
+    {
+      "path": "security/controls/tenant.py",
+      "size": 107,
+      "sha256": "22a0bb48a3ff721724596cfe1900c3ea4b5fad122e0615d0ef87ed306a22dd33"
+    },
+    {
+      "path": "security/reports/security_report.py",
+      "size": 125,
+      "sha256": "7712bc7953e1b8eef92215a12d2e65622ec2e3e6090dbb50e6e2e240dc35478f"
+    },
+    {
+      "path": "security/scanners/artifact_scan.py",
+      "size": 103,
+      "sha256": "22a6722052e95c865d6c42835e49b723f40a8e1faa675bf1c82f86ec85906373"
+    },
+    {
+      "path": "security/security_checklist.yaml",
+      "size": 130,
+      "sha256": "66adc607b771c518db30fabe23c4ce6f25c32a9a034d2f098690b2a6b66e7c60"
+    },
+    {
+      "path": "security_dynamic_scan.py",
+      "size": 10079,
+      "sha256": "209d0b1179fc2c0b5eaf5a83c8e1c0f291046c0534291873c6550338dfb51cd8"
+    },
+    {
+      "path": "security_runtime/authorization.py",
+      "size": 295,
+      "sha256": "a6a8d265dbee5ed9e891c34f47f758072bc1980c49617e8a228086262a02909e"
+    },
+    {
+      "path": "security_runtime/redaction.py",
+      "size": 205,
+      "sha256": "0e51fe8d31bb788bb464a23d83dbc34a45d13f5b32c0a7f993c9110c10e96876"
+    },
+    {
+      "path": "security_runtime/tenant_guard.py",
+      "size": 134,
+      "sha256": "6fddd4bce6ba58de4e0ed6f3b6f0acfdcdba7725b767c0b48498c29ab10b997c"
+    },
+    {
+      "path": "security_runtime_v2/rbac_engine.py",
+      "size": 268,
+      "sha256": "7ab6882ec77be7b18eec64dd25326fc1b129c8a20fa6f007c280ac1efffbedab"
+    },
+    {
+      "path": "security_runtime_v2/secret_pipeline.py",
+      "size": 278,
+      "sha256": "41d99062ab4b603d0f7fe514f986aff3412a1e3e4ac0264eae29db4d233dc72e"
+    },
+    {
+      "path": "security_runtime_v2/tenant_enforcement.py",
+      "size": 205,
+      "sha256": "1326b365fea5f689864230cef4108378dc88d7736f1382ffe08975b3d845c5a8"
+    },
+    {
+      "path": "security_static_scan.py",
+      "size": 8105,
+      "sha256": "9c30aebe72a1968c3fb0db7eb224be97c42b9acf6cb8cb4223df1a6008eaf9da"
+    },
+    {
+      "path": "severity.py",
+      "size": 2915,
+      "sha256": "2fc143843e26a0cd801749661d9cabedd4d094ba6e0b99b5ff483342a6b2f194"
+    },
+    {
+      "path": "siem.py",
+      "size": 5967,
+      "sha256": "b7542366ead0774676d292370d9df483554c2c2242a4d1de32ed3755ae289c02"
+    },
+    {
+      "path": "soc_case_management/SOC_CASE_WORKFLOW.md",
+      "size": 273,
+      "sha256": "30b0686c6dc502c0f1fd46b89bf87aa63d1c24850e06ca7b598ef3ffd89e1bc9"
+    },
+    {
+      "path": "soc_case_management/TICKET_MODEL_REFERENCE.md",
+      "size": 250,
+      "sha256": "e5e50596bbf9bc6955627b9fe685e26c304900b581fe2cf26f72ed92125bb91b"
+    },
+    {
+      "path": "soc_case_management/TICKET_TIMELINE_REFERENCE.md",
+      "size": 153,
+      "sha256": "cc0271fdadce9f5398b7fd65128fd77acdbc073bea1772852129162cc4bc5451"
+    },
+    {
+      "path": "soc_case_management/ticket_api_extension.md",
+      "size": 170,
+      "sha256": "446133bcff62e8a7df77067d6f54fa8c82f4d1f976965d150c69f22f6c02d8c8"
+    },
+    {
+      "path": "soc_metrics_dashboard/ALERT_METRICS_REFERENCE.md",
+      "size": 120,
+      "sha256": "4b2a7c0a4f7223edba2959fde1fc2f756ba19ff214f8763b60d3a0c23ce7860a"
+    },
+    {
+      "path": "soc_metrics_dashboard/CASE_METRICS_REFERENCE.md",
+      "size": 104,
+      "sha256": "9abb0ea40408d58d6d6975aed884f054e4a2d65110e98fab7b3291058c5963d9"
+    },
+    {
+      "path": "soc_metrics_dashboard/METRICS_MODEL_REFERENCE.md",
+      "size": 231,
+      "sha256": "48f6d08695af9c886d8948a68bbf3a9a91b0192a67ac8e352e8d7a4fe2057d20"
+    },
+    {
+      "path": "soc_metrics_dashboard/RULE_EFFECTIVENESS_REFERENCE.md",
+      "size": 123,
+      "sha256": "4975f53cde9625118f7961ad818d3c055e7473a3223712646f1ebc1b3c95042e"
+    },
+    {
+      "path": "soc_metrics_dashboard/SOC_METRICS_DASHBOARD.md",
+      "size": 310,
+      "sha256": "131e4120789759a14922a180ce582c84ac73a8c456e804582cd8dd9e437ff286"
+    },
+    {
+      "path": "soc_metrics_dashboard/dashboard_api_extension.md",
+      "size": 213,
+      "sha256": "8416e69f7ad22aef9de955f4d0173e121cbcc298f49327ddf310d63324537b60"
+    },
+    {
+      "path": "sophos_poller_bundle.zip",
+      "size": 11049,
+      "sha256": "ac8dfe4bc9ad201fcaecef5bae034dbe7f2d8778bd928e3fb95a6c81cba60e26"
+    },
+    {
+      "path": "sql_helpers.py",
+      "size": 3313,
+      "sha256": "dffa577465cff8908ca5b7d8b0c5b960c9320718b654c38ab6c9f4f06632b54c"
+    },
+    {
+      "path": "static/csrf.js",
+      "size": 901,
+      "sha256": "f748a1c4e8592c15614a6c8a08f2c11a4f0b1859ed306a4cba31b14577eb409f"
+    },
+    {
+      "path": "telemetry.py",
+      "size": 7521,
+      "sha256": "ee58e09bed22a7c307a2f07dd1a7d7f133fa4963b304367794f99105db8fd8a2"
+    },
+    {
+      "path": "templates/ai.html",
+      "size": 24968,
+      "sha256": "47cfc4bc3d152ad600abfe68f688b4d4259b29781a2753a44d2f1425035d9d79"
+    },
+    {
+      "path": "templates/audit.html",
+      "size": 6568,
+      "sha256": "a2379882760ecd2cc611695c9487c380f72b57187431e7f3c5a35b0c9ffb9f93"
+    },
+    {
+      "path": "templates/change_password.html",
+      "size": 3075,
+      "sha256": "442def65623e8b5c0ffd15591d3a8ca030197884336e405c0430a385598c1ef3"
+    },
+    {
+      "path": "templates/correlate.html",
+      "size": 21390,
+      "sha256": "ebda9584eae26eb3c221d5cb0b3e194fd32c1a109d3ff2b31afabcf5c73bb417"
+    },
+    {
+      "path": "templates/health.html",
+      "size": 21966,
+      "sha256": "cfeafdf15e7f499fe44f04b97bdccc08a23a40a6913b516d689091ad5f226697"
+    },
+    {
+      "path": "templates/help.html",
+      "size": 13599,
+      "sha256": "825328a9d31f3cedf6e8cdf4d067e6555c209a51d8fa69000a60ecaf71f87333"
+    },
+    {
+      "path": "templates/index.html",
+      "size": 47503,
+      "sha256": "6a8bf76a048f122cdea7f36f9827bb64d25387efa7c317435d38c3d8f91e7dfd"
+    },
+    {
+      "path": "templates/login.html",
+      "size": 3986,
+      "sha256": "25cdc25f0bb810522811db3cafb4ce96b8442c19527a995b1f916fa7c9b07d60"
+    },
+    {
+      "path": "templates/setup.html",
+      "size": 76770,
+      "sha256": "549da88cafb4fafe26e1fead5f8a8ad6590d58e65289726cd7416caeb539095b"
+    },
+    {
+      "path": "templates/threatintel.html",
+      "size": 20035,
+      "sha256": "365ce590a442d34214580cb726b1850a4a69bd1db98f3e7edb445437c6175eee"
+    },
+    {
+      "path": "tests/contracts/ADMIN_BOOTSTRAP_PRESERVATION_REQUIRED_COVERAGE.md",
+      "size": 387,
+      "sha256": "31e3a0db319f8c57fec0323d51952f4a482bc8d108895eec205568a0d5b62d46"
+    },
+    {
+      "path": "tests/contracts/CEF_PARSER_REQUIRED_COVERAGE.md",
+      "size": 395,
+      "sha256": "df3907ff343c853f044015c4462b6ea28f72070251d3d3f74fd0834185240adc"
+    },
+    {
+      "path": "tests/contracts/POSTGRES_IDEMPOTENT_MIGRATION_REQUIRED_COVERAGE.md",
+      "size": 421,
+      "sha256": "4f66091becc19fa5f7ba1c1a049bd9d5d8f828d5c2136b167ba84c26aafa13d3"
+    },
+    {
+      "path": "tests/contracts/POSTGRES_MIGRATION_STATE_REQUIRED_COVERAGE.md",
+      "size": 393,
+      "sha256": "99d5167dc5e5d66926c6f7331085229fc5b8897d1eb5d3a37645512b87359b87"
+    },
+    {
+      "path": "tests/contracts/POSTGRES_SCHEMA_SAFETY_REQUIRED_COVERAGE.md",
+      "size": 380,
+      "sha256": "d2291d077c22590e1b898d82f7a3b69f2059e43ce38f5a1c6fef2c0bce7fe47c"
+    },
+    {
+      "path": "tests/contracts/RESILIENCE_REQUIRED_COVERAGE.md",
+      "size": 379,
+      "sha256": "af62c2fd954cdf3757837e3f510e106b5995abdc95204c34a4fcb2f1b0161e31"
+    },
+    {
+      "path": "tests/test_admin_bootstrap.py",
+      "size": 1744,
+      "sha256": "ff043469bcb04af9c059355d2c510dc5305862ba17ed5ba69cb2cf8d88569c3c"
+    },
+    {
+      "path": "tests/test_ai_openai_integration.py",
+      "size": 18286,
+      "sha256": "4f687ec13c48929d9ce6292dca6861c8fb1fad1946fc4d598af6893e677a0a0e"
+    },
+    {
+      "path": "tests/test_backup_restore_readiness.py",
+      "size": 248,
+      "sha256": "2d1f4d081101cd2b2b83335cdf15f7cc15fb1cb778b26cdc52442920c765ade7"
+    },
+    {
+      "path": "tests/test_build_source_artifact.py",
+      "size": 1099,
+      "sha256": "165a2d681b9b6f955479ff62ed7f8ce5fe2f3050c82ddba230636e094833bbd9"
+    },
+    {
+      "path": "tests/test_dashboard_live_refresh.py",
+      "size": 1649,
+      "sha256": "a96649671b33365d24e7e4534823c5a45d26a10b6da9169e8889e8d56537905e"
+    },
+    {
+      "path": "tests/test_dashboard_routes.py",
+      "size": 2504,
+      "sha256": "9a32a506cac821e3177256e8167219235501af711cfdfbca14f10522ea8e5b64"
+    },
+    {
+      "path": "tests/test_db.py",
+      "size": 651,
+      "sha256": "e847d6f041796295787fabaa2b43c616e205ffb5f0e558620d73f9bd1dc25247"
+    },
+    {
+      "path": "tests/test_evidence_archive_phase6.py",
+      "size": 11800,
+      "sha256": "c0fcacb0aeb49b137c2bb8dff5bb512ef9b5757bc922bd0871794983eb11f195"
+    },
+    {
+      "path": "tests/test_imports.py",
+      "size": 122,
+      "sha256": "45239d4994a8b68bb44ffc67e86ec1d9e9f96384412e2d555ea308fc0a2c54ff"
+    },
+    {
+      "path": "tests/test_ingest_performance.py",
+      "size": 8728,
+      "sha256": "0f3ae23f1d1d0c9660cbb38cf5faf97da54ca774517ab90d76cc68e2b1e3eed5"
+    },
+    {
+      "path": "tests/test_investigation_profiles.py",
+      "size": 1614,
+      "sha256": "9ca4f8ab3662c002109f9a261cbbcd0e345ef9991c7cc9cd4d9121b70eccb204"
+    },
+    {
+      "path": "tests/test_log_search_logic.py",
+      "size": 5046,
+      "sha256": "a20502846feba4ec0f98c89e113ae87d6e5ae52e44efe755c281f868bfa768d0"
+    },
+    {
+      "path": "tests/test_openai_live_optional.py",
+      "size": 887,
+      "sha256": "4e51495bbeda7f087f80e30bdd38be54dfa5dec558e0f1a26c64005151184d85"
+    },
+    {
+      "path": "tests/test_operational_diagnostics.py",
+      "size": 4408,
+      "sha256": "54c378a570fd6d270ef916c650dc6baa9301bf3535e5523a364f37df13e2e564"
+    },
+    {
+      "path": "tests/test_performance_phase3.py",
+      "size": 8486,
+      "sha256": "fe521c9b32dadc9282e597229273d0f0e05cf41fb0ea9d830db28e7c2d40c1f0"
+    },
+    {
+      "path": "tests/test_performance_phase4.py",
+      "size": 11894,
+      "sha256": "118b385710e6abcc38c4ecf515d081311c95f25b3c7c08cccf89d2ae9ffa4c4e"
+    },
+    {
+      "path": "tests/test_performance_phase5.py",
+      "size": 7179,
+      "sha256": "151f12c4d1b6c1dbb75b974e8d39dc51c56772003eb2fbafba1e9be28b628c20"
+    },
+    {
+      "path": "tests/test_placeholder_truth_gate.py",
+      "size": 922,
+      "sha256": "c39c311abf32f6cc22b614f93f379c3f5ceb71429c86cce77153e1efa215976f"
+    },
+    {
+      "path": "tests/test_postgres_bootstrap.py",
+      "size": 2428,
+      "sha256": "649f2ac997fe9ae412b4381427ea7b06aa4f1174bf4f3578192d34357142de28"
+    },
+    {
+      "path": "tests/test_postgres_installer_contract.py",
+      "size": 996,
+      "sha256": "62a3763dcc16cdd3ea65bfc31a57fc24091b174685411f70a5dc20b22f10ae68"
+    },
+    {
+      "path": "tests/test_postgres_privilege_boundary.py",
+      "size": 3731,
+      "sha256": "155c0e4e2363c6acdb4ee9388f1b556bb55eac67b18a9f1f7ac2a6201e9ea538"
+    },
+    {
+      "path": "tests/test_postgres_runtime_options.py",
+      "size": 204,
+      "sha256": "2481ef71705c27a951a14ca8a916f07840cd29ead48c211fc100f70e212319f2"
+    },
+    {
+      "path": "tests/test_sql_helpers.py",
+      "size": 822,
+      "sha256": "25c05e1d8da65059bc01a508b85ffea1c908f02b67041e920c1a62105d43f8e3"
+    },
+    {
+      "path": "tests/test_syslog_troubleshoot.py",
+      "size": 3208,
+      "sha256": "15dcb016a964d2539cb4a66a881ed423848817641b3d9da7a7d9349f330d74f7"
+    },
+    {
+      "path": "tests/test_text_search_backend.py",
+      "size": 5524,
+      "sha256": "1dbc11ebf63e2101f46fe115beb4af571b7bf6873c657f910548c92b7c898b59"
+    },
+    {
+      "path": "tests/test_timeline_dialog_structure.py",
+      "size": 1085,
+      "sha256": "ce3011582735e11bf18e4ee01ace8a62714f2b0f4aee7ba27dd76297b0ed27c9"
+    },
+    {
+      "path": "tests/test_warning_ai_context.py",
+      "size": 20776,
+      "sha256": "077b3213cee1f741969fa9b2ba75047ba113a12417f20edf1c45035be3f55a1b"
+    },
+    {
+      "path": "tests/test_webconsole_observability_slice.py",
+      "size": 4874,
+      "sha256": "b7c29733e0e6ab8fdf3c08cc0c26bd4b3c03f624af4f6ee59b3166c923eb04b4"
+    },
+    {
+      "path": "threatintel.py",
+      "size": 9474,
+      "sha256": "57081d6edd253c7646f813a2dfa2cc9f84e7165f195780d675d819554ac65cd1"
+    },
+    {
+      "path": "tools/__init__.py",
+      "size": 61,
+      "sha256": "c41c2cb324c44665edcdb82ea7164f17ab6eb61691a25808285c80def1eaf477"
+    },
+    {
+      "path": "tools/archive_now.py",
+      "size": 1771,
+      "sha256": "027d11a90e7f587c81a701934dda10dab630ddd37dd0b5c12655310b2572fb72"
+    },
+    {
+      "path": "tools/archive_verify.py",
+      "size": 2780,
+      "sha256": "157c4b79db87119816228a57abdf5050bef6e956227007fc9d0de66656d9df8b"
+    },
+    {
+      "path": "tools/build_source_artifact.py",
+      "size": 10630,
+      "sha256": "8861a1b7360de098ee05cc8121f62c6f42f73ac135b8e540e7d8056dbbeed4cb"
+    },
+    {
+      "path": "tools/check_placeholder_truth.py",
+      "size": 4088,
+      "sha256": "0d359c4903dcc4883a046b27a77f1dd7e8ee4bc16080c8578ee0a08242a81557"
+    },
+    {
+      "path": "tools/inspect-migration-mapping.py",
+      "size": 1026,
+      "sha256": "521440c43c73fab037cf5f03312c9f441dc21aff4ba78c34449bafe3d21f6de7"
+    },
+    {
+      "path": "tools/postgres-migration-preflight.py",
+      "size": 1541,
+      "sha256": "79b858f561f011dc12528b9072bedc7a92b6df144b3c5a428568cd1b71f5da6b"
+    },
+    {
+      "path": "tools/postgres_bootstrap.py",
+      "size": 19875,
+      "sha256": "cf8b6feebad66c0c060f26e70f4a4048e663067232ebcdbc8a50977f3791941a"
+    },
+    {
+      "path": "tools/postgres_phase4_validation.py",
+      "size": 8723,
+      "sha256": "4c1149e90a7bfab252e9abddc8dc9bf2306cecdc4c8fc9481b3614e0266b87cd"
+    },
+    {
+      "path": "tools/postgres_phase5_validation.py",
+      "size": 186,
+      "sha256": "d1bdd7f5f3b663bae61f8253b49d2f501636c30309ef03b8f9612e5968b89674"
+    },
+    {
+      "path": "tools/postgres_privilege_boundary.py",
+      "size": 21427,
+      "sha256": "244893ae05aab17dcb73bba2cc04c101e97b1c1238bd092e75e6722a781ec391"
+    },
+    {
+      "path": "tools/postgres_privilege_check.py",
+      "size": 4739,
+      "sha256": "9e15451480fce5a85fecccc974873df984eda4db9df2839eb497329b3cb1686d"
+    },
+    {
+      "path": "tools/syslog_capture_helper.py",
+      "size": 4606,
+      "sha256": "0bcae7a9ebc6f90303b671c02be852f59fedfe0d79b7261da5a0cac1caeacfeb"
+    },
+    {
+      "path": "validation_completion/DATABASE_RBAC_VALIDATION.md",
+      "size": 411,
+      "sha256": "2373d74bbd4f2234d6144bb09a49418d2ab926984be81015229eba906dbda509"
+    },
+    {
+      "path": "validation_completion/FAILURE_INJECTION_RECOVERY_DRILL.md",
+      "size": 344,
+      "sha256": "1a791dcbaab0871bdac166d59910c5f01a5571349bbb91168b044080d188ce09"
+    },
+    {
+      "path": "validation_completion/MULTI_TENANT_INTEGRATION_TEST.md",
+      "size": 307,
+      "sha256": "bf14a0e6d06ba8b9a57b075b32363d1def5818cae0f6e654143025dade1af4c7"
+    },
+    {
+      "path": "validation_completion/TEST_RECONCILIATION.md",
+      "size": 306,
+      "sha256": "57d89f8fe747cc9fb3977b2c8f88d5c77d8466d3f4298cc62b49cb7d98f46044"
+    },
+    {
+      "path": "web_blueprints/__init__.py",
+      "size": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "web_blueprints/ai.py",
+      "size": 10156,
+      "sha256": "2029877cc800b51e99c36b773b86b6c8d0d90dcc8642ace4aa354743b4c4d510"
+    },
+    {
+      "path": "web_blueprints/db_health.py",
+      "size": 15754,
+      "sha256": "df6822089b9b5bea1ba1e5f78632e82cc9db3cda921fe7de5cc582a0071f0df5"
+    },
+    {
+      "path": "web_blueprints/ioc_feeds.py",
+      "size": 3157,
+      "sha256": "ce776445d4e07ef7e20dfe77708cfaae9e43535a85b269d272563a7db78f6d00"
+    },
+    {
+      "path": "web_blueprints/reports.py",
+      "size": 1833,
+      "sha256": "2cf6f9d7fde52b0266778740834d0caaaf206d9c1239b84fbe9d35d90428b88c"
+    },
+    {
+      "path": "web_blueprints/tickets.py",
+      "size": 2349,
+      "sha256": "e6b9d3ef34467f67e075d1bd5c7bdeb6a96f4b36e812309ec9a4a952215123c3"
+    },
+    {
+      "path": "web_blueprints/users.py",
+      "size": 2974,
+      "sha256": "7498ab088bc0a3728e9d447eb8420b4740dcfdc0b143862b4cb9123cbd18a38f"
+    },
+    {
+      "path": "wef/Setup-WEF-Test.ps1",
+      "size": 6640,
+      "sha256": "39ad2e1e09b3e7498bb3fff88fb996ed8c1ad3d50c5ef6e61b4e2d4df92aa3fe"
+    },
+    {
+      "path": "wef/Subscription.xml",
+      "size": 4086,
+      "sha256": "fde9add9a965b1a08084ecfcd8f41ec81aaf1bd59baea4b5d88eabead5edad51"
+    },
+    {
+      "path": "wef/WEF-README.md",
+      "size": 7114,
+      "sha256": "60ad9bdc381ed3d2060e40f604b73dfbb509a55597c4f5967270aa5018faaaea"
+    },
+    {
+      "path": "wef/nxlog.conf",
+      "size": 2888,
+      "sha256": "2424aeb22b87677a06db6b7731d068c9ca63c534888912ba70666c4fc5b09d6b"
+    },
+    {
+      "path": "wef/wef-agent-config.json",
+      "size": 955,
+      "sha256": "2d9e38f18522d94d669e79e94771f8aa6c38dab69c73b4139dbf94f54c317388"
+    },
+    {
+      "path": "windows_agent/Install-ScheduledTask.ps1",
+      "size": 2433,
+      "sha256": "0869878d00f201f945c3bac76dcf19512c804a91572c4e44808cc0e3727c5ab5"
+    },
+    {
+      "path": "windows_agent/MiniSiemAgent.ps1",
+      "size": 15909,
+      "sha256": "d3a4687cd80e6898bb4a4164b617f4e9712ab12e61871b5a54128b2d16b3b487"
+    },
+    {
+      "path": "windows_agent/README.md",
+      "size": 5950,
+      "sha256": "dbb7d6a6a15314627ad748a4b153ed5183312b416907a1708810ea2600eb914a"
+    },
+    {
+      "path": "windows_agent/agent-config.json",
+      "size": 675,
+      "sha256": "91de36f03c4d1fd757ca07d33bc3523c01bdd12012317f38dd0ce57cd9fecda6"
+    },
+    {
+      "path": "workers.py",
+      "size": 18530,
+      "sha256": "025a1b27f25865b27af0d6b5e3da321a888d6167371d11a291d76efbee3fbc02"
+    }
   ]
 }

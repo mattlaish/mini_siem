@@ -4,7 +4,7 @@
 
 PostgreSQL runtime identities must never repair or initialize schema. Schema initialization and migration are explicit owner/migrator operations and must complete before listener/dashboard startup.
 
-For this baseline the expected migration version is 26. Runtime startup is fail-closed when any migration is pending or any required runtime/archive table is missing.
+For this baseline the expected migration version is 30. Runtime startup is fail-closed when any migration is pending or any required runtime/archive table is missing.
 
 Upgrade order:
 
@@ -51,3 +51,29 @@ Restore requires validated backup metadata, checksum verification, owner migrati
 
 ## Phase 12.4 Performance & Capacity Qualification
 Status: IMPLEMENTED_TESTING_DEFERRED
+## External AI deployment notes
+
+Systemd deployments keep the AI provider encryption master at `/var/lib/mini-siem/ai-secret-master.key` (0600) and pass its path only to the dashboard process. OpenAI external mode uses `https://api.openai.com/v1/responses` when protocol is `auto`; local OpenAI-compatible endpoints retain `/chat/completions`. After a PostgreSQL upgrade to migration 30, rerun privilege provisioning so `ai_usage_audit` is SELECT for runtime identities, INSERT for dashboard, and non-mutable otherwise.
+
+
+## PostgreSQL bootstrap boundary — 2026-09-18
+
+Status: `IMPLEMENTED_TESTING_DEFERRED`
+
+For a fresh PostgreSQL deployment, `tools/postgres_bootstrap.py --mode fresh`
+separates three responsibilities:
+
+1. temporary customer PostgreSQL administrator/role-admin: server validation, database/role creation, runtime-role creation;
+2. `minisiem_owner`: application schema ownership and migrations only;
+3. `minisiem_ingest`, `minisiem_dashboard`, `minisiem_maintenance`: runtime only.
+
+The customer DBA credential and `minisiem_owner` password are bootstrap inputs
+only and are not persisted in `db-config.json`. Component credentials are stored
+in the existing split credential overlays. `install-services.sh` refuses
+PostgreSQL service installation when the privilege boundary is absent and calls
+`db.ensure_runtime_ready()` with listener/dashboard credentials before writing or
+starting units.
+
+Fresh bootstrap refuses to adopt an existing database with public/application
+objects. Existing deployments must first use the read-only `inspect-existing`
+mode; automatic database recreation or owner transfer is forbidden.

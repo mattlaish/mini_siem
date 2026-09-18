@@ -28,6 +28,7 @@ from sql_helpers import placeholders, identifier, where_clause
 
 import ai_soc
 import ai_worker
+import ai_config_store
 import health as health_mod
 from correlations import PLAYBOOKS, get_playbook, run_correlation
 
@@ -613,17 +614,19 @@ def whoami():
 
 
 AI_DEFAULTS = {
-    "ai_enabled": "false",                        # master switch, off until you build the box
+    "ai_enabled": "false",                        # master switch, off until an endpoint is configured
     "ai_mode": "local",                           # "local" or "external" (uses a token, sends data off-site)
     "ai_base_url": "http://localhost:11434/v1",   # Ollama default
     "ai_model": "qwen2.5:7b",
-    "ai_api_key": "",
+    "ai_api_style": "auto",                      # auto|responses|chat_completions
+    "ai_api_key": "",                           # virtual/decrypted; never persisted plaintext
     "ai_auto_triage": "true",                     # auto-send alerts to the LLM when AI is on
     "ai_auto_triage_min_severity": "",            # "" = all alerts; else e.g. "warning"
     "ai_auto_triage_max_age_hours": "0",          # 0 = no limit; else skip alerts older than N hours
     "ai_system_prompt": "",                       # "" = use built-in SOC analyst prompt
     "ai_user_template": "",                        # "" = default framing; supports {evidence} {rule_name} {severity} {source_ip} {description}
     "ai_max_tokens": "900",                        # max output tokens per response
+    "ai_external_redaction": "strict",              # none|identifiers|strict; only applied in external mode
 }
 
 
@@ -638,33 +641,44 @@ def ensure_app_config():
 
 
 def get_ai_config():
+    """Return AI settings with provider secrets decrypted in memory only."""
     ensure_app_config()
     conn = get_conn()
-    rows = {r["key"]: r["value"] for r in
-            conn.execute("SELECT key, value FROM app_config").fetchall()}
-    conn.close()
-    cfg = dict(AI_DEFAULTS)
-    for k in AI_DEFAULTS:
-        if k in rows and rows[k] is not None:
-            cfg[k] = rows[k]
-    return cfg
+    try:
+        return ai_config_store.load_config(conn, AI_DEFAULTS)
+    finally:
+        conn.close()
 
 
 def save_ai_config(updates: dict):
     ensure_app_config()
     conn = get_conn()
-    for k, v in updates.items():
-        if k in AI_DEFAULTS:
-            conn.execute(
-                "INSERT INTO app_config(key,value) VALUES(?,?) "
-                "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (k, v))
-    conn.commit()
-    conn.close()
+    try:
+        ai_config_store.save_config(conn, AI_DEFAULTS, updates)
+    finally:
+        conn.close()
+
+
+def _record_ai_usage(event: dict):
+    """Append metadata-only LLM usage evidence; never stores prompts/API keys."""
+    ensure_app_config()
+    conn = get_conn()
+    try:
+        ai_config_store.record_usage(conn, event)
+    finally:
+        conn.close()
 
 
 def _llm_from_config():
     cfg = get_ai_config()
-    return ai_soc.LLMClient(cfg["ai_base_url"], cfg["ai_model"], cfg["ai_api_key"])
+    return ai_soc.LLMClient(
+        cfg["ai_base_url"], cfg["ai_model"], cfg["ai_api_key"],
+        api_style=cfg.get("ai_api_style", "auto"),
+        usage_callback=_record_ai_usage,
+        external_mode=cfg.get("ai_mode", "local") == "external",
+        redaction_policy=cfg.get("ai_external_redaction", "strict"),
+        allow_insecure_loopback_external=_os.environ.get("MINISIEM_AI_ALLOW_INSECURE_LOOPBACK_EXTERNAL") == "1",
+    )
 
 
 _triage_worker = None

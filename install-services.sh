@@ -37,8 +37,13 @@
 #   * uses UMask=0002 in both units
 #
 # Usage:
-#   sudo ./install-services.sh               # install + start
-#   sudo ./install-services.sh uninstall     # stop + remove both services
+#   sudo ./install-services.sh                         # install + start
+#   sudo ./install-services.sh --bootstrap-postgres    # fresh PostgreSQL bootstrap + install
+#   sudo ./install-services.sh uninstall               # stop + remove both services
+#
+# PostgreSQL bootstrap requires MINISIEM_PG_BOOTSTRAP_USER. The administrator
+# password is read by tools/postgres_bootstrap.py from a protected environment
+# variable or interactive prompt and is never persisted by mini-SIEM.
 #
 # No username/UID argument is required. The dashboard always runs as the
 # dedicated `siem` service account.
@@ -55,6 +60,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SHARED_GROUP="minisiem"
 SERVICE_USER="siem"
 SERVICE_HOME="/var/lib/mini-siem"
+AI_SECRET_MASTER="${SERVICE_HOME}/ai-secret-master.key"
 CAPTURE_HELPER="/usr/local/libexec/mini-siem-syslog-capture"
 CAPTURE_CONFIG_DIR="/etc/mini-siem"
 CAPTURE_CONFIG="${CAPTURE_CONFIG_DIR}/syslog-capture.json"
@@ -69,6 +75,7 @@ if [[ $EUID -ne 0 ]]; then
     exit 1
 fi
 
+POSTGRES_BOOTSTRAP_REQUESTED=0
 if [[ "${1:-}" == "uninstall" ]]; then
     for svc in "${DASHBOARD_SVC}" "${LISTENER_SVC}"; do
         systemctl stop "${svc}" 2>/dev/null || true
@@ -80,12 +87,12 @@ if [[ "${1:-}" == "uninstall" ]]; then
     systemctl daemon-reload
     echo "Removed both mini-SIEM services. Database, files, '${SHARED_GROUP}', and service account '${SERVICE_USER}' were left untouched."
     exit 0
-fi
-
-if [[ $# -gt 0 ]]; then
+elif [[ "${1:-}" == "--bootstrap-postgres" && $# -eq 1 ]]; then
+    POSTGRES_BOOTSTRAP_REQUESTED=1
+elif [[ $# -gt 0 ]]; then
     echo "No username/UID argument is required." >&2
     echo "The dashboard runs as the dedicated '${SERVICE_USER}' service account." >&2
-    echo "Usage: sudo $0" >&2
+    echo "Usage: sudo $0 [--bootstrap-postgres|uninstall]" >&2
     exit 1
 fi
 
@@ -211,6 +218,71 @@ fi
 
 echo "Using Python: ${PYTHON_BIN}"
 
+if [[ "${POSTGRES_BOOTSTRAP_REQUESTED}" == "1" ]]; then
+    if [[ "${DB_BACKEND}" != "postgres" ]]; then
+        echo "--bootstrap-postgres requires db-config.json backend=postgres." >&2
+        exit 1
+    fi
+    if [[ -z "${MINISIEM_PG_BOOTSTRAP_USER:-}" ]]; then
+        echo "Set MINISIEM_PG_BOOTSTRAP_USER to the temporary customer PostgreSQL bootstrap identity." >&2
+        echo "The password may be supplied via MINISIEM_PG_BOOTSTRAP_PASSWORD or entered interactively." >&2
+        exit 1
+    fi
+    echo "Running fresh PostgreSQL bootstrap through dedicated migration owner..."
+    "${PYTHON_BIN}" "${SCRIPT_DIR}/tools/postgres_bootstrap.py" \
+        --mode fresh \
+        --db-config "${SCRIPT_DIR}/db-config.json" \
+        --bootstrap-user "${MINISIEM_PG_BOOTSTRAP_USER}"
+
+    # Refresh privilege-boundary state after bootstrap; owner/admin credentials
+    # are intentionally absent from the shared runtime config.
+    PG_PRIVILEGE_BOUNDARY="$("${PYTHON_BIN}" - "${SCRIPT_DIR}/db-config.json" <<'PY' 2>/dev/null || echo 0
+import json, sys
+try:
+    cfg = json.load(open(sys.argv[1]))
+    print(1 if (cfg.get("postgres_privilege_boundary") or {}).get("enabled") else 0)
+except Exception:
+    print(0)
+PY
+)"
+    if [[ "${PG_PRIVILEGE_BOUNDARY}" != "1" ]]; then
+        echo "PostgreSQL bootstrap completed without enabling the runtime privilege boundary; refusing service installation." >&2
+        exit 1
+    fi
+    LISTENER_DB_EXTRA="--db-config ${SCRIPT_DIR}/db-config.json --db-credentials ${SCRIPT_DIR}/db-listener-credentials.json"
+    DASHBOARD_DB_EXTRA="--db-config ${SCRIPT_DIR}/db-config.json --db-credentials ${SCRIPT_DIR}/db-dashboard-credentials.json"
+fi
+
+if [[ "${DB_BACKEND}" == "postgres" && "${PG_PRIVILEGE_BOUNDARY}" != "1" ]]; then
+    cat >&2 <<EOF
+PostgreSQL runtime privilege boundary is not enabled.
+mini-SIEM will not install services with a shared owner/runtime credential.
+
+For a new empty database:
+  MINISIEM_PG_BOOTSTRAP_USER=<customer-admin> sudo -E $0 --bootstrap-postgres
+
+For an existing/legacy database, inspect first and use a controlled upgrade;
+do not run the fresh bootstrap over operational data:
+  ${PYTHON_BIN} ${SCRIPT_DIR}/tools/postgres_bootstrap.py --mode inspect-existing \
+    --db-config ${SCRIPT_DIR}/db-config.json --bootstrap-user <customer-admin>
+EOF
+    exit 1
+fi
+
+if [[ "${DB_BACKEND}" == "postgres" && "${PG_PRIVILEGE_BOUNDARY}" == "1" ]]; then
+    echo "Validating PostgreSQL schema readiness with runtime credentials before systemd installation..."
+    "${PYTHON_BIN}" - "${SCRIPT_DIR}" <<'PY'
+import os, sys
+root=sys.argv[1]
+sys.path.insert(0, root)
+import db
+for name, cred in (("listener","db-listener-credentials.json"),("dashboard","db-dashboard-credentials.json")):
+    cfg=db.load_config(os.path.join(root,"db-config.json"), credentials_path=os.path.join(root,cred))
+    db.ensure_runtime_ready(cfg)
+    print(f"  {name}: schema/runtime ready")
+PY
+fi
+
 for f in listener.py dashboard.py; do
     if [[ ! -f "${SCRIPT_DIR}/${f}" ]]; then
         echo "${f} not found in ${SCRIPT_DIR}. Run this installer from the mini_siem folder." >&2
@@ -299,6 +371,24 @@ for f in "${SCRIPT_DIR}/db-config.json" "${SCRIPT_DIR}/siem.db" "${SCRIPT_DIR}/s
     fi
 done
 
+# Provision an AI API-key encryption master outside the application database.
+# It is owned by the dashboard service account and remains stable across
+# service restarts/reinstalls. The database stores only ciphertext.
+if [[ ! -f "${AI_SECRET_MASTER}" ]]; then
+    if command -v runuser >/dev/null 2>&1; then
+        runuser -u "${SERVICE_USER}" -- env HOME="${SERVICE_HOME}" \
+            MINISIEM_AI_SECRET_MASTER_FILE="${AI_SECRET_MASTER}" \
+            PYTHONPATH="${SCRIPT_DIR}" "${PYTHON_BIN}" -c \
+            "import ai_secret; ai_secret.load_or_create_master()"
+    else
+        env HOME="${SERVICE_HOME}" MINISIEM_AI_SECRET_MASTER_FILE="${AI_SECRET_MASTER}" \
+            PYTHONPATH="${SCRIPT_DIR}" "${PYTHON_BIN}" -c \
+            "import ai_secret; ai_secret.load_or_create_master()"
+    fi
+fi
+chown "${SERVICE_USER}:${SHARED_GROUP}" "${AI_SECRET_MASTER}"
+chmod 600 "${AI_SECRET_MASTER}"
+
 # Base/auth config is readable by the dashboard service group. In secure
 # PostgreSQL mode db-config.json is non-secret; component passwords live in
 # separate credential files with stricter ownership.
@@ -348,14 +438,8 @@ if command -v runuser >/dev/null 2>&1; then
                 exit 1
             fi
         else
-            resolved="$(runuser -u "${SERVICE_USER}" -- "${PYTHON_BIN}" -c \
-                "import db; print(db.load_config().get('backend','sqlite'))" 2>/dev/null || echo unknown)"
-            if [[ "${resolved}" != "postgres" ]]; then
-                echo "Service account '${SERVICE_USER}' resolves DB backend '${resolved}', not 'postgres'." >&2
-                exit 1
-            fi
-            echo "WARNING: PostgreSQL uses a shared legacy credential; raw-log DELETE containment is not enforced." >&2
-            echo "Run tools/postgres_privilege_boundary.py to enable split DB identities." >&2
+            echo "PostgreSQL privilege boundary unexpectedly disabled after preflight." >&2
+            exit 1
         fi
     fi
     if ! runuser -u "${SERVICE_USER}" -- test -w "${SCRIPT_DIR}"; then
@@ -444,6 +528,7 @@ User=${SERVICE_USER}
 Group=${SHARED_GROUP}
 UMask=0002
 Environment=HOME=${SERVICE_HOME}
+Environment=MINISIEM_AI_SECRET_MASTER_FILE=${AI_SECRET_MASTER}
 WorkingDirectory=${SCRIPT_DIR}
 ExecStart=${PYTHON_BIN} ${SCRIPT_DIR}/dashboard.py --db ${SCRIPT_DIR}/siem.db --host ${DASH_HOST} --port ${DASH_PORT} ${DASHBOARD_DB_EXTRA}
 Restart=on-failure
@@ -489,6 +574,14 @@ if ! grep -Fq "ExecStart=${PYTHON_BIN} " "${DASHBOARD_UNIT}"; then
     echo "VERIFY FAIL: dashboard unit is not pinned to ${PYTHON_BIN}." >&2
     VERIFY_FAILED=1
 fi
+if [[ ! -f "${AI_SECRET_MASTER}" ]] || [[ "$(stat -c '%a' "${AI_SECRET_MASTER}" 2>/dev/null || echo bad)" != "600" ]]; then
+    echo "VERIFY FAIL: AI secret master is missing or not mode 0600: ${AI_SECRET_MASTER}." >&2
+    VERIFY_FAILED=1
+fi
+if command -v runuser >/dev/null 2>&1 && ! runuser -u "${SERVICE_USER}" -- test -r "${AI_SECRET_MASTER}"; then
+    echo "VERIFY FAIL: dashboard service account cannot read AI secret master." >&2
+    VERIFY_FAILED=1
+fi
 
 if command -v ss >/dev/null 2>&1; then
     if ! ss -H -lntup 2>/dev/null | grep -Eq ":${SYSLOG_PORT}([[:space:]]|$)"; then
@@ -514,6 +607,7 @@ Installed two services:
   ${LISTENER_SVC}   (root, syslog TCP/UDP port ${SYSLOG_PORT})
   ${DASHBOARD_SVC}  (service user ${SERVICE_USER}, Waitress ${DASH_HOST}:${DASH_PORT})
   Python             ${PYTHON_BIN}
+  AI secret master    ${AI_SECRET_MASTER} (0600, outside DB)
 
 Verify listeners:
   sudo ss -lntup | grep -E ':${SYSLOG_PORT}|:${DASH_PORT}'

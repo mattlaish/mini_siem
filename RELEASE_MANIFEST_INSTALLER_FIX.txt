@@ -1,36 +1,38 @@
-mini-SIEM original-based installer hardening
-Build date: 2026-09-09
+mini-SIEM installer/source truth manifest — 2026-09-18
 
-Baseline:
-  user-uploaded mini_siem.zip
-  original install-services.sh size: 11371 bytes
-  original install-services.sh SHA-256: a21c4f7df00b833b1967b6b9f4d482433d301ada6780d5da0c854301a0efef5b
+Status: IMPLEMENTED_TESTING_DEFERRED
+This is a development-baseline manifest, not a RELEASED artifact record.
 
-Corrected installer:
-  install-services.sh size: 14856 bytes
-  install-services.sh SHA-256: a326888855287930c357313f75c8302123395c90c00d607d56e8ba8573d34276
-  shebang: #!/usr/bin/env bash
+Canonical parent artifact:
+  mini_siem_p0_p1_pg_bootstrap_2026-09-18.zip
+  SHA-256: 6c944a3030cf51a085e1b7b843c40baf889ee38408a0b580858159489ce534f2
 
-Changes:
-  - preserve dedicated siem service account and minisiem group
-  - preserve root-only listener for TCP/UDP 514
-  - support both .venv and venv project runtimes
-  - bootstrap .venv when no project venv exists
-  - repair Flask/Waitress dependencies inside selected project venv
-  - system Python is bootstrap-only, never final systemd runtime
-  - SELinux stale user_home_t check covers project and selected Python
-  - detect and repair partial listener/dashboard systemd state
-  - post-install fail-closed verification for enabled/active services,
-    pinned ExecStart runtime, and expected listening ports
+Current install-services.sh:
+  size: 26687 bytes
+  SHA-256: 5837b882eba27fb49acc45e58dabe645d081500dc012cc19ae0a313120490c1d
+  bash -n: PASS
 
-Artifact gates performed:
-  - bash -n install-services.sh: PASS
-  - shebang/content sanity: PASS
-  - installer size sanity (> original 11 KB): PASS
-  - full package excludes .git, __pycache__, .pytest_cache, *.pyc, *.pyo
-  - extracted ZIP installer hash comparison: performed after packaging
+PostgreSQL bootstrap boundary:
+  configure-db.py stores endpoint/database only; no retained customer DBA credential
+  tools/postgres_bootstrap.py fresh mode: IMPLEMENTED_TESTING_DEFERRED
+  tools/postgres_bootstrap.py inspect-existing mode: IMPLEMENTED_TESTING_DEFERRED (read-only)
+  split runtime boundary required before PostgreSQL systemd installation
+  runtime db.ensure_runtime_ready() preflight required before unit installation/start
 
-Not run:
-  - live systemd install/repair on the user's NAS
-  - SELinux live transition test
-  - network/package-manager dependency bootstrap against external repositories
+Full repository placeholder truth alignment:
+  Phase 13 pseudo-code .py reclassified previously: 19
+  additional runtime/qualification placeholder .py reclassified: 6
+  no-op assert-True tests reclassified: 6
+  migration/release executable-shaped scaffolds reclassified: 28
+  total newly reclassified executable/test paths in this slice: 40
+  intentional incomplete executable examples allowed: 1 (explicit EXAMPLE_ONLY=True)
+  tools/check_placeholder_truth.py: PASS
+  repository compileall: PASS
+  static security scan: PASS (0 findings / 29 root Python files)
+  focused placeholder/P0/P1 tests: 17 passed
+  dependency-available suite: 88 passed / 41 failed / 1 skipped
+  full collection: INCOMPLETE because Flask/Werkzeug are unavailable in this environment
+
+The 41 failures are inherited baseline debt. Six former assert-True tests no longer contribute pass evidence; two real placeholder-truth tests were added.
+
+Live PostgreSQL/systemd/browser/backup/OpenAI/performance qualification remains deferred.

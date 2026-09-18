@@ -90,7 +90,7 @@
   <div class="panel" id="masterPanel" style="display:flex;align-items:center;justify-content:space-between;gap:12px;">
     <div>
       <h2 style="margin:0;">AI SOC Analyst <span id="stateBadge" class="badge b-amber">OFF</span></h2>
-      <p class="sub" id="stateHint" style="margin:6px 0 0;">Turn this on once your local LLM machine is ready. It stays off until then — no connections are attempted.</p>
+      <p class="sub" id="stateHint" style="margin:6px 0 0;">Turn this on once your LLM/API endpoint is configured. It stays off until then — no connections are attempted.</p>
     </div>
     <button id="masterToggle">Turn ON</button>
   </div>
@@ -98,10 +98,10 @@
   <div id="aiBody">
 
   <div class="disclaimer">
-    This assistant runs against your <strong>local</strong> LLM — no log data leaves your network. Its output is
-    assistive analysis to speed up triage, <strong>not</strong> an authoritative verdict. Always verify against the
-    raw evidence before acting. The model only sees context the server gathers for each request; it cannot run its
-    own queries.
+    This assistant can use a <strong>local</strong> LLM or an explicitly configured external provider.
+    Local mode keeps model traffic on your network; external mode sends the bounded triage/chat context to that
+    provider. Its output is assistive analysis, <strong>not</strong> an authoritative verdict. Always verify against
+    the raw evidence before acting. The model cannot run its own database queries.
   </div>
 
   <!-- Settings -->
@@ -119,13 +119,21 @@
             <option value="external">External AI provider — uses an API token</option>
           </select>
         </div>
+        <div class="fld" style="max-width:330px;">
+          <label>API protocol <span class="hint">(auto recommended)</span></label>
+          <select id="apiStyle">
+            <option value="auto">Auto — OpenAI Responses; compatible servers Chat Completions</option>
+            <option value="responses">Responses API (/responses)</option>
+            <option value="chat_completions">Chat Completions (/chat/completions)</option>
+          </select>
+        </div>
       </div>
 
       <div id="egressWarn" class="disclaimer" style="display:none;background:var(--warn-soft);border-color:var(--warn);color:var(--warn);">
-        <strong>Data leaves your network in external mode.</strong> Every triage/chat request sends log
-        context — source IPs, hostnames, usernames, alert details — to the external provider. With
-        auto-triage on, this happens automatically for every alert. Only use a provider your data-handling
-        policy permits, and prefer local mode for sensitive environments.
+        <strong>Data leaves your network in external mode.</strong> External endpoints are HTTPS-only by default.
+        Outbound evidence is filtered by the redaction policy below before transmission. With auto-triage on,
+        requests happen automatically for eligible alerts. Only use a provider your data-handling policy permits,
+        and prefer local mode for sensitive environments.
       </div>
 
       <p class="sub" id="localHint">
@@ -135,7 +143,7 @@
       </p>
       <p class="sub" id="externalHint" style="display:none;">
         Any OpenAI-compatible provider works. Examples —
-        <strong>OpenAI:</strong> <span class="mono">https://api.openai.com/v1</span> · model <span class="mono">gpt-4o-mini</span>.
+        <strong>OpenAI:</strong> <span class="mono">https://api.openai.com/v1</span> · model <span class="mono">gpt-5.6</span> (or another model enabled for your OpenAI project).
         <strong>Groq:</strong> <span class="mono">https://api.groq.com/openai/v1</span>.
         <strong>OpenRouter:</strong> <span class="mono">https://openrouter.ai/api/v1</span>.
         Paste the provider's API token below.
@@ -173,6 +181,14 @@
         <div class="fld" style="max-width:220px;">
           <label>Max output tokens <span class="hint">(64–8192)</span></label>
           <input type="number" id="maxTokens" class="mono" min="64" max="8192" step="1" placeholder="900">
+        </div>
+        <div class="fld" style="max-width:360px;">
+          <label>External evidence redaction <span class="hint">(external mode only)</span></label>
+          <select id="externalRedaction">
+            <option value="strict">Strict — mask identifiers + remove raw message/description text</option>
+            <option value="identifiers">Identifiers — mask IP/hostname/identity values; keep event text</option>
+            <option value="none">None — send bounded evidence unchanged</option>
+          </select>
         </div>
       </div>
       <div class="row" style="margin-top:14px;padding-top:14px;border-top:1px solid var(--line);align-items:center;">
@@ -277,7 +293,7 @@ function applyEnabledState(){
   } else {
     badge.textContent = 'OFF'; badge.className = 'badge b-amber';
     btn.textContent = 'Turn ON'; btn.className = '';
-    hint.textContent = 'Turn this on once your local LLM machine is ready. It stays off until then — no connections are attempted.';
+    hint.textContent = 'Turn this on once your LLM/API endpoint is configured. It stays off until then — no connections are attempted.';
   }
 }
 
@@ -292,7 +308,7 @@ $('masterToggle').addEventListener('click', async () => {
 async function loadCfg(){
   const r = await fetch('/api/ai/config'); const c = await r.json();
   aiEnabled = c.ai_enabled;
-  $('baseUrl').value = c.ai_base_url; $('model').value = c.ai_model;
+  $('baseUrl').value = c.ai_base_url; $('model').value = c.ai_model; $('apiStyle').value = c.ai_api_style || 'auto';
   $('apiKey').placeholder = c.ai_api_key_set ? '(key saved — leave blank to keep)' : '(leave blank)';
   $('autoTriage').checked = c.ai_auto_triage;
   $('autoMinSev').value = c.ai_auto_triage_min_severity || '';
@@ -300,6 +316,7 @@ async function loadCfg(){
   $('sysPrompt').value = c.ai_system_prompt || '';
   $('userTemplate').value = c.ai_user_template || '';
   $('maxTokens').value = c.ai_max_tokens || 900;
+  $('externalRedaction').value = c.ai_external_redaction || 'strict';
   window._defaultSysPrompt = c.ai_default_system_prompt || '';
   $('aiMode').value = c.ai_mode || 'local';
   applyMode();
@@ -309,13 +326,14 @@ async function loadCfg(){
 $('saveCfg').addEventListener('click', async () => {
   $('cfgStatus').textContent='Saving…'; $('cfgStatus').className='status-line';
   const body = { ai_base_url: $('baseUrl').value, ai_model: $('model').value,
-                 ai_mode: $('aiMode').value,
+                 ai_mode: $('aiMode').value, ai_api_style: $('apiStyle').value,
                  ai_auto_triage: $('autoTriage').checked,
                  ai_auto_triage_min_severity: $('autoMinSev').value,
                  ai_auto_triage_max_age_hours: parseInt($('autoMaxAge').value),
                  ai_system_prompt: $('sysPrompt').value,
                  ai_user_template: $('userTemplate').value,
-                 ai_max_tokens: parseInt($('maxTokens').value) || 900 };
+                 ai_max_tokens: parseInt($('maxTokens').value) || 900,
+                 ai_external_redaction: $('externalRedaction').value };
   if ($('apiKey').value) body.ai_api_key = $('apiKey').value;
   await fetch('/api/ai/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
   $('apiKey').value=''; $('cfgStatus').textContent='Saved.'; $('cfgStatus').className='status-line ok';

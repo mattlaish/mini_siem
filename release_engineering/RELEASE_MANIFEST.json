@@ -1,8 +1,30 @@
 {
-  "artifact_provenance": [
-    "source",
-    "build",
-    "package",
-    "checksum"
+  "generated_at": "2026-09-18",
+  "status": "IMPLEMENTED_TESTING_DEFERRED",
+  "canonical_parent": {
+    "artifact": "mini_siem_openai_responses_hardening_2026-09-18.zip",
+    "sha256": "dfb2776c069b32b633f99b0770e303a8971d813aaa33af198667f795d1e8029f"
+  },
+  "installer": {
+    "path": "install-services.sh",
+    "size": 26687,
+    "sha256": "5837b882eba27fb49acc45e58dabe645d081500dc012cc19ae0a313120490c1d",
+    "bash_n": "PASS"
+  },
+  "scope": [
+    "P0 source truth and complete-source packaging integrity",
+    "P1 fresh PostgreSQL owner/bootstrap boundary",
+    "read-only existing PostgreSQL inspection foundation"
+  ],
+  "validation_file": "P0_P1_VALIDATION_2026-09-18.json",
+  "release_claim": false,
+  "deferred": [
+    "full provisioned regression",
+    "live PostgreSQL",
+    "systemd",
+    "browser",
+    "backup/restore",
+    "live OpenAI",
+    "performance qualification"
   ]
 }

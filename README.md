@@ -503,9 +503,9 @@ Add your own by subclassing `Rule` (or reusing `ThresholdRule`) in
 
 ## 8. AI SOC analyst (/ai)
 
-A fourth page connects the SIEM to a **local** LLM to speed up triage.
-It talks to any OpenAI-compatible `/chat/completions` endpoint —
-Ollama, LM Studio, llama.cpp, or vLLM — so nothing leaves your network.
+A fourth page connects the SIEM to a **local or explicitly configured external** LLM to speed up triage.
+Local OpenAI-compatible servers (Ollama, LM Studio, llama.cpp, vLLM) continue to use `/chat/completions`.
+For `https://api.openai.com/v1`, protocol `auto` selects the OpenAI Responses API (`/responses`); the protocol can be overridden per deployment. External mode is HTTPS-only by default and applies the configured outbound evidence-redaction policy immediately before transmission. The default external policy is `strict`: identifiers are masked and standard raw log-message/alert-description free text is removed. `identifiers` keeps event text while masking IP/hostname/identity values; `none` sends the bounded evidence unchanged.
 
 Setup:
 1. Install a runtime and pull a model, e.g. with Ollama:
@@ -514,7 +514,8 @@ Setup:
 2. Open `/ai`, expand **LLM connection**, set the endpoint and model:
    - Ollama: `http://localhost:11434/v1`, model `qwen2.5:7b`
    - LM Studio: `http://localhost:1234/v1`, model as shown in its UI
-3. Click **Test connection**. Save.
+3. Leave **API protocol** on `Auto` unless the provider requires an override.
+4. Click **Test connection**. Save.
 
 What it does:
 - **Automatic triage (proactive)** — when enabled, every eligible new alert is
@@ -556,14 +557,12 @@ Security model (why it's built this way):
   in. This removes the prompt-injection risk of letting a model act on
   attacker-controlled log text — and the system prompts explicitly tell
   the model to treat log contents as data, not instructions.
-- **Local.** With a local runtime, log data never leaves your
-  infrastructure. (If you point it at a remote OpenAI-compatible
-  service instead, your log context would be sent there — so keep it
-  local for sensitive environments.)
+- **Local-first with explicit external egress.** With a local runtime, log data never leaves your infrastructure. External mode requires HTTPS by default, applies `strict` outbound evidence redaction by default, and OpenAI Responses requests explicitly set `store=false`. HTTP external mode is accepted only for an explicitly enabled loopback development exception (`MINISIEM_AI_ALLOW_INSECURE_LOOPBACK_EXTERNAL=1`).
 - The AI's output is assistive, not authoritative; the page says so and
   every answer ends with a verify-before-acting reminder.
-- The LLM API key (if any) is stored in the DB and never echoed back to
-  the browser.
+- The LLM API key is never echoed back to the browser and is not stored plaintext in the DB. The DB stores only ciphertext; the encryption master is an owner-only file outside the DB (`/var/lib/mini-siem/ai-secret-master.key` for systemd installs). Existing plaintext `ai_api_key` rows are migrated in place on first successful read.
+- Provider usage is recorded in `ai_usage_audit` as metadata only: provider/protocol/model, request IDs, HTTP status, token counts, retry count, latency and error code. Prompt/evidence text, model output and API keys are not stored in that audit table.
+- HTTP 429/transient 5xx and transient connection/timeout failures use bounded retry/backoff with a total request-time budget; `Retry-After`/`retry-after-ms` is honored when present. Responses API `failed` and `incomplete` states fail closed rather than being accepted as analyst output.
 
 Config lives in the `app_config` table and is edited entirely from the
 page — no restart needed. AI calls are made by the **dashboard**
@@ -805,3 +804,7 @@ These features are observability only; owner migrations, privilege changes, arch
 
 ## Phase 12.4 Performance & Capacity Qualification
 Status: IMPLEMENTED_TESTING_DEFERRED
+
+## Source-truth guard
+
+The repository includes `PLACEHOLDER_TRUTH_ALIGNMENT.md`, `PLACEHOLDER_TRUTH_INVENTORY.json`, and `tools/check_placeholder_truth.py`. Placeholder/design/scaffold Python and no-op `assert True` tests do not count as implementation or test evidence. The overall product remains `IMPLEMENTED_TESTING_DEFERRED`; current canonical status is in `ROADMAP.md`.

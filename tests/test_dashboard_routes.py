@@ -8,7 +8,7 @@ import dashboard
 
 SPLIT_ROUTES = {
     ("/api/ai/config", "GET"), ("/api/ai/config", "POST"),
-    ("/api/ai/test", "POST"), ("/api/ai/queue/stats", "GET"),
+    ("/api/ai/test", "POST"), ("/api/ai/usage", "GET"), ("/api/ai/queue/stats", "GET"),
     ("/api/ai/queue/retry", "POST"), ("/api/ai/queue/clear", "POST"),
     ("/api/ai/triage", "POST"), ("/api/ai/chat", "POST"),
     ("/api/health", "GET"), ("/api/db/integrity", "GET"),

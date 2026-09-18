@@ -327,7 +327,7 @@ CEF events remain visible even when vendor-specific fields cannot be normalized.
 
 ## PostgreSQL Privilege Boundary Hardening (2026-09-12)
 
-Status: **IMPLEMENTED / LIVE POSTGRES VALIDATION DEFERRED**.
+Status: `IMPLEMENTED_TESTING_DEFERRED` (live PostgreSQL validation deferred).
 
 Implemented on the application mainline:
 
@@ -355,7 +355,7 @@ Known residual boundary: the listener systemd service still runs as host root to
 
 ## Setup Troubleshoot: constrained syslog packet capture (2026-09-13)
 
-Status: **IMPLEMENTED / HOST-INTEGRATION VALIDATION REQUIRED**.
+Status: `IMPLEMENTED_TESTING_DEFERRED` (host-integration validation required).
 
 Added a simple **Setup -> Troubleshoot** workflow to answer whether syslog packets from one source IP are reaching the SIEM host.
 
@@ -428,7 +428,7 @@ Implemented:
 - Added missing portable foundations used by the existing archive code: `runtime_stats`, `archive_segments`, `archive_occurrence_catalog`, `Connection.executemany()`, `Connection.rollback()`, and conservative Storage batch/commit/rollback/close helpers.
 
 Schema/migration impact:
-- Migration ledger now has 26 versions. Versions 22-26 create `runtime_stats`, archive catalog tables, and their indexes.
+- Migration ledger now has 30 versions. Versions 22-26 create `runtime_stats`, archive catalog tables, and their indexes; versions 27-30 create the AI usage audit table and indexes.
 - PostgreSQL runtime identities still perform no DDL. Owner/migrator must apply the new migrations before services start.
 - After owner migration, rerun `tools/postgres_privilege_boundary.py` so the archive-catalog SELECT-only/maintenance-write boundary is applied to the new tables.
 
@@ -479,3 +479,118 @@ Added backup manifest/checksum validation workflow. Runtime identities do not pe
 
 ## Phase 12.4 Performance & Capacity Qualification
 Status: IMPLEMENTED_TESTING_DEFERRED
+## 2026-09-18 — OpenAI Responses API and AI provider hardening
+
+Implemented:
+- `LLMClient` supports `auto`, `responses`, and `chat_completions`; `api.openai.com` auto-selects Responses while local/compatible endpoints preserve Chat Completions.
+- Responses calls use `store=false`, bounded retry/backoff for 429/5xx, `x-request-id`, and generated `X-Client-Request-Id`.
+- AI API keys are encrypted with the existing authenticated `secretbox` primitive using a new external master file rather than a DB-resident master. Legacy plaintext AI keys migrate in place.
+- Added metadata-only `ai_usage_audit` plus admin read API `GET /api/ai/usage`; no prompt, evidence, output text, or API key is written to usage audit.
+- PostgreSQL privilege boundary grants dashboard INSERT-only mutation on AI usage evidence and denies UPDATE/DELETE/TRUNCATE to runtime application identities.
+- Migration ledger advances from 26 to 30; PostgreSQL owner/migrator must apply versions 27-30 before runtime startup, then privilege provisioning must be rerun.
+- Added loopback protocol integration tests plus an opt-in live OpenAI smoke test.
+
+The existing installer owner/runtime PostgreSQL separation changes are retained.
+
+
+### Validation evidence for this change set
+
+- targeted AI/provider/security tests: 33 passed, 1 intentionally skipped live-provider smoke;
+- broad dependency-available A/B regression: parent and patched trees have the same 32 inherited failures, while passing tests increase from 70 to 79;
+- changed Python compile, shell syntax, AI JavaScript syntax, fresh DB migration/key migration, and static security scan passed;
+- Flask-dependent regression, live OpenAI, and live PostgreSQL privilege verification remain deferred.
+
+## 2026-09-18 — P0 source truth repair + P1 PostgreSQL fresh-bootstrap foundation
+
+Status: `IMPLEMENTED_TESTING_DEFERRED` overall.
+
+Canonical parent inspected: `mini_siem_openai_responses_hardening_2026-09-18.zip`, SHA-256 `dfb2776c069b32b633f99b0770e303a8971d813aaa33af198667f795d1e8029f`.
+
+### P0 findings and changes
+
+- Parent whole-tree `compileall` reproduced 12 syntax failures from prose stored in Phase 13 `.py` files.
+- A further 7 Phase 13 `.py` files were valid syntax but only design/reference constants or unbound-name placeholders; they were also not usable implementation.
+- All 19 Phase 13 pseudo-code files were reclassified as Markdown `*_REFERENCE.md` material. Phase 13 remains `PLANNED`.
+- Added `PHASE13_PLACEHOLDER_RECLASSIFICATION.md` to preserve the source-truth decision.
+- Added `tools/build_source_artifact.py` so package integrity is an executable gate rather than a checklist only. It rejects `.git`, caches, bytecode, symlinks and runtime secret/state files; generates the complete per-file manifest; validates required files/size/shebang; builds ZIP; re-extracts it cleanly; verifies CRC/traversal/symlinks; validates Python/shell/JavaScript syntax in the extracted artifact; and compares every packaged source file by size/SHA-256.
+
+### P1 fresh PostgreSQL bootstrap
+
+- Added `tools/postgres_bootstrap.py` with explicit `fresh` and `inspect-existing` modes.
+- Customer PostgreSQL bootstrap credentials are prompt/environment input only and are never written to mini-SIEM config.
+- `configure-db.py` now records a non-secret PostgreSQL endpoint/database only; it does not ask for or persist a runtime/DBA username/password.
+- Fresh bootstrap creates/checks a dedicated `minisiem_owner`, creates/checks the target database, runs `db.initialize()` using the owner identity, provisions split runtime roles, writes component credential overlays, and verifies each role through `db.ensure_runtime_ready()`.
+- The migration owner remains `NOCREATEROLE`. `postgres_privilege_boundary.py` was refactored so runtime role creation/rotation can use a separate temporary role-admin connection while object/default-privilege grants execute as the schema owner.
+- Fresh bootstrap refuses unexpected existing DB ownership and refuses to adopt a target containing public/application objects. This prevents a fresh-install path from becoming an implicit upgrade/destructive ownership migration.
+- `inspect-existing` is read-only and reports DB owner, public-schema owner, object owners, migration versions, split-role presence, local credential overlays and systemd-unit presence. It explicitly performs no owner transfer/recreation.
+- `install-services.sh --bootstrap-postgres` invokes fresh bootstrap only when explicitly requested. PostgreSQL service installation now refuses a missing split privilege boundary and validates listener/dashboard schema readiness before systemd unit installation/start.
+
+### Validation evidence collected in this environment
+
+- Parent dependency-available comparison suite: **82 passed, 41 failed, 1 skipped**.
+- Patched dependency-available comparison suite after new tests: **92 passed, 41 failed, 1 skipped**. The existing 41 failure set remains baseline debt; it includes unavailable Flask imports plus inherited Phase 3-6/performance/UI/search drift. This changeset does not claim those failures are fixed.
+- Focused P0/P1/PostgreSQL tests: **21 passed**.
+- Repository-wide `python -m compileall`: **PASS** after Phase 13 reclassification.
+- Shell syntax: **PASS** for 4 shell scripts.
+- JavaScript syntax: **PASS** for 1 standalone JavaScript file when Node is available.
+- Static security scan: **0 findings across 29 scanned root Python files**.
+- Full pytest collection remains **DEFERRED/INCOMPLETE** in this environment: 134 tests collect, but collection stops with 3 errors because Flask/Werkzeug are not installed.
+- Live PostgreSQL, systemd, browser, OpenAI, backup/restore and sustained performance gates remain `NOT_RUN`/deferred; no `TESTED` or `RELEASED` product claim is made.
+
+### Next engineering slice
+
+Complete P1B: controlled existing/legacy PostgreSQL upgrade to the split-owner/runtime boundary, including backup evidence, explicit ownership-transfer plan/execution, interrupted migration recovery, idempotency, rollback/recovery, and credential rotation/re-provision. Do not begin Phase 13 feature implementation before the baseline/reliability sequence is complete.
+
+### P0 packaging integrity gate result
+
+P0 source-truth/packaging repair is `TESTED` as a bounded scope. A complete-source ZIP was built and independently extracted; ZIP CRC, path traversal, symlink, required-file/size/shebang, extracted Python/shell/JavaScript syntax, and complete source-to-extracted SHA-256 parity checks passed. The extracted artifact then passed the 21-test focused P0/P1/PostgreSQL smoke suite. This does not promote P1, the overall product, or the release to `TESTED`/`RELEASED`; live and full-regression gates remain deferred.
+
+## 2026-09-18 — Full repository placeholder truth alignment
+
+- Reclassified 6 non-implementation runtime/qualification `.py` placeholders as Markdown contracts.
+- Removed 6 no-op `assert True` tests from pytest collection and replaced them with explicit required-coverage documents.
+- Reclassified 28 migration/release executable-shaped scaffolds as `PLANNED` documentation because they did not perform the actions implied by their filenames.
+- Kept the Sophos adapter skeleton only as an explicit example with `EXAMPLE_ONLY = True`.
+- Added `PLACEHOLDER_TRUTH_ALIGNMENT.md`, machine-readable `PLACEHOLDER_TRUTH_INVENTORY.json`, `tools/check_placeholder_truth.py`, and regression tests for the truth gate.
+- This work is source/status alignment, not implementation of the removed capabilities. Overall product status remains `IMPLEMENTED_TESTING_DEFERRED`.
+
+### Placeholder-alignment validation evidence
+
+- `python tools/check_placeholder_truth.py`: PASS; 40 reclassified executable/test paths remain absent and the one intentional incomplete example is explicitly marked.
+- repository `compileall`: PASS.
+- shell `bash -n`: PASS.
+- standalone JavaScript syntax: PASS where Node is available.
+- static security scan: 0 findings across 29 root Python files.
+- focused placeholder/P0/P1 suite: 17 passed.
+- dependency-available suite: 88 passed, 41 failed, 1 skipped; the 41 failures are inherited baseline debt. The prior 92-pass count included six no-op `assert True` tests; those six false passes were removed and two real truth-gate tests were added, producing the truthful 88-pass count.
+- full pytest collection remains incomplete because Werkzeug/Flask are unavailable for three modules in this environment.
+
+- extracted complete-source artifact placeholder/P0/P1 focused smoke: 17 passed; artifact placeholder-truth gate: PASS.
+
+
+## 2026-09-18 — OpenAI egress hardening convergence
+
+Status: `IMPLEMENTED_TESTING_DEFERRED` overall. The bounded mocked/provider hardening scope is locally tested; live OpenAI qualification is still deferred.
+
+Implemented in this convergence slice:
+- external AI mode validates the endpoint before use and requires HTTPS by default; insecure HTTP is available only for an explicitly enabled loopback development endpoint (`MINISIEM_AI_ALLOW_INSECURE_LOOPBACK_EXTERNAL=1`);
+- outbound external evidence has configurable `strict`, `identifiers`, or `none` redaction, with `strict` as the default; redaction runs immediately before provider payload construction;
+- strict redaction masks IPv4/IPv6, labelled hostnames and identity-like values/email addresses, and removes the standard evidence formatter's raw log-message/alert-description free text;
+- Responses API HTTP-200 bodies with `status=failed` or `status=incomplete` fail closed with metadata-only usage/error evidence;
+- OpenAI Chat Completions compatibility uses `max_completion_tokens`, while generic/local compatible servers retain `max_tokens`;
+- transient URL/connection/timeout failures now use the same bounded retry discipline as retryable HTTP status codes, with a total call-time budget;
+- `/api/ai/test` and the live qualification probe use a 128-token output budget to avoid false negatives with reasoning-capable models;
+- `/ai` exposes the external evidence-redaction control and makes the HTTPS/redaction egress boundary visible to administrators.
+
+Validation in this environment:
+- OpenAI mocked/provider tests: **19 passed, 1 skipped** (the skip is the opt-in live test);
+- AI/progressive investigation focused suite: **41 passed, 1 skipped**;
+- dependency-available repository suite excluding the three uncollectable Flask/Werkzeug modules: **98 passed, 41 failed, 1 skipped** after this slice; the 41 failures are inherited baseline debt, not new OpenAI failures;
+- full `pytest` collection remains incomplete because `flask`/`werkzeug` are unavailable for `tests/test_admin_bootstrap.py`, `tests/test_dashboard_routes.py`, and `tests/test_log_search_logic.py`;
+- repository `compileall`, shell syntax, AI inline JavaScript syntax, placeholder-truth gate, and static security scan passed; static scan reports **0 findings / 29 scanned root Python files**;
+- opt-in live `gpt-5.6-luna` Responses qualification was attempted conditionally, but `OPENAI_API_KEY` is absent in this execution environment, so the live call is **NOT_RUN / DEFERRED**.
+
+No product-level `TESTED` or `RELEASED` claim is made.
+
+
+Artifact-level verification for this slice: clean extraction, ZIP CRC/path-traversal/symlink checks, required-file and syntax gates, complete source-to-extracted SHA-256 parity, placeholder-truth gate, and the extracted AI/progressive focused suite all pass; extracted focused result is **41 passed / 1 skipped**. The skip remains the live OpenAI test because no API key is present.

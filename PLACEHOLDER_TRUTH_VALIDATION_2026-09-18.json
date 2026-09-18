@@ -1,0 +1,47 @@
+{
+  "status": "IMPLEMENTED_TESTING_DEFERRED",
+  "scope_status": "TESTED",
+  "scope": "full_repository_placeholder_truth_alignment",
+  "parent_artifact": "mini_siem_p0_p1_pg_bootstrap_2026-09-18.zip",
+  "source_truth": {
+    "runtime_qualification_placeholders_reclassified": 6,
+    "trivial_assert_true_tests_reclassified": 6,
+    "migration_release_tool_scaffolds_reclassified": 28,
+    "total_reclassified_executable_test_paths": 40,
+    "allowed_intentionally_incomplete_examples": 1,
+    "placeholder_truth_gate": "PASS",
+    "repository_compileall": "PASS",
+    "shell_bash_n": "PASS",
+    "javascript_node_check": "PASS",
+    "static_security_scan": "PASS: 0 findings across 29 root Python files"
+  },
+  "tests": {
+    "focused_placeholder_p0_p1": "17 passed",
+    "dependency_available_suite": "88 passed, 41 failed, 1 skipped, 23 warnings",
+    "truth_correction": "six former assert-True tests no longer contribute pass evidence; two real placeholder-truth tests were added",
+    "full_collection": "INCOMPLETE: test_admin_bootstrap.py, test_dashboard_routes.py, and test_log_search_logic.py cannot collect because Werkzeug/Flask are unavailable in this environment"
+  },
+  "known_inherited_failures": "41 existing baseline failures remain in performance/UI/text-search/archive/import areas and are not hidden or promoted by this alignment",
+  "live_deferred": [
+    "clean PostgreSQL bootstrap and ownership verification",
+    "legacy PostgreSQL owner migration",
+    "PostgreSQL privilege regression",
+    "systemd/reboot/start-order",
+    "browser login/dashboard",
+    "listener and CEF end-to-end ingest",
+    "backup/restore",
+    "live OpenAI",
+    "24h/72h performance qualification"
+  ],
+  "artifact_integrity": {
+    "complete_source_zip_build": "PASS",
+    "zip_crc": "PASS",
+    "path_traversal": "PASS",
+    "symlink_check": "PASS",
+    "required_files": "PASS",
+    "extracted_python_shell_javascript_syntax": "PASS",
+    "placeholder_truth_gate_from_extracted_artifact": "PASS",
+    "source_extracted_sha256_parity": "PASS",
+    "artifact_level_focused_smoke": "17 passed"
+  }
+}

@@ -1,4 +1,5 @@
 from flask import Blueprint, jsonify, request
+import os
 import ai_soc
 
 bp = Blueprint("ai_api", __name__)
@@ -20,13 +21,15 @@ def api_ai_config_get():
     return jsonify({
         "ai_enabled": cfg["ai_enabled"] == "true",
         "ai_mode": cfg.get("ai_mode", "local"), "ai_base_url": cfg["ai_base_url"],
-        "ai_model": cfg["ai_model"], "ai_api_key_set": bool(cfg["ai_api_key"]),
+        "ai_model": cfg["ai_model"], "ai_api_style": cfg.get("ai_api_style", "auto"),
+        "ai_api_key_set": bool(cfg["ai_api_key"]),
         "ai_auto_triage": cfg.get("ai_auto_triage", "true") == "true",
         "ai_auto_triage_min_severity": cfg.get("ai_auto_triage_min_severity", ""),
         "ai_auto_triage_max_age_hours": int(cfg.get("ai_auto_triage_max_age_hours", "0") or 0),
         "ai_system_prompt": cfg.get("ai_system_prompt", ""),
         "ai_user_template": cfg.get("ai_user_template", ""),
         "ai_max_tokens": int(cfg.get("ai_max_tokens", "900") or 900),
+        "ai_external_redaction": cfg.get("ai_external_redaction", "strict"),
         "ai_default_system_prompt": ai_soc.TRIAGE_SYSTEM,
     })
 
@@ -42,6 +45,14 @@ def api_ai_config_set():
     if "ai_mode" in body: updates["ai_mode"] = "external" if body["ai_mode"] == "external" else "local"
     if "ai_base_url" in body: updates["ai_base_url"] = str(body["ai_base_url"]).strip()
     if "ai_model" in body: updates["ai_model"] = str(body["ai_model"]).strip()
+    if "ai_api_style" in body:
+        style = str(body["ai_api_style"] or "auto").strip().lower()
+        if style in {"auto", "responses", "chat_completions"}: updates["ai_api_style"] = style
+    if "ai_external_redaction" in body:
+        policy = str(body["ai_external_redaction"] or "strict").strip().lower()
+        if policy not in ai_soc.REDACTION_POLICIES:
+            return jsonify({"ok": False, "error": "ai_external_redaction must be none, identifiers, or strict"}), 400
+        updates["ai_external_redaction"] = policy
     if "ai_auto_triage" in body: updates["ai_auto_triage"] = "true" if body["ai_auto_triage"] else "false"
     if "ai_auto_triage_min_severity" in body: updates["ai_auto_triage_min_severity"] = str(body["ai_auto_triage_min_severity"]).strip()
     if "ai_auto_triage_max_age_hours" in body:
@@ -53,6 +64,19 @@ def api_ai_config_set():
         try: updates["ai_max_tokens"] = str(max(64, min(int(body["ai_max_tokens"] or 900), 8192)))
         except (TypeError, ValueError): pass
     if body.get("ai_api_key"): updates["ai_api_key"] = str(body["ai_api_key"]).strip()
+
+    current = _svc.get_ai_config()
+    prospective_mode = updates.get("ai_mode", current.get("ai_mode", "local"))
+    prospective_url = updates.get("ai_base_url", current.get("ai_base_url", ""))
+    if prospective_mode == "external":
+        try:
+            ai_soc.validate_external_endpoint(
+                prospective_url,
+                allow_insecure_loopback=os.environ.get("MINISIEM_AI_ALLOW_INSECURE_LOOPBACK_EXTERNAL") == "1",
+            )
+        except ValueError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 400
+
     _svc.save_ai_config(updates)
     sensitive, summarize = {"ai_api_key"}, {"ai_system_prompt", "ai_user_template"}
     parts = []
@@ -72,6 +96,36 @@ def api_ai_test():
         return jsonify({"ok": False, "error": "External mode needs an API token — none is set."}), 400
     ok, detail = _svc.llm_from_config().test()
     return jsonify({"ok": True, "detail": detail}) if ok else (jsonify({"ok": False, "error": detail}), 502)
+
+
+@bp.get("/api/ai/usage")
+def api_ai_usage():
+    denied = _svc.require_admin()
+    if denied is not None:
+        return denied
+    try:
+        limit = max(1, min(int(request.args.get("limit", "100")), 500))
+    except (TypeError, ValueError):
+        limit = 100
+    conn = _svc.get_conn()
+    try:
+        rows = conn.execute(
+            "SELECT at,provider,api_style,model,endpoint_host,request_id,client_request_id,status,http_status,"
+            "input_tokens,output_tokens,total_tokens,cached_tokens,reasoning_tokens,retry_count,"
+            "latency_ms,error_code FROM ai_usage_audit ORDER BY at DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        total = conn.execute(
+            "SELECT COUNT(*) AS calls, COALESCE(SUM(input_tokens),0) AS input_tokens, "
+            "COALESCE(SUM(output_tokens),0) AS output_tokens, COALESCE(SUM(total_tokens),0) AS total_tokens, "
+            "COALESCE(SUM(CASE WHEN status='error' THEN 1 ELSE 0 END),0) AS errors, "
+            "COALESCE(SUM(retry_count),0) AS retries FROM ai_usage_audit"
+        ).fetchone()
+        def as_dict(row):
+            return dict(row) if hasattr(row, "keys") else {}
+        return jsonify({"summary": as_dict(total), "rows": [as_dict(r) for r in rows]})
+    finally:
+        conn.close()
 
 
 @bp.get("/api/ai/queue/stats")

@@ -6,9 +6,10 @@ Run this ONCE before starting the SIEM to pick where logs are stored:
 
     python3 configure-db.py
 
-It asks a few questions, writes db-config.json, and (for PostgreSQL)
-tests the connection and creates the tables so you know it works before
-you go live. Re-run it any time to switch backends.
+It asks a few questions and writes the non-secret database endpoint to
+db-config.json. PostgreSQL schema creation and runtime-role provisioning are
+performed later by the dedicated bootstrap flow; this chooser never stores a
+customer DBA credential or uses a runtime account for DDL.
 
   * SQLite   — default, zero setup, one file. Great for a handful to a
                few dozen devices. No server to run.
@@ -49,29 +50,14 @@ def main():
                 "host": ask("Postgres host", "localhost"),
                 "port": int(ask("Postgres port", "5432")),
                 "dbname": ask("Database name", "minisiem"),
-                "user": ask("Username", "minisiem"),
-                "password": ask("Password", ""),
+                "user": "",
+                "password": "",
+                "connect_timeout": 5,
             },
         }
-        print("\nChecking psycopg2 driver...")
-        try:
-            import psycopg2  # noqa: F401
-            print("  psycopg2: OK")
-        except ImportError:
-            print("  psycopg2 is NOT installed. Install it first:")
-            print("      pip install psycopg2-binary")
-            print("  (config not written)")
-            sys.exit(1)
-
-        print("Testing connection and creating tables...")
-        try:
-            dbmod.initialize(cfg)
-            print("  PostgreSQL connection OK.")
-            print("  Tables created / verified.")
-        except Exception as exc:
-            print(f"  FAILED: {exc}")
-            print("  Fix the connection details / Postgres server, then re-run. (config not written)")
-            sys.exit(1)
+        print("\nPostgreSQL endpoint recorded without credentials.")
+        print("Connection validation, database/owner creation, schema migration, and split runtime")
+        print("role provisioning are performed by tools/postgres_bootstrap.py.")
     else:
         path = ask("SQLite file path", "siem.db")
         cfg = {
@@ -107,9 +93,10 @@ def main():
     print(f"\nWrote {CONFIG_PATH}")
     print(f"Backend set to: {dbmod.describe(cfg)}")
     if cfg.get("backend") == "postgres":
-        print("\nSecurity next step (recommended before starting services):")
-        print("  python3 tools/postgres_privilege_boundary.py --db-config ./db-config.json")
-        print("This creates split listener/dashboard/maintenance DB identities and makes logs append-only for runtime roles.")
+        print("\nRequired next step before starting services:")
+        print("  MINISIEM_PG_BOOTSTRAP_USER=<customer-admin> sudo -E ./install-services.sh --bootstrap-postgres")
+        print("For an existing database, run tools/postgres_bootstrap.py --mode inspect-existing first.")
+        print("Customer DBA credentials are bootstrap-only and are not written to runtime configuration.")
     else:
         print("Start the SIEM as usual (python3 siem.py) — it reads this file automatically.")
 

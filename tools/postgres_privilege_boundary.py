@@ -77,7 +77,7 @@ def _assert_roles_do_not_own_protected_tables(cur, roles):
           FROM pg_class c
           JOIN pg_namespace n ON n.oid=c.relnamespace
           JOIN pg_roles r ON r.oid=c.relowner
-         WHERE n.nspname='public' AND c.relname IN ('logs','schema_migrations')
+         WHERE n.nspname='public' AND c.relname IN ('logs','schema_migrations','ai_usage_audit')
         """
     )
     protected = cur.fetchall()
@@ -102,7 +102,13 @@ def _assert_roles_do_not_own_protected_tables(cur, roles):
                 )
 
 
-def _apply_grants(raw, *, runtime_role, ingest_role, dashboard_role, maintenance_role):
+def _provision_runtime_roles(raw, *, runtime_role, ingest_role, dashboard_role, maintenance_role):
+    """Create/rotate runtime identities using a PostgreSQL role administrator.
+
+    This connection needs CREATEROLE (or equivalent DBA authority) but does not
+    need to own mini-SIEM application tables.  Keeping this separate from
+    object grants lets ``minisiem_owner`` remain NOCREATEROLE.
+    """
     from psycopg2 import sql
 
     cur = raw.cursor()
@@ -116,17 +122,10 @@ def _apply_grants(raw, *, runtime_role, ingest_role, dashboard_role, maintenance
         for role, password in passwords.items():
             _ensure_login_role(cur, sql, role, password)
 
-        _assert_roles_do_not_own_protected_tables(
-            cur, {runtime_role, ingest_role, dashboard_role, maintenance_role}
-        )
-
         runtime = sql.Identifier(runtime_role)
         ingest = sql.Identifier(ingest_role)
         dashboard = sql.Identifier(dashboard_role)
         maintenance = sql.Identifier(maintenance_role)
-
-        # Make role relationships deterministic.  In particular, the web and
-        # ingest identities must never inherit the maintenance exception role.
         cur.execute(sql.SQL("GRANT {} TO {}, {}, {}").format(
             runtime, ingest, dashboard, maintenance
         ))
@@ -141,6 +140,44 @@ def _apply_grants(raw, *, runtime_role, ingest_role, dashboard_role, maintenance
                 raise RuntimeError(
                     f"{role_name} still inherits maintenance role {maintenance_role} through nested membership"
                 )
+        raw.commit()
+        return passwords
+    except Exception:
+        raw.rollback()
+        raise
+    finally:
+        cur.close()
+
+
+def _apply_grants(raw, *, runtime_role, ingest_role, dashboard_role, maintenance_role,
+                  role_admin_raw=None):
+    """Apply the split-role boundary to owner-created application objects.
+
+    ``raw`` is the schema-owner connection.  ``role_admin_raw`` may be a
+    separate temporary customer DBA/CREATEROLE connection used only to create
+    or rotate login roles.  When omitted, legacy behavior uses ``raw`` for both
+    duties; that requires the caller to have CREATEROLE.
+    """
+    from psycopg2 import sql
+
+    passwords = _provision_runtime_roles(
+        role_admin_raw or raw,
+        runtime_role=runtime_role,
+        ingest_role=ingest_role,
+        dashboard_role=dashboard_role,
+        maintenance_role=maintenance_role,
+    )
+
+    cur = raw.cursor()
+    try:
+        _assert_roles_do_not_own_protected_tables(
+            cur, {runtime_role, ingest_role, dashboard_role, maintenance_role}
+        )
+
+        runtime = sql.Identifier(runtime_role)
+        ingest = sql.Identifier(ingest_role)
+        dashboard = sql.Identifier(dashboard_role)
+        maintenance = sql.Identifier(maintenance_role)
 
         # Dedicated mini-SIEM DB: runtime identities can use the schema and all
         # normal application tables, but cannot own/alter schema objects.
@@ -160,9 +197,8 @@ def _apply_grants(raw, *, runtime_role, ingest_role, dashboard_role, maintenance
         cur.execute(sql.SQL(
             "GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO {}"
         ).format(runtime))
-        # Future owner-created application objects inherit the same runtime
-        # baseline. Security-sensitive future tables must still be explicitly
-        # restricted by their migration just as logs/schema_migrations are here.
+        # These ALTER DEFAULT PRIVILEGES statements execute as the schema owner,
+        # so future owner-created objects inherit the runtime baseline.
         cur.execute(sql.SQL(
             "ALTER DEFAULT PRIVILEGES IN SCHEMA public "
             "GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO {}"
@@ -189,6 +225,20 @@ def _apply_grants(raw, *, runtime_role, ingest_role, dashboard_role, maintenance
             "REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLE public.schema_migrations FROM {}; "
             "GRANT SELECT ON TABLE public.schema_migrations TO {}"
         ).format(runtime, runtime))
+
+        # AI provider usage evidence is append-only from the dashboard process.
+        # Other runtime identities may read it but cannot forge or rewrite rows.
+        cur.execute(sql.SQL(
+            "REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLE public.ai_usage_audit FROM {}; "
+            "GRANT SELECT ON TABLE public.ai_usage_audit TO {}"
+        ).format(runtime, runtime))
+        for role in (ingest, dashboard, maintenance):
+            cur.execute(sql.SQL(
+                "REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLE public.ai_usage_audit FROM {}"
+            ).format(role))
+        cur.execute(sql.SQL(
+            "GRANT INSERT ON TABLE public.ai_usage_audit TO {}"
+        ).format(dashboard))
 
         # Remove legacy direct privileges that could otherwise override the
         # group-role REVOKE.
@@ -268,6 +318,7 @@ def _apply_grants(raw, *, runtime_role, ingest_role, dashboard_role, maintenance
         cur.execute("REVOKE ALL ON TABLE public.logs FROM PUBLIC")
         cur.execute("REVOKE ALL ON TABLE public.archive_segments FROM PUBLIC")
         cur.execute("REVOKE ALL ON TABLE public.archive_occurrence_catalog FROM PUBLIC")
+        cur.execute("REVOKE ALL ON TABLE public.ai_usage_audit FROM PUBLIC")
         raw.commit()
         return passwords
     except Exception:
@@ -299,7 +350,12 @@ def _verify_login(base_cfg: dict, cred_path: Path, identity: str):
                    has_column_privilege(current_user,'public.logs','received_at','INSERT') AS can_insert,
                    has_column_privilege(current_user,'public.logs','raw','UPDATE') AS can_update_raw,
                    has_table_privilege(current_user,'public.schema_migrations','SELECT') AS can_read_migrations,
-                   has_table_privilege(current_user,'public.schema_migrations','UPDATE') AS can_edit_migrations
+                   has_table_privilege(current_user,'public.schema_migrations','UPDATE') AS can_edit_migrations,
+                   has_table_privilege(current_user,'public.ai_usage_audit','SELECT') AS can_read_ai_usage,
+                   has_table_privilege(current_user,'public.ai_usage_audit','INSERT') AS can_insert_ai_usage,
+                   has_table_privilege(current_user,'public.ai_usage_audit','UPDATE') AS can_update_ai_usage,
+                   has_table_privilege(current_user,'public.ai_usage_audit','DELETE') AS can_delete_ai_usage,
+                   has_table_privilege(current_user,'public.ai_usage_audit','TRUNCATE') AS can_truncate_ai_usage
             """
         ).fetchone()
         data = dict(row)
@@ -312,6 +368,13 @@ def _verify_login(base_cfg: dict, cred_path: Path, identity: str):
             raise RuntimeError(f"{identity} has forbidden log mutation privilege: {data}")
         if not data["can_read_migrations"] or data["can_edit_migrations"]:
             raise RuntimeError(f"{identity} migration-ledger privilege mismatch: {data}")
+        if not data["can_read_ai_usage"]:
+            raise RuntimeError(f"{identity} cannot read AI usage audit evidence: {data}")
+        expected_usage_insert = identity == "dashboard"
+        if bool(data["can_insert_ai_usage"]) != expected_usage_insert:
+            raise RuntimeError(f"{identity} AI usage INSERT privilege mismatch: {data}")
+        if data["can_update_ai_usage"] or data["can_delete_ai_usage"] or data["can_truncate_ai_usage"]:
+            raise RuntimeError(f"{identity} can mutate AI usage audit evidence: {data}")
         dbmod.ensure_runtime_ready(cfg)
         return data
     finally:

@@ -1,15 +1,18 @@
 """
 mini-SIEM AI SOC analyst
 ========================
-Connects the SIEM to a LOCAL large language model to assist with SOC
+Connects the SIEM to a configured large language model to assist with SOC
 work — explaining and triaging alerts and events in plain language and
-suggesting next steps.
+suggesting next steps. Local OpenAI-compatible endpoints remain the default
+deployment style; explicitly configured external OpenAI endpoints use the
+Responses API by default.
 
 Design principles
 -----------------
-* Local-first: talks to an OpenAI-compatible /chat/completions endpoint,
-  which Ollama, LM Studio, llama.cpp and vLLM all expose. Nothing leaves
-  your network.
+* Local-first with explicit external opt-in: local OpenAI-compatible servers
+  continue to use /chat/completions. api.openai.com uses /responses by
+  default, with store=false. External mode sends only the bounded context
+  selected by the SIEM for that request.
 * Read-only: the model NEVER runs queries. The server gathers the
   relevant context (the alert, its related events, the source's recent
   history) and passes it in. This removes the prompt-injection risk of
@@ -23,8 +26,13 @@ No third-party dependencies — uses urllib from the standard library.
 import json
 import urllib.request
 import urllib.error
+import urllib.parse
 import ipaddress
 import re
+import random
+import socket
+import time
+import uuid
 from collections import Counter, defaultdict
 from datetime import datetime, timezone, timedelta
 
@@ -39,58 +47,419 @@ MAX_CONTEXT_EVENTS = 40  # legacy/chat bound; profile evidence has per-stage bud
 MAX_MSG_LEN = 500
 MAX_CHAT_MATCHES = 30
 DEFAULT_TIMEOUT = 120
+DEFAULT_TEST_MAX_TOKENS = 128
+REDACTION_POLICIES = {"none", "identifiers", "strict"}
+
+
+def _is_loopback_host(host: str) -> bool:
+    host = (host or "").strip().lower().strip("[]")
+    if host in {"localhost", "localhost.localdomain"}:
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def validate_external_endpoint(base_url: str, *, allow_insecure_loopback: bool = False) -> str:
+    """Validate an external AI endpoint before any credential/evidence leaves the host.
+
+    External providers are HTTPS-only by default.  An insecure HTTP endpoint is
+    accepted only for an explicitly enabled loopback development exception.
+    """
+    url = (base_url or "").strip()
+    parsed = urllib.parse.urlparse(url)
+    if not parsed.scheme or not parsed.hostname:
+        raise ValueError("external AI endpoint must be an absolute URL")
+    if parsed.username or parsed.password:
+        raise ValueError("external AI endpoint must not embed credentials in the URL")
+    if parsed.scheme.lower() == "https":
+        return url
+    if parsed.scheme.lower() == "http" and allow_insecure_loopback and _is_loopback_host(parsed.hostname):
+        return url
+    raise ValueError("external AI endpoint must use HTTPS; insecure HTTP is allowed only for an explicitly enabled loopback development endpoint")
+
+
+_IPV4_RE = re.compile(r"(?<![\w.])(?:\d{1,3}\.){3}\d{1,3}(?![\w.])")
+_EMAIL_RE = re.compile(r"(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b")
+_IPV6_RE = re.compile(r"(?<![\w])(?:[0-9A-Fa-f]{0,4}:){2,7}[0-9A-Fa-f]{0,4}(?![\w])")
+_LABELLED_HOST_RE = re.compile(r"(?i)\b(host|hostname|computer|device|dhost)(\s*[:=]\s*)([^\s|,;]+)")
+_LABELLED_ID_RE = re.compile(r"(?i)\b(user|username|account|principal|login|identity)(\s*[:=]\s*)([^\s|,;]+)")
+
+
+def _redact_valid_ip(match):
+    text = match.group(0)
+    try:
+        ipaddress.ip_address(text)
+    except ValueError:
+        return text
+    return "<ip-redacted>"
+
+
+def redact_outbound_text(text: str, policy: str = "strict") -> str:
+    """Redact SIEM evidence immediately before external-provider transmission.
+
+    ``identifiers`` masks IP/host/identity-like values while retaining event
+    free text. ``strict`` additionally removes standard alert descriptions and
+    raw log-message segments produced by this module's evidence formatters.
+    """
+    policy = (policy or "strict").strip().lower()
+    if policy not in REDACTION_POLICIES:
+        raise ValueError("redaction policy must be none, identifiers, or strict")
+    value = str(text or "")
+    if policy == "none":
+        return value
+
+    value = _IPV4_RE.sub(_redact_valid_ip, value)
+    value = _IPV6_RE.sub(_redact_valid_ip, value)
+    value = _EMAIL_RE.sub("<identity-redacted>", value)
+    value = _LABELLED_HOST_RE.sub(lambda m: f"{m.group(1)}{m.group(2)}<hostname-redacted>", value)
+    value = _LABELLED_ID_RE.sub(lambda m: f"{m.group(1)}{m.group(2)}<identity-redacted>", value)
+
+    if policy == "strict":
+        redacted_lines = []
+        for line in value.splitlines():
+            stripped = line.lstrip()
+            prefix = line[:len(line) - len(stripped)]
+            if stripped.lower().startswith("description:"):
+                line = prefix + "Description: <message-redacted>"
+            elif " | " in line:
+                line = line.split(" | ", 1)[0] + " | <message-redacted>"
+            elif " — " in line and ("[" in line or "src=" in line):
+                line = line.split(" — ", 1)[0] + " — <message-redacted>"
+            redacted_lines.append(line)
+        value = "\n".join(redacted_lines)
+    return value
+
+
+def redact_outbound_messages(messages, policy: str = "strict"):
+    return [
+        {**msg, "content": redact_outbound_text(msg.get("content", ""), policy)}
+        if isinstance(msg, dict) else msg
+        for msg in (messages or [])
+    ]
+
+
+class LLMResponseError(RuntimeError):
+    """A provider returned HTTP success but the model response did not complete."""
+
+    def __init__(self, status: str, detail: str = ""):
+        self.status = str(status or "unknown")
+        self.detail = str(detail or "")
+        super().__init__(f"LLM response status {self.status}: {self.detail or 'no detail provided'}")
 
 
 # --------------------------------------------------------------------------
-# LLM client (OpenAI-compatible chat completions)
+# LLM client (OpenAI Responses + compatible Chat Completions)
 # --------------------------------------------------------------------------
 
 class LLMClient:
+    """Stdlib-only client for OpenAI Responses and Chat Completions.
+
+    ``api_style=auto`` keeps existing local OpenAI-compatible servers on
+    ``/chat/completions`` while selecting ``/responses`` for api.openai.com.
+    The caller can force either style for another compatible provider.
+    """
+
+    RETRYABLE_HTTP = {429, 500, 502, 503, 504}
+
     def __init__(self, base_url: str, model: str, api_key: str = "",
-                 timeout: int = DEFAULT_TIMEOUT):
-        # normalize: allow users to paste ".../v1" or ".../v1/chat/completions"
+                 timeout: int = DEFAULT_TIMEOUT, api_style: str = "auto",
+                 max_retries: int = 3, backoff_base: float = 1.0,
+                 backoff_cap: float = 30.0, sleep_fn=None, random_fn=None,
+                 usage_callback=None, external_mode: bool = False,
+                 redaction_policy: str = "strict", total_timeout: float = None,
+                 allow_insecure_loopback_external: bool = False):
         base = (base_url or "").strip().rstrip("/")
+        explicit_style = (api_style or "auto").strip().lower()
+        if explicit_style not in {"auto", "responses", "chat_completions"}:
+            raise ValueError("api_style must be auto, responses, or chat_completions")
+
         if base.endswith("/chat/completions"):
-            self.endpoint = base
+            inferred = "chat_completions"
+            root = base[:-len("/chat/completions")]
+        elif base.endswith("/responses"):
+            inferred = "responses"
+            root = base[:-len("/responses")]
         else:
-            self.endpoint = base + "/chat/completions"
+            inferred = ""
+            root = base
+
+        if explicit_style == "auto":
+            host = (urllib.parse.urlparse(root).hostname or "").lower()
+            style = inferred or ("responses" if host == "api.openai.com" else "chat_completions")
+        else:
+            style = explicit_style
+
+        self.external_mode = bool(external_mode)
+        self.allow_insecure_loopback_external = bool(allow_insecure_loopback_external)
+        if self.external_mode:
+            validate_external_endpoint(root, allow_insecure_loopback=self.allow_insecure_loopback_external)
+
+        policy = (redaction_policy or "strict").strip().lower()
+        if policy not in REDACTION_POLICIES:
+            raise ValueError("redaction policy must be none, identifiers, or strict")
+
+        self.base_url = root.rstrip("/")
+        self.api_style = style
+        self.endpoint = self.base_url + ("/responses" if style == "responses" else "/chat/completions")
         self.model = model
         self.api_key = (api_key or "").strip()
-        self.timeout = timeout
+        self.redaction_policy = policy
+        self.timeout = max(1.0, float(timeout))
+        self.max_retries = max(0, int(max_retries))
+        self.total_timeout = max(self.timeout, float(total_timeout)) if total_timeout is not None else min(300.0, self.timeout * 2.0)
+        self.backoff_base = max(0.0, float(backoff_base))
+        self.backoff_cap = max(self.backoff_base, float(backoff_cap))
+        self._sleep = sleep_fn or time.sleep
+        self._random = random_fn or random.random
+        self._usage_callback = usage_callback
 
-    def chat(self, messages, temperature: float = 0.2, max_tokens: int = 900) -> str:
+    def _payload(self, messages, temperature: float, max_tokens: int):
+        if self.api_style == "responses":
+            instructions = []
+            input_items = []
+            for msg in messages:
+                role = str(msg.get("role") or "user")
+                content = msg.get("content")
+                if role in {"system", "developer"}:
+                    if content:
+                        instructions.append(str(content))
+                    continue
+                if role not in {"user", "assistant"}:
+                    role = "user"
+                input_items.append({"role": role, "content": str(content or "")})
+            payload = {
+                "model": self.model,
+                "input": input_items,
+                "max_output_tokens": int(max_tokens),
+                # SIEM evidence can be sensitive. Explicitly opt out of stored
+                # Responses instead of relying on provider defaults.
+                "store": False,
+            }
+            if instructions:
+                payload["instructions"] = "\n\n".join(instructions)
+            # Intentionally omit temperature for Responses. Current reasoning
+            # models do not uniformly accept sampling parameters.
+            return payload
+
         payload = {
             "model": self.model,
             "messages": messages,
             "temperature": temperature,
-            "max_tokens": max_tokens,
             "stream": False,
         }
-        data = json.dumps(payload).encode("utf-8")
-        headers = {"Content-Type": "application/json"}
-        if self.api_key:
-            headers["Authorization"] = f"Bearer {self.api_key}"
-        req = urllib.request.Request(self.endpoint, data=data, headers=headers, method="POST")
-        with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-            body = json.loads(resp.read().decode("utf-8"))
-        # OpenAI-compatible shape
+        # OpenAI's current Chat Completions contract uses max_completion_tokens.
+        # Keep max_tokens for local/generic compatible servers that still expect it.
+        if (urllib.parse.urlparse(self.endpoint).hostname or "").lower() == "api.openai.com":
+            payload["max_completion_tokens"] = int(max_tokens)
+        else:
+            payload["max_tokens"] = int(max_tokens)
+        return payload
+
+    @staticmethod
+    def _response_text(body):
+        # output_text is SDK convenience data on some compatible servers; the
+        # REST Responses API returns output/message/content items.
+        direct = body.get("output_text") if isinstance(body, dict) else None
+        if isinstance(direct, str) and direct.strip():
+            return direct.strip()
+        if isinstance(body, dict):
+            parts = []
+            for item in body.get("output") or []:
+                if not isinstance(item, dict) or item.get("type") != "message":
+                    continue
+                for content in item.get("content") or []:
+                    if isinstance(content, dict) and content.get("type") == "output_text":
+                        text = content.get("text")
+                        if text:
+                            parts.append(str(text))
+            if parts:
+                return "\n".join(parts).strip()
+            try:
+                return body["choices"][0]["message"]["content"].strip()
+            except (KeyError, IndexError, TypeError, AttributeError):
+                pass
+        return json.dumps(body)[:2000]
+
+    @staticmethod
+    def _responses_status_error(body):
+        if not isinstance(body, dict):
+            return None
+        status = str(body.get("status") or "").strip().lower()
+        if not status or status == "completed":
+            return None
+        detail = ""
+        if status == "failed":
+            err = body.get("error")
+            if isinstance(err, dict):
+                detail = str(err.get("message") or err.get("code") or err.get("type") or "")
+            elif err:
+                detail = str(err)
+        elif status == "incomplete":
+            incomplete = body.get("incomplete_details")
+            if isinstance(incomplete, dict):
+                detail = str(incomplete.get("reason") or incomplete)
+            elif incomplete:
+                detail = str(incomplete)
+        else:
+            detail = "unexpected non-completed Responses API state"
+        return LLMResponseError(status, detail)
+
+    @staticmethod
+    def _usage(body):
+        usage = body.get("usage") if isinstance(body, dict) else None
+        usage = usage if isinstance(usage, dict) else {}
+        inp = usage.get("input_tokens", usage.get("prompt_tokens", 0)) or 0
+        out = usage.get("output_tokens", usage.get("completion_tokens", 0)) or 0
+        total = usage.get("total_tokens", (int(inp) + int(out))) or 0
+        in_details = usage.get("input_tokens_details") or usage.get("prompt_tokens_details") or {}
+        out_details = usage.get("output_tokens_details") or usage.get("completion_tokens_details") or {}
+        return {
+            "input_tokens": int(inp),
+            "output_tokens": int(out),
+            "total_tokens": int(total),
+            "cached_tokens": int((in_details or {}).get("cached_tokens") or 0),
+            "reasoning_tokens": int((out_details or {}).get("reasoning_tokens") or 0),
+        }
+
+    def _emit_usage(self, *, status, body=None, request_id="", client_request_id="",
+                    http_status=0, retry_count=0, latency_ms=0, error_code=""):
+        if not self._usage_callback:
+            return
+        event = {
+            "provider": "openai" if (urllib.parse.urlparse(self.endpoint).hostname or "").lower() == "api.openai.com" else "compatible",
+            "api_style": self.api_style,
+            "model": self.model,
+            "endpoint_host": (urllib.parse.urlparse(self.endpoint).hostname or "")[:255],
+            "request_id": str(request_id or "")[:255],
+            "client_request_id": str(client_request_id or "")[:512],
+            "status": status,
+            "http_status": int(http_status or 0),
+            "retry_count": int(retry_count or 0),
+            "latency_ms": int(latency_ms or 0),
+            "error_code": str(error_code or "")[:120],
+        }
+        event.update(self._usage(body or {}))
         try:
-            return body["choices"][0]["message"]["content"].strip()
-        except (KeyError, IndexError, TypeError):
-            # Some servers nest differently; return the raw body for debugging
-            return json.dumps(body)[:2000]
+            self._usage_callback(event)
+        except Exception as exc:
+            # Accounting failure must not transform a successful analyst call
+            # into an application outage; the failure stays visible in logs.
+            print(f"[ai-usage] audit write failed: {type(exc).__name__}: {exc}")
+
+    def _retry_delay(self, headers, attempt: int) -> float:
+        headers = headers or {}
+        raw_ms = headers.get("retry-after-ms") if hasattr(headers, "get") else None
+        if raw_ms:
+            try:
+                return min(self.backoff_cap, max(0.0, float(raw_ms) / 1000.0))
+            except (TypeError, ValueError):
+                pass
+        raw = headers.get("Retry-After") if hasattr(headers, "get") else None
+        if raw:
+            try:
+                return min(self.backoff_cap, max(0.0, float(raw)))
+            except (TypeError, ValueError):
+                pass
+        delay = self.backoff_base * (2 ** attempt)
+        delay += delay * 0.25 * float(self._random())
+        return min(self.backoff_cap, delay)
+
+    def chat(self, messages, temperature: float = 0.2, max_tokens: int = 900) -> str:
+        outbound_messages = redact_outbound_messages(messages, self.redaction_policy) if self.external_mode else list(messages or [])
+        payload = self._payload(outbound_messages, temperature, max_tokens)
+        data = json.dumps(payload).encode("utf-8")
+        base_headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            base_headers["Authorization"] = f"Bearer {self.api_key}"
+
+        started = time.monotonic()
+        deadline = started + self.total_timeout
+        retry_count = 0
+        while True:
+            client_request_id = str(uuid.uuid4())
+            headers = dict(base_headers)
+            headers["X-Client-Request-Id"] = client_request_id
+            req = urllib.request.Request(self.endpoint, data=data, headers=headers, method="POST")
+            try:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError("AI request exceeded total timeout budget")
+                with urllib.request.urlopen(req, timeout=min(self.timeout, max(1.0, remaining))) as resp:
+                    body = json.loads(resp.read().decode("utf-8"))
+                    request_id = resp.headers.get("x-request-id", "")
+                    latency_ms = int((time.monotonic() - started) * 1000)
+                    if self.api_style == "responses":
+                        response_error = self._responses_status_error(body)
+                        if response_error is not None:
+                            self._emit_usage(
+                                status="error", body=body, request_id=request_id,
+                                client_request_id=client_request_id,
+                                http_status=getattr(resp, "status", 200),
+                                retry_count=retry_count, latency_ms=latency_ms,
+                                error_code=f"response_{response_error.status}",
+                            )
+                            raise response_error
+                    self._emit_usage(
+                        status="success", body=body, request_id=request_id,
+                        client_request_id=client_request_id,
+                        http_status=getattr(resp, "status", 200),
+                        retry_count=retry_count, latency_ms=latency_ms,
+                    )
+                    return self._response_text(body)
+            except urllib.error.HTTPError as exc:
+                request_id = exc.headers.get("x-request-id", "") if exc.headers else ""
+                if exc.code in self.RETRYABLE_HTTP and retry_count < self.max_retries:
+                    delay = self._retry_delay(exc.headers, retry_count)
+                    if time.monotonic() + delay < deadline:
+                        retry_count += 1
+                        self._sleep(delay)
+                        continue
+                latency_ms = int((time.monotonic() - started) * 1000)
+                self._emit_usage(
+                    status="error", request_id=request_id,
+                    client_request_id=client_request_id, http_status=exc.code,
+                    retry_count=retry_count, latency_ms=latency_ms,
+                    error_code=f"http_{exc.code}",
+                )
+                raise
+            except (urllib.error.URLError, ConnectionError, TimeoutError, socket.timeout) as exc:
+                if retry_count < self.max_retries:
+                    delay = self._retry_delay({}, retry_count)
+                    if time.monotonic() + delay < deadline:
+                        retry_count += 1
+                        self._sleep(delay)
+                        continue
+                latency_ms = int((time.monotonic() - started) * 1000)
+                self._emit_usage(
+                    status="error", client_request_id=client_request_id,
+                    retry_count=retry_count, latency_ms=latency_ms,
+                    error_code="network_error",
+                )
+                raise
+            except LLMResponseError:
+                raise
+            except Exception as exc:
+                latency_ms = int((time.monotonic() - started) * 1000)
+                self._emit_usage(
+                    status="error", client_request_id=client_request_id,
+                    retry_count=retry_count, latency_ms=latency_ms,
+                    error_code=type(exc).__name__,
+                )
+                raise
 
     def test(self):
         """Returns (ok: bool, detail: str)."""
         try:
             reply = self.chat(
                 [{"role": "user", "content": "Reply with the single word: ready"}],
-                temperature=0, max_tokens=10)
+                temperature=0, max_tokens=DEFAULT_TEST_MAX_TOKENS)
             return True, f"Model responded: {reply[:80]}"
         except urllib.error.HTTPError as e:
-            return False, f"HTTP {e.code}: {e.reason}. Check the model name is pulled/loaded on the server."
+            return False, f"HTTP {e.code}: {e.reason}. Check the API key, model access, and model name."
         except urllib.error.URLError as e:
-            return False, f"Could not reach {self.endpoint}: {e.reason}. Is the LLM server running?"
+            return False, f"Could not reach {self.endpoint}: {e.reason}. Is the LLM/API endpoint reachable?"
         except Exception as e:
             return False, f"{type(e).__name__}: {e}"
 

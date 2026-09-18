@@ -11,6 +11,9 @@ import sqlite3
 from api_poller import PollerManager
 
 
+EXAMPLE_ONLY = True
+IMPLEMENTATION_STATUS = "PLANNED_INTEGRATION_HOOK"
+
 DB_PATH = os.environ.get("SOPHOS_POLLER_DB", "sophos-poller.db")
 
 

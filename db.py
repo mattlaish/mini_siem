@@ -67,7 +67,7 @@ DEFAULT_CONFIG = {
 RUNTIME_REQUIRED_TABLES = (
     "logs", "alerts", "forwarders", "source_profiles", "app_config",
     "api_pollers", "users", "iocs", "ioc_matches", "reports", "ioc_feeds",
-    "audit_log", "log_fields", "api_keys", "schema_migrations",
+    "audit_log", "log_fields", "api_keys", "schema_migrations", "ai_usage_audit",
     "runtime_stats", "archive_segments", "archive_occurrence_catalog",
 )
 
@@ -392,6 +392,28 @@ def _schema_statements(backend: str):
         "CREATE INDEX IF NOT EXISTS idx_audit_at ON audit_log(at)",
         "CREATE INDEX IF NOT EXISTS idx_audit_user ON audit_log(username)",
         "CREATE INDEX IF NOT EXISTS idx_audit_action ON audit_log(action)",
+        """CREATE TABLE IF NOT EXISTS ai_usage_audit (
+            at                TEXT NOT NULL,
+            provider          TEXT NOT NULL,
+            api_style         TEXT NOT NULL,
+            model             TEXT NOT NULL,
+            endpoint_host     TEXT,
+            request_id        TEXT,
+            client_request_id TEXT,
+            status            TEXT NOT NULL,
+            http_status       INTEGER DEFAULT 0,
+            input_tokens      INTEGER DEFAULT 0,
+            output_tokens     INTEGER DEFAULT 0,
+            total_tokens      INTEGER DEFAULT 0,
+            cached_tokens     INTEGER DEFAULT 0,
+            reasoning_tokens  INTEGER DEFAULT 0,
+            retry_count       INTEGER DEFAULT 0,
+            latency_ms        INTEGER DEFAULT 0,
+            error_code        TEXT
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_ai_usage_at ON ai_usage_audit(at)",
+        "CREATE INDEX IF NOT EXISTS idx_ai_usage_model ON ai_usage_audit(model)",
+        "CREATE INDEX IF NOT EXISTS idx_ai_usage_status ON ai_usage_audit(status)",
         f"""CREATE TABLE IF NOT EXISTS log_fields (
             id      {pk},
             log_id  INTEGER NOT NULL,
@@ -609,6 +631,10 @@ def _migrations():
         "CREATE TABLE IF NOT EXISTS archive_occurrence_catalog (log_id INTEGER PRIMARY KEY, segment_id TEXT NOT NULL, archived_at TEXT NOT NULL)",
         "CREATE INDEX IF NOT EXISTS idx_archive_segments_end_at ON archive_segments(end_at)",
         "CREATE INDEX IF NOT EXISTS idx_archive_occ_segment ON archive_occurrence_catalog(segment_id)",
+        "CREATE TABLE IF NOT EXISTS ai_usage_audit (at TEXT NOT NULL, provider TEXT NOT NULL, api_style TEXT NOT NULL, model TEXT NOT NULL, endpoint_host TEXT, request_id TEXT, client_request_id TEXT, status TEXT NOT NULL, http_status INTEGER DEFAULT 0, input_tokens INTEGER DEFAULT 0, output_tokens INTEGER DEFAULT 0, total_tokens INTEGER DEFAULT 0, cached_tokens INTEGER DEFAULT 0, reasoning_tokens INTEGER DEFAULT 0, retry_count INTEGER DEFAULT 0, latency_ms INTEGER DEFAULT 0, error_code TEXT)",
+        "CREATE INDEX IF NOT EXISTS idx_ai_usage_at ON ai_usage_audit(at)",
+        "CREATE INDEX IF NOT EXISTS idx_ai_usage_model ON ai_usage_audit(model)",
+        "CREATE INDEX IF NOT EXISTS idx_ai_usage_status ON ai_usage_audit(status)",
     ]
 
 

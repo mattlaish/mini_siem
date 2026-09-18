@@ -1,11 +1,7 @@
-# Phase 12.6 Security Release Qualification
+# Security Release Qualification
 
-Security qualification controls:
-- Authentication boundary
-- RBAC validation
-- PostgreSQL privilege boundary
-- Secret handling checks
-- Tenant isolation checks
-- Audit security review
+Status: `IMPLEMENTED_TESTING_DEFERRED`
 
-Status: IMPLEMENTED_TESTING_DEFERRED
+Real security/runtime controls include database privilege checks, secret handling, tenant controls, runtime authorization, and security scanning. The former `security/controls/rbac.py` was only a qualification contract placeholder and is now Markdown. It does not count as RBAC qualification evidence.
+
+Authentication/RBAC negative tests, external penetration testing, production identity integration, and live privilege qualification remain deferred.
