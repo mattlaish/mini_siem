@@ -522,23 +522,38 @@ class Storage:
             self._pending = 0
             self._last_commit = time.time()
 
-    def insert_log(self, event: dict) -> int:
+    def insert_log(self, event: dict, fields=None) -> int:
+        """Append raw evidence plus the PostgreSQL typed projection atomically.
+
+        SQLite keeps the historical raw/log_fields behavior.  PostgreSQL adds
+        Event Storage v2 in the same transaction, so a committed raw log cannot
+        silently exist without its typed query projection on the normal ingest
+        path.
+        """
         with self.lock:
-            new_id = self.conn.insert_returning_id(
-                """INSERT INTO logs
-                   (received_at, source_ip, peer_ip, format, priority, facility, severity,
-                    device_timestamp, hostname, destination, app_name, proc_id, msg_id, message, raw)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (
-                    event["received_at"], event["source_ip"], event.get("peer_ip", ""),
-                    event["format"], event["priority"],
-                    event["facility"], event["severity"], event["device_timestamp"],
-                    event["hostname"], event.get("destination", ""), event["app_name"],
-                    event["proc_id"], event["msg_id"], event["message"], event["raw"],
-                ),
-            )
-            self._maybe_commit_locked()
-            return new_id
+            try:
+                new_id = self.conn.insert_returning_id(
+                    """INSERT INTO logs
+                       (received_at, source_ip, peer_ip, format, priority, facility, severity,
+                        device_timestamp, hostname, destination, app_name, proc_id, msg_id, message, raw)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (
+                        event["received_at"], event["source_ip"], event.get("peer_ip", ""),
+                        event["format"], event["priority"], event["facility"], event["severity"],
+                        event["device_timestamp"], event["hostname"], event.get("destination", ""),
+                        event["app_name"], event["proc_id"], event["msg_id"], event["message"], event["raw"],
+                    ),
+                )
+                if fields:
+                    from normalize import write_fields
+                    write_fields(self.conn, int(new_id), fields)
+                from event_storage_v2 import append_projection
+                append_projection(self.conn, int(new_id), event, fields or {})
+                self._maybe_commit_locked()
+                return int(new_id)
+            except Exception:
+                self.rollback_locked()
+                raise
 
     def insert_log_batch(self, items):
         """Insert ``(event, fields)`` pairs atomically enough for archive tooling.
@@ -565,11 +580,10 @@ class Storage:
                         ),
                     )
                     ids.append(int(log_id))
-                    for field, value in (fields or {}).items():
-                        self.conn.execute(
-                            "INSERT INTO log_fields(log_id,field,value) VALUES (?,?,?)",
-                            (int(log_id), str(field), "" if value is None else str(value)),
-                        )
+                    from normalize import write_fields
+                    write_fields(self.conn, int(log_id), fields or {})
+                    from event_storage_v2 import append_projection
+                    append_projection(self.conn, int(log_id), event, fields or {})
                 self.conn.commit()
                 self._pending = 0
                 self._last_commit = time.time()
@@ -888,10 +902,16 @@ def main():
     def on_message(raw: str, source_ip: str):
         try:
             event = parse_syslog(raw, source_ip)
-            log_id = storage.insert_log(event)
+            extracted_fields = fields.extract(event)
+            log_id = storage.insert_log(event, fields=extracted_fields)
+            # Preserve unidentified-source diagnostics without a second write
+            # path; raw/log_fields/security_events were committed together.
+            try:
+                fields._maybe_capture_unidentified(log_id, event, len(extracted_fields))
+            except Exception:
+                pass
             engine.process(log_id, event)
             ioc.process(log_id, event)
-            fields.process(log_id, event)
             forwarders.forward(event)  # relay the original raw message downstream
             runtime_reporter.record_success(event.get("received_at"), source_ip=source_ip)
             sev = event["severity"] or "-"

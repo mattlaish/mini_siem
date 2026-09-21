@@ -118,3 +118,30 @@ owned by an unexpected role or containing public/application objects is not
 recreated, adopted, or ownership-transferred automatically. Existing deployment
 inspection is read-only until the controlled legacy migration scope is
 implemented and backup evidence is available.
+
+## PostgreSQL Event Storage v2 privilege boundary — 2026-09-19
+
+Status: `IMPLEMENTED_TESTING_DEFERRED`
+
+`security_events` is a derived hot query plane, not a second evidence authority.
+The listener may append and refresh only bounded derived columns, the dashboard
+is read-only, and maintenance alone may delete verified hot projection rows.
+`assets` and `identities` allow observation upserts only from the ingest role.
+Runtime roles do not receive DDL.
+
+Owner default TABLE privileges are now fail-closed to SELECT-only.  This prevents
+future partitions created by the bounded SECURITY DEFINER function from
+silently inheriting broad INSERT/UPDATE/DELETE/TRUNCATE rights.  Explicit
+mutable grants are applied to known current tables by
+`tools/postgres_privilege_boundary.py`.  The partition function is executable
+only by maintenance and accepts a bounded 1..24 month horizon.  Its daily
+systemd timer pre-creates partitions; it never removes evidence.
+
+Live PostgreSQL privilege verification, including a partition created after the
+boundary is applied, remains `NOT_RUN/DEFERRED` in the current environment.
+
+## Installation/upgrade separation
+
+`fresh-install.sh` and `upgrade-existing.sh` are intentionally mutually exclusive security boundaries. Fresh installation refuses operational state; existing upgrade refuses a fresh target and never calls fresh bootstrap. The low-level `install-services.sh --bootstrap-postgres` path requires an internal fresh-install marker.
+
+Existing split-role PostgreSQL upgrades preserve runtime-role passwords. The schema-owner credential is accepted only transiently from a protected environment variable or TTY prompt, is used for `pg_dump`, owner migration/backfill, and object-grant repair, and is not written to `db-config.json` or component credential files. Default privileges are tightened before Event Storage v2 creates owner-owned tables/partitions so older broad defaults cannot leak mutation rights to future objects.

@@ -19,6 +19,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -29,6 +30,7 @@ ROOT = Path(__file__).resolve().parents[1]
 PROHIBITED_DIRS = {".git", "__pycache__", ".pytest_cache"}
 PROHIBITED_SUFFIXES = {".pyc", ".pyo"}
 RUNTIME_SECRET_PATTERNS = (
+    "db-config.json",
     "ai-secret-master.key",
     "db-listener-credentials.json",
     "db-dashboard-credentials.json",
@@ -52,15 +54,32 @@ REQUIRED_FILES = {
     "dashboard.py": 100,
     "configure-db.py": 500,
     "install-services.sh": 1000,
+    "fresh-install.sh": 1000,
+    "upgrade-existing.sh": 2000,
     "tools/postgres_bootstrap.py": 1000,
     "tools/postgres_privilege_boundary.py": 1000,
+    "event_storage_v2.py": 1000,
+    "EVENT_STORAGE_V2.md": 1000,
+    "tools/postgres_event_storage_v2.py": 1000,
+    "tools/postgres_upgrade_existing.py": 1000,
+    "tools/postgres_event_partition_maintenance.py": 1000,
 }
 SHEBANG_FILES = (
     "configure-db.py",
+    "install-service.sh",
     "install-services.sh",
+    "db-maintenance.sh",
+    "fresh-install.sh",
+    "upgrade-existing.sh",
     "tools/postgres_bootstrap.py",
     "tools/postgres_privilege_boundary.py",
+    "tools/postgres_event_storage_v2.py",
+    "tools/postgres_upgrade_existing.py",
+    "tools/postgres_event_partition_maintenance.py",
+    "tools/postgres_phase4_validation.py",
+    "tools/postgres_privilege_check.py",
 )
+EXECUTABLE_FILES = frozenset(SHEBANG_FILES)
 MANIFEST = "ARTIFACT_MANIFEST.json"
 
 
@@ -75,6 +94,14 @@ def sha256(path: Path) -> str:
 def _matches_runtime_secret(rel: str) -> bool:
     name = Path(rel).name
     return any(fnmatch.fnmatch(name, pat) for pat in RUNTIME_SECRET_PATTERNS)
+
+
+def _zip_info_for_path(path: Path, rel: str) -> zipfile.ZipInfo:
+    info = zipfile.ZipInfo.from_file(path, arcname=rel)
+    info.create_system = 3  # Unix; required for permission bits in external_attr.
+    perms = 0o755 if rel in EXECUTABLE_FILES else stat.S_IMODE(path.stat().st_mode)
+    info.external_attr = ((stat.S_IFREG | perms) << 16)
+    return info
 
 
 def collect_files(root: Path, *, output: Path | None = None) -> list[Path]:
@@ -199,6 +226,12 @@ def safe_extract_and_verify(zip_path: Path, source_root: Path) -> dict:
             mode = (info.external_attr >> 16) & 0o170000
             if mode == 0o120000:
                 raise RuntimeError(f"ZIP symlink entry is not allowed: {name}")
+            if name in EXECUTABLE_FILES:
+                perms = (info.external_attr >> 16) & 0o777
+                if perms != 0o755:
+                    raise RuntimeError(
+                        f"ZIP executable mode mismatch for {name}: expected 0755, got {perms:04o}"
+                    )
 
         with tempfile.TemporaryDirectory(prefix="mini-siem-artifact-") as td:
             dest = Path(td) / "extract"
@@ -220,10 +253,31 @@ def safe_extract_and_verify(zip_path: Path, source_root: Path) -> dict:
                 raise RuntimeError(
                     f"source/extracted parity mismatch: missing={missing[:10]} extra={extra[:10]} changed={changed[:10]}"
                 )
+
+            unzip = shutil.which("unzip")
+            if not unzip:
+                raise RuntimeError("standard unzip is required to verify executable-mode preservation")
+            unzip_dest = Path(td) / "unzip-extract"
+            unzip_dest.mkdir()
+            subprocess.run(
+                [unzip, "-qq", str(zip_path), "-d", str(unzip_dest)],
+                check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            )
+            for rel in sorted(EXECUTABLE_FILES):
+                path = unzip_dest / rel
+                if not path.is_file():
+                    raise RuntimeError(f"standard unzip missing executable entrypoint: {rel}")
+                perms = stat.S_IMODE(path.stat().st_mode)
+                if perms != 0o755:
+                    raise RuntimeError(
+                        f"standard unzip executable mode mismatch for {rel}: expected 0755, got {perms:04o}"
+                    )
             return {
                 "zip_crc": "PASS",
                 "path_traversal": "PASS",
                 "symlink_check": "PASS",
+                "zip_executable_modes": "PASS",
+                "standard_unzip_executable_modes": "PASS",
                 "required_files": "PASS",
                 "source_extracted_sha256_parity": "PASS",
                 "python_syntax_files": py_count,
@@ -267,7 +321,11 @@ def build(root: Path, output: Path, *, parent: str, status: str,
     with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
         for path in files:
             rel = path.relative_to(root).as_posix()
-            zf.write(path, rel)
+            info = _zip_info_for_path(path, rel)
+            zf.writestr(
+                info, path.read_bytes(),
+                compress_type=zipfile.ZIP_DEFLATED, compresslevel=9,
+            )
     integrity = safe_extract_and_verify(output, root)
     return {
         "artifact": str(output),

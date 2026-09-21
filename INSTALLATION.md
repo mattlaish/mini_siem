@@ -123,10 +123,14 @@ The Phase 4 main ingest path also has a dedicated database writer:
 The installer does not need a new OS account or service for the DB writer; it is a
 thread inside the existing listener process. `siem` remains the non-login Dashboard
 service account and the listener remains `root:minisiem` when privileged syslog port
-514 is used. `install-services.sh` is the service-definition/bootstrap helper for the current
-development baseline. Do **not** treat re-running it as the final production
-upgrade workflow: the canonical operational-install -> `update.sh` separation
-remains a P4 requirement and is not yet qualified in this baseline.
+514 is used. `install-services.sh` is now a low-level service-definition helper. Operators
+use two explicit fail-closed entry points instead:
+
+- `fresh-install.sh` — new installations only; it refuses existing runtime state.
+- `upgrade-existing.sh` — existing installations only; it refuses a fresh/empty target.
+
+The PostgreSQL fresh-bootstrap switch inside `install-services.sh` is internal
+to `fresh-install.sh` and rejects direct operator use.
 
 This prevents systemd/journald from duplicating every SIEM event. While traffic is
 active, the listener emits a compact aggregate processed/received/dropped/failed,
@@ -182,27 +186,68 @@ For PostgreSQL deployments, also review the pool/session bounds before productio
 run the disposable-database validation harness described in `TESTING.md`. Live planner
 validation is not implied by installation alone.
 
-## 3. Install both systemd services
+## 3. Fresh installation
 
-Run as root through `sudo`:
+Fresh installation uses two explicit operator stages. Database selection is
+completed first and deployment then consumes that exact selection. This split
+prevents a failed/missing configuration from silently changing engines.
+
+### Stage 1 — database configuration
+
+Run from the extracted source tree:
 
 ```bash
-cd /opt/mini_siem
-sudo ./install-services.sh
+python3 configure-db.py
 ```
 
-The installer will, as needed:
+Select SQLite or PostgreSQL and provide the requested non-secret endpoint
+settings. The source artifact itself must not contain runtime `db-config.json`;
+`configure-db.py` creates it locally for this deployment.
 
-1. create the system group `minisiem`;
-2. create the non-login system user `siem`;
-3. use `/var/lib/mini-siem` as the service account home;
-4. prepare permissions required for SQLite/WAL and backups;
-5. verify that `siem` can execute the selected Python interpreter and import Flask/Waitress;
-6. install/update `mini-siem-listener.service` and `mini-siem-dashboard.service`;
-7. run the listener as `root:minisiem` and dashboard as `siem:minisiem`;
-8. reload systemd and start/enable the services.
+For PostgreSQL, `db-config.json` contains host/port/database only. It must not
+contain the customer DBA/bootstrap password, the migration-owner password, or
+runtime component passwords.
 
-The listener remains root specifically because port 514 is privileged. Do not infer from this that the dashboard should also run as root.
+### Stage 2 — fresh deployment
+
+```bash
+sudo ./fresh-install.sh --target /opt/mini_siem
+```
+
+`fresh-install.sh` requires the previously generated `db-config.json`. It does
+not delete it, re-run backend selection, or default to SQLite. Missing, malformed,
+or unsupported configuration is fatal.
+
+For PostgreSQL the installer asks for the temporary bootstrap/admin username
+(default `postgres` when appropriate); the password is requested interactively
+by the internal bootstrap helper. The credential is bootstrap-only and is not
+persisted.
+
+The required PostgreSQL ordering is:
+
+1. validate the explicit PostgreSQL deployment intent;
+2. prepare the project Python runtime and PostgreSQL driver;
+3. collect temporary customer DBA/bootstrap credentials;
+4. create/check `minisiem_owner`, `minisiem_runtime`, `minisiem_ingest`,
+   `minisiem_dashboard`, and `minisiem_maintenance`;
+5. create the `minisiem` database owned by `minisiem_owner`;
+6. reconnect as `minisiem_owner` and run all schema creation, migrations,
+   indexes, constraints, functions, and Event Storage v2 owner DDL;
+7. verify schema readiness and application-object ownership;
+8. generate split runtime credentials and verify the runtime privilege boundary;
+9. only then install systemd units, start services, and run post-install checks.
+
+Systemd installation is forbidden until `DATABASE_READY`, `OWNER_READY`,
+`SCHEMA_MIGRATED`, `SCHEMA_VERIFIED`, and `RUNTIME_CREDENTIALS_READY` are true.
+Runtime roles never create/repair schema objects. PostgreSQL failures must stop
+installation; they must never fall back to SQLite.
+
+`install-services.sh` and `tools/postgres_bootstrap.py` are internal components
+of this flow, not normal operator entrypoints.
+
+`fresh-install.sh` refuses existing systemd units, local DB state, or split-role
+credential files. It will not adopt an operational database; use
+`upgrade-existing.sh` for an existing deployment.
 
 ## 4. Verify the installation
 
@@ -236,19 +281,36 @@ If the dashboard fails with SQLite read-only/WAL errors, do not solve it by maki
 
 On SELinux-enforcing CentOS/RHEL systems, a project copied from a home directory can retain an inappropriate `user_home_t` label. The installer attempts a safe `restorecon` repair for `/opt`; SELinux should not be disabled as a workaround.
 
-## 6. Upgrades
+## 6. Existing-installation upgrade
 
-The final production update/resume state machine is still a P4 requirement. An
-operational installation must ultimately use `update.sh`; `install.sh --resume`
-will be reserved only for the same interrupted fresh installation. The current
-source does not yet claim that complete workflow as `TESTED`.
+Use the dedicated upgrade entry point from a **separately extracted new source tree**:
 
-Until P4 is completed and qualified, treat manual upgrades as controlled
-development/maintenance work: back up first, preserve configuration/secrets/data,
-apply PostgreSQL owner migrations before runtime startup, and do not use a fresh
-bootstrap over an operational database.
+```bash
+sudo -E ./upgrade-existing.sh --target /opt/mini_siem
+```
 
-For detailed SQLite migration notes and other operating details, see `README.md`.
+The script refuses to run in place and refuses a target without operational
+mini-SIEM state. It stages the new complete source, stops services, preserves
+configuration/runtime credential files and local state, retains the previous
+application tree for rollback, then performs the stable-path cutover.
+
+For an existing split-role PostgreSQL deployment it additionally:
+
+1. requires `pg_dump` and creates an external pre-upgrade database dump;
+2. obtains the schema-owner password only from `MINISIEM_PG_OWNER_PASSWORD` or a protected TTY prompt;
+3. tightens the owner's default privileges **before** owner migrations create new objects;
+4. applies owner-only migrations/backfill through `tools/postgres_upgrade_existing.py`;
+5. refreshes object grants in preserve-existing mode;
+6. never creates runtime roles and never rotates listener/dashboard/maintenance DB passwords;
+7. verifies the existing component credentials and post-cutover privilege boundary.
+
+The PostgreSQL upgrade path currently supports deployments that already use the
+split owner/runtime boundary. Legacy shared owner/runtime installations still
+require the controlled legacy-role/ownership migration and are not silently
+adopted by this script.
+
+This workflow is implemented but remains `IMPLEMENTED_TESTING_DEFERRED` until
+the live PostgreSQL/systemd/reboot/rollback gates documented in `TESTING.md` run.
 
 ## 7. Uninstall behavior
 
@@ -263,10 +325,9 @@ PostgreSQL schema.
 For a **new/empty** PostgreSQL deployment:
 
 ```bash
-cd /opt/mini_siem
 python3 configure-db.py
-MINISIEM_PG_BOOTSTRAP_USER=<customer-admin> sudo -E ./install-services.sh --bootstrap-postgres
-./.venv/bin/python3 tools/postgres_privilege_check.py --db-config ./db-config.json
+MINISIEM_PG_BOOTSTRAP_USER=<customer-admin> sudo -E ./fresh-install.sh --target /opt/mini_siem
+/opt/mini_siem/.venv/bin/python3 /opt/mini_siem/tools/postgres_privilege_check.py --db-config /opt/mini_siem/db-config.json
 ```
 
 The customer administrator password is read from
@@ -275,8 +336,9 @@ written to runtime configuration. The bootstrap creates/uses `minisiem_owner`
 for schema DDL/migrations, uses the temporary customer role-admin authority for
 runtime-role creation, then writes only split component credentials.
 
-For an **existing/legacy** PostgreSQL deployment, do not run the fresh bootstrap.
-Inspect first:
+For an **existing split-role** PostgreSQL deployment, do not run fresh bootstrap.
+Run `upgrade-existing.sh` from the newly extracted source. For an older shared-role
+deployment, inspect first:
 
 ```bash
 MINISIEM_PG_BOOTSTRAP_USER=<customer-admin> \
@@ -342,7 +404,7 @@ Runtime service accounts are intentionally unable to create or repair schema.
 
 ## Upgrade note — observability/archive schema (2026-09-13)
 
-This source baseline extends the migration ledger to version 30. Versions 22-26 cover `runtime_stats` and archive catalog objects; versions 27-30 add AI usage audit storage and indexes. On PostgreSQL, apply schema changes with the owner/migrator identity before restarting runtime services. Then rerun privilege provisioning so listener/dashboard are SELECT-only on the archive catalog and maintenance retains the constrained mutation path:
+This source baseline extends the migration ledger to version 33. Versions 22-26 cover `runtime_stats` and archive catalog objects; versions 27-30 add AI usage audit storage and indexes; versions 31-33 establish the PostgreSQL Event Storage v2 migration boundary and typed query-plane readiness. On PostgreSQL, apply schema changes with the owner/migrator identity before restarting runtime services. Then rerun privilege provisioning so listener/dashboard are SELECT-only on the archive catalog and maintenance retains the constrained mutation path:
 
 ```bash
 ./.venv/bin/python3 tools/postgres_privilege_boundary.py --db-config ./db-config.json
@@ -360,3 +422,32 @@ Do not grant CREATE/ALTER/migration capability to runtime identities to work aro
 ### AI secret master backup / restore
 
 External-provider API keys are encrypted with a deployment master outside the database. Back up `/var/lib/mini-siem/ai-secret-master.key` together with deployment secrets, but store it separately from ordinary DB backups. Preserve mode 0600. Restoring an encrypted DB without the original master fails closed; the application will not silently generate a replacement decryption key.
+
+## Event Storage v2 existing-PostgreSQL upgrade
+
+Status: `IMPLEMENTED_TESTING_DEFERRED`
+
+Do not use fresh bootstrap over an operational database. Run `upgrade-existing.sh`
+from a separately extracted new source tree. It creates the pre-upgrade dump,
+uses a temporary owner credential, tightens default privileges before DDL, runs
+`tools/postgres_upgrade_existing.py` for migration/backfill + grants-only refresh,
+preserves the existing listener/dashboard/maintenance passwords, verifies the
+privilege boundary, and only then reconciles/restarts systemd services. The
+partition timer is installed only for PostgreSQL split-role deployments and uses
+the maintenance credential, not the owner.
+
+The current development environment has not executed this sequence against a
+live PostgreSQL target; production operators must treat the live upgrade gate as
+`NOT_RUN/DEFERRED` until that evidence exists.
+
+
+## Existing PostgreSQL upgrades with legacy database owners
+
+`upgrade-existing.sh` does not require an existing deployment to use the fresh-install owner name `minisiem_owner`. If `postgres_privilege_boundary.owner_role` is unset, the upgrader queries the existing database owner through the already-working dashboard runtime credential and uses that identity for the pre-upgrade dump and owner-only migration. For example, older installations owned by PostgreSQL role `minisiem` remain supported without creating or renaming an owner role.
+
+The upgrade also verifies PostgreSQL dump compatibility. If the host `pg_dump` is older than the server and the target is a localhost Docker-published PostgreSQL instance, the upgrader may use the matching container's `pg_dump`/`pg_restore` and stream the archive to the protected host evidence directory. This behavior is upgrade-only; fresh installation behavior is unchanged.
+
+### Existing PostgreSQL upgrade migration behavior
+
+`upgrade-existing.sh` uses the dedicated existing-deployment migration helper. It does not use the generic fresh/bootstrap `db.initialize()` path. A populated `schema_migrations` ledger is required; the helper advances only missing legacy versions through 30, repairs normalized log-field support, applies Event Storage v2 owner DDL statement-by-statement, and records markers 31-33 only after the DDL succeeds. Any failing DDL is printed directly to the terminal with the PostgreSQL error and statement context before rollback. This behavior applies only to existing upgrades; fresh installation is unchanged.
+

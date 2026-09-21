@@ -332,6 +332,12 @@ def _remove_hot_copies_locked(storage, ids):
         chunk = ids[pos:pos + 500]
         fields_sql, fields_params = delete_in("log_fields", "log_id", chunk)
         logs_sql, logs_params = delete_in("logs", "id", chunk)
+        # Event Storage v2 is a hot query projection, not the archive evidence
+        # authority. In MOVE mode delete the projection first so no orphaned
+        # hot rows remain after raw evidence is evicted.
+        if getattr(storage.conn, "backend", "sqlite") == "postgres":
+            proj_sql, proj_params = delete_in("security_events", "legacy_log_id", chunk)
+            storage.conn.execute(proj_sql, proj_params)
         storage.conn.execute(fields_sql, fields_params)
         cur = storage.conn.execute(logs_sql, logs_params)
         total += max(0, int(getattr(cur, "rowcount", 0) or 0))

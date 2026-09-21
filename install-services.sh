@@ -36,9 +36,13 @@
 #   * sets setgid on writable directories so SQLite WAL/SHM files inherit the group
 #   * uses UMask=0002 in both units
 #
-# Usage:
-#   sudo ./install-services.sh                         # install + start
-#   sudo ./install-services.sh --bootstrap-postgres    # fresh PostgreSQL bootstrap + install
+# Operator entry points:
+#   sudo ./fresh-install.sh                            # NEW installation only
+#   sudo ./upgrade-existing.sh                         # EXISTING installation only
+#
+# Low-level helper usage (normally called by the entry points):
+#   sudo ./install-services.sh                         # reconcile units/permissions + start
+#   sudo ./install-services.sh --bootstrap-postgres    # internal fresh PostgreSQL bootstrap
 #   sudo ./install-services.sh uninstall               # stop + remove both services
 #
 # PostgreSQL bootstrap requires MINISIEM_PG_BOOTSTRAP_USER. The administrator
@@ -54,8 +58,12 @@ set -euo pipefail
 
 LISTENER_SVC="mini-siem-listener"
 DASHBOARD_SVC="mini-siem-dashboard"
+PARTITION_SVC="mini-siem-event-partitions"
+PARTITION_TIMER="mini-siem-event-partitions.timer"
 LISTENER_UNIT="/etc/systemd/system/${LISTENER_SVC}.service"
 DASHBOARD_UNIT="/etc/systemd/system/${DASHBOARD_SVC}.service"
+PARTITION_UNIT="/etc/systemd/system/${PARTITION_SVC}.service"
+PARTITION_TIMER_UNIT="/etc/systemd/system/${PARTITION_TIMER}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SHARED_GROUP="minisiem"
 SERVICE_USER="siem"
@@ -77,22 +85,28 @@ fi
 
 POSTGRES_BOOTSTRAP_REQUESTED=0
 if [[ "${1:-}" == "uninstall" ]]; then
-    for svc in "${DASHBOARD_SVC}" "${LISTENER_SVC}"; do
+    for svc in "${PARTITION_TIMER}" "${PARTITION_SVC}" "${DASHBOARD_SVC}" "${LISTENER_SVC}"; do
         systemctl stop "${svc}" 2>/dev/null || true
         systemctl disable "${svc}" 2>/dev/null || true
     done
-    rm -f "${LISTENER_UNIT}" "${DASHBOARD_UNIT}"
+    rm -f "${LISTENER_UNIT}" "${DASHBOARD_UNIT}" "${PARTITION_UNIT}" "${PARTITION_TIMER_UNIT}"
     rm -f "${CAPTURE_HELPER}" "${CAPTURE_SUDOERS}" "${CAPTURE_CONFIG}"
     rmdir "${CAPTURE_CONFIG_DIR}" 2>/dev/null || true
     systemctl daemon-reload
     echo "Removed both mini-SIEM services. Database, files, '${SHARED_GROUP}', and service account '${SERVICE_USER}' were left untouched."
     exit 0
 elif [[ "${1:-}" == "--bootstrap-postgres" && $# -eq 1 ]]; then
+    if [[ "${MINISIEM_INSTALL_ENTRYPOINT:-}" != "fresh" ]]; then
+        echo "--bootstrap-postgres is an internal fresh-install path." >&2
+        echo "Use: sudo ./fresh-install.sh" >&2
+        exit 1
+    fi
     POSTGRES_BOOTSTRAP_REQUESTED=1
 elif [[ $# -gt 0 ]]; then
     echo "No username/UID argument is required." >&2
     echo "The dashboard runs as the dedicated '${SERVICE_USER}' service account." >&2
-    echo "Usage: sudo $0 [--bootstrap-postgres|uninstall]" >&2
+    echo "Operator install/upgrade entry points: fresh-install.sh or upgrade-existing.sh" >&2
+    echo "Low-level usage: sudo $0 [uninstall]" >&2
     exit 1
 fi
 
@@ -135,32 +149,41 @@ if [[ ! -x "${PYTHON_BIN}" ]]; then
     exit 1
 fi
 
-# Detect the configured DB backend so PostgreSQL deployments also get the
-# psycopg2 driver provisioned (it is an optional dependency, not in
-# requirements.txt). Falls back to sqlite if db-config.json is absent/unreadable.
-DB_BACKEND="sqlite"
-if [[ -f "${SCRIPT_DIR}/db-config.json" ]]; then
-    DB_BACKEND="$("${PYTHON_BIN}" - "${SCRIPT_DIR}/db-config.json" <<'PY' 2>/dev/null || echo sqlite
+# Detect the configured DB backend strictly. An explicit deployment must never
+# change engines because db-config.json is missing, malformed, or unreadable.
+# SQLite is valid only when the configuration explicitly says so.
+if [[ ! -f "${SCRIPT_DIR}/db-config.json" ]]; then
+    echo "Missing ${SCRIPT_DIR}/db-config.json; run configure-db.py before installation." >&2
+    exit 1
+fi
+DB_BACKEND="$("${PYTHON_BIN}" - "${SCRIPT_DIR}/db-config.json" <<'PY'
 import json, sys
+path = sys.argv[1]
 try:
-    print((json.load(open(sys.argv[1])).get("backend") or "sqlite").strip().lower())
-except Exception:
-    print("sqlite")
+    with open(path, encoding="utf-8") as fh:
+        cfg = json.load(fh)
+except Exception as exc:
+    raise SystemExit(f"Invalid database configuration {path}: {exc}")
+backend = cfg.get("backend")
+if not isinstance(backend, str):
+    raise SystemExit("db-config.json is missing backend")
+backend = backend.strip().lower()
+if backend not in {"sqlite", "postgres"}:
+    raise SystemExit(f"unsupported database backend: {backend!r}")
+print(backend)
 PY
 )"
-fi
 
 PG_PRIVILEGE_BOUNDARY=0
 LISTENER_DB_EXTRA=""
 DASHBOARD_DB_EXTRA=""
+MAINTENANCE_DB_EXTRA=""
 if [[ "${DB_BACKEND}" == "postgres" ]]; then
-    PG_PRIVILEGE_BOUNDARY="$("${PYTHON_BIN}" - "${SCRIPT_DIR}/db-config.json" <<'PY' 2>/dev/null || echo 0
+    PG_PRIVILEGE_BOUNDARY="$("${PYTHON_BIN}" - "${SCRIPT_DIR}/db-config.json" <<'PY'
 import json, sys
-try:
-    cfg = json.load(open(sys.argv[1]))
-    print(1 if (cfg.get("postgres_privilege_boundary") or {}).get("enabled") else 0)
-except Exception:
-    print(0)
+with open(sys.argv[1], encoding="utf-8") as fh:
+    cfg = json.load(fh)
+print(1 if (cfg.get("postgres_privilege_boundary") or {}).get("enabled") else 0)
 PY
 )"
     if [[ "${PG_PRIVILEGE_BOUNDARY}" == "1" ]]; then
@@ -173,7 +196,8 @@ PY
         done
         LISTENER_DB_EXTRA="--db-config ${SCRIPT_DIR}/db-config.json --db-credentials ${SCRIPT_DIR}/db-listener-credentials.json"
         DASHBOARD_DB_EXTRA="--db-config ${SCRIPT_DIR}/db-config.json --db-credentials ${SCRIPT_DIR}/db-dashboard-credentials.json"
-        echo "PostgreSQL privilege boundary: ENABLED (split listener/dashboard identities)."
+        MAINTENANCE_DB_EXTRA="--db-config ${SCRIPT_DIR}/db-config.json --db-credentials ${SCRIPT_DIR}/db-maintenance-credentials.json"
+        echo "PostgreSQL privilege boundary: ENABLED (split listener/dashboard/maintenance identities)."
     fi
 fi
 
@@ -236,13 +260,11 @@ if [[ "${POSTGRES_BOOTSTRAP_REQUESTED}" == "1" ]]; then
 
     # Refresh privilege-boundary state after bootstrap; owner/admin credentials
     # are intentionally absent from the shared runtime config.
-    PG_PRIVILEGE_BOUNDARY="$("${PYTHON_BIN}" - "${SCRIPT_DIR}/db-config.json" <<'PY' 2>/dev/null || echo 0
+    PG_PRIVILEGE_BOUNDARY="$("${PYTHON_BIN}" - "${SCRIPT_DIR}/db-config.json" <<'PY'
 import json, sys
-try:
-    cfg = json.load(open(sys.argv[1]))
-    print(1 if (cfg.get("postgres_privilege_boundary") or {}).get("enabled") else 0)
-except Exception:
-    print(0)
+with open(sys.argv[1], encoding="utf-8") as fh:
+    cfg = json.load(fh)
+print(1 if (cfg.get("postgres_privilege_boundary") or {}).get("enabled") else 0)
 PY
 )"
     if [[ "${PG_PRIVILEGE_BOUNDARY}" != "1" ]]; then
@@ -251,6 +273,7 @@ PY
     fi
     LISTENER_DB_EXTRA="--db-config ${SCRIPT_DIR}/db-config.json --db-credentials ${SCRIPT_DIR}/db-listener-credentials.json"
     DASHBOARD_DB_EXTRA="--db-config ${SCRIPT_DIR}/db-config.json --db-credentials ${SCRIPT_DIR}/db-dashboard-credentials.json"
+    MAINTENANCE_DB_EXTRA="--db-config ${SCRIPT_DIR}/db-config.json --db-credentials ${SCRIPT_DIR}/db-maintenance-credentials.json"
 fi
 
 if [[ "${DB_BACKEND}" == "postgres" && "${PG_PRIVILEGE_BOUNDARY}" != "1" ]]; then
@@ -259,10 +282,12 @@ PostgreSQL runtime privilege boundary is not enabled.
 mini-SIEM will not install services with a shared owner/runtime credential.
 
 For a new empty database:
-  MINISIEM_PG_BOOTSTRAP_USER=<customer-admin> sudo -E $0 --bootstrap-postgres
+  configure db-config.json, then run: sudo -E ${SCRIPT_DIR}/fresh-install.sh
 
-For an existing/legacy database, inspect first and use a controlled upgrade;
-do not run the fresh bootstrap over operational data:
+For an existing split-role database:
+  extract the new source separately, then run: sudo -E ${SCRIPT_DIR}/upgrade-existing.sh --target /opt/mini_siem
+
+For an existing/legacy database, inspect first; never run fresh bootstrap over operational data:
   ${PYTHON_BIN} ${SCRIPT_DIR}/tools/postgres_bootstrap.py --mode inspect-existing \
     --db-config ${SCRIPT_DIR}/db-config.json --bootstrap-user <customer-admin>
 EOF
@@ -508,7 +533,7 @@ User=root
 Group=${SHARED_GROUP}
 UMask=0002
 WorkingDirectory=${SCRIPT_DIR}
-ExecStart=${PYTHON_BIN} ${SCRIPT_DIR}/listener.py --db ${SCRIPT_DIR}/siem.db --port ${SYSLOG_PORT} ${LISTENER_DB_EXTRA}
+ExecStart=${PYTHON_BIN} ${SCRIPT_DIR}/listener.py --db ${SCRIPT_DIR}/siem.db --db-config ${SCRIPT_DIR}/db-config.json --port ${SYSLOG_PORT} ${LISTENER_DB_EXTRA}
 Restart=on-failure
 RestartSec=3
 
@@ -530,7 +555,7 @@ UMask=0002
 Environment=HOME=${SERVICE_HOME}
 Environment=MINISIEM_AI_SECRET_MASTER_FILE=${AI_SECRET_MASTER}
 WorkingDirectory=${SCRIPT_DIR}
-ExecStart=${PYTHON_BIN} ${SCRIPT_DIR}/dashboard.py --db ${SCRIPT_DIR}/siem.db --host ${DASH_HOST} --port ${DASH_PORT} ${DASHBOARD_DB_EXTRA}
+ExecStart=${PYTHON_BIN} ${SCRIPT_DIR}/dashboard.py --db ${SCRIPT_DIR}/siem.db --db-config ${SCRIPT_DIR}/db-config.json --host ${DASH_HOST} --port ${DASH_PORT} ${DASHBOARD_DB_EXTRA}
 Restart=on-failure
 RestartSec=3
 
@@ -538,8 +563,52 @@ RestartSec=3
 WantedBy=multi-user.target
 EOF
 
+# Event Storage v2 partition lifecycle is PostgreSQL-only.  The timer uses the
+# dedicated maintenance database identity and calls only the bounded SECURITY
+# DEFINER function; it never receives owner credentials or general DDL rights.
+if [[ "${DB_BACKEND}" == "postgres" && "${PG_PRIVILEGE_BOUNDARY}" == "1" ]]; then
+    cat > "${PARTITION_UNIT}" <<EOF
+[Unit]
+Description=mini-SIEM Event Storage v2 partition pre-creation
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=${SHARED_GROUP}
+WorkingDirectory=${SCRIPT_DIR}
+ExecStart=${PYTHON_BIN} ${SCRIPT_DIR}/tools/postgres_event_partition_maintenance.py ${MAINTENANCE_DB_EXTRA} --months 3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+EOF
+    cat > "${PARTITION_TIMER_UNIT}" <<EOF
+[Unit]
+Description=Daily mini-SIEM Event Storage v2 partition pre-creation
+
+[Timer]
+OnCalendar=*-*-* 00:17:00
+RandomizedDelaySec=15m
+Persistent=true
+Unit=${PARTITION_SVC}.service
+
+[Install]
+WantedBy=timers.target
+EOF
+else
+    systemctl disable --now "${PARTITION_TIMER}" 2>/dev/null || true
+    rm -f "${PARTITION_UNIT}" "${PARTITION_TIMER_UNIT}"
+fi
+
 systemctl daemon-reload
 systemctl enable "${LISTENER_SVC}" "${DASHBOARD_SVC}"
+if [[ "${DB_BACKEND}" == "postgres" && "${PG_PRIVILEGE_BOUNDARY}" == "1" ]]; then
+    systemctl enable --now "${PARTITION_TIMER}"
+fi
 systemctl reset-failed "${LISTENER_SVC}" "${DASHBOARD_SVC}" 2>/dev/null || true
 systemctl restart "${LISTENER_SVC}"
 sleep 1
@@ -554,6 +623,16 @@ echo "=== ${DASHBOARD_SVC} ==="
 systemctl --no-pager --lines=8 status "${DASHBOARD_SVC}" || true
 
 VERIFY_FAILED=0
+if [[ "${DB_BACKEND}" == "postgres" && "${PG_PRIVILEGE_BOUNDARY}" == "1" ]]; then
+    if ! systemctl is-enabled --quiet "${PARTITION_TIMER}"; then
+        echo "VERIFY FAIL: ${PARTITION_TIMER} is not enabled." >&2
+        VERIFY_FAILED=1
+    fi
+    if ! systemctl is-active --quiet "${PARTITION_TIMER}"; then
+        echo "VERIFY FAIL: ${PARTITION_TIMER} is not active." >&2
+        VERIFY_FAILED=1
+    fi
+fi
 for svc in "${LISTENER_SVC}" "${DASHBOARD_SVC}"; do
     if ! systemctl is-enabled --quiet "${svc}"; then
         echo "VERIFY FAIL: ${svc} is not enabled." >&2
@@ -606,6 +685,7 @@ cat <<EOF
 Installed two services:
   ${LISTENER_SVC}   (root, syslog TCP/UDP port ${SYSLOG_PORT})
   ${DASHBOARD_SVC}  (service user ${SERVICE_USER}, Waitress ${DASH_HOST}:${DASH_PORT})
+  Event partitions    ${PARTITION_TIMER} (PostgreSQL split-role deployments only)
   Python             ${PYTHON_BIN}
   AI secret master    ${AI_SECRET_MASTER} (0600, outside DB)
 

@@ -30,6 +30,8 @@ DEFAULT_RUNTIME_ROLE = "minisiem_runtime"
 DEFAULT_INGEST_ROLE = "minisiem_ingest"
 DEFAULT_DASHBOARD_ROLE = "minisiem_dashboard"
 DEFAULT_MAINTENANCE_ROLE = "minisiem_maintenance"
+OWNER_PASSWORD_ENV = "MINISIEM_PG_OWNER_PASSWORD"
+
 
 LOG_INSERT_COLUMNS = (
     "received_at", "source_ip", "peer_ip", "format", "priority", "facility",
@@ -77,7 +79,7 @@ def _assert_roles_do_not_own_protected_tables(cur, roles):
           FROM pg_class c
           JOIN pg_namespace n ON n.oid=c.relnamespace
           JOIN pg_roles r ON r.oid=c.relowner
-         WHERE n.nspname='public' AND c.relname IN ('logs','schema_migrations','ai_usage_audit')
+         WHERE n.nspname='public' AND c.relname IN ('logs','schema_migrations','ai_usage_audit','security_events','assets','identities')
         """
     )
     protected = cur.fetchall()
@@ -100,6 +102,79 @@ def _assert_roles_do_not_own_protected_tables(cur, roles):
                 raise RuntimeError(
                     f"Refusing unsafe privilege boundary: {role} inherits owner role {owner} for {table}"
                 )
+
+
+def _validate_existing_runtime_roles(raw, *, runtime_role, ingest_role, dashboard_role, maintenance_role):
+    """Validate an existing split-role topology without mutating role passwords/membership."""
+    cur = raw.cursor()
+    try:
+        expected = {
+            runtime_role: False,
+            ingest_role: True,
+            dashboard_role: True,
+            maintenance_role: True,
+        }
+        for role, should_login in expected.items():
+            cur.execute(
+                "SELECT rolcanlogin,rolsuper,rolcreatedb,rolcreaterole,rolreplication,rolbypassrls "
+                "FROM pg_roles WHERE rolname=%s",
+                (role,),
+            )
+            row = cur.fetchone()
+            if row is None:
+                raise RuntimeError(f"existing split-role upgrade requires role {role!r}")
+            values = list(row.values()) if isinstance(row, dict) else list(row)
+            can_login, superuser, createdb, createrole, replication, bypassrls = map(bool, values)
+            if can_login != should_login:
+                raise RuntimeError(f"role {role!r} login attribute mismatch for preserve-existing mode")
+            if any((superuser, createdb, createrole, replication, bypassrls)):
+                raise RuntimeError(f"role {role!r} has unexpected elevated PostgreSQL attributes")
+
+        for role in (ingest_role, dashboard_role, maintenance_role):
+            cur.execute("SELECT pg_has_role(%s,%s,'member')", (role, runtime_role))
+            row = cur.fetchone()
+            member = bool(next(iter(row.values())) if isinstance(row, dict) else row[0])
+            if not member:
+                raise RuntimeError(f"role {role!r} is not a member of {runtime_role!r}")
+        for role in (ingest_role, dashboard_role):
+            cur.execute("SELECT pg_has_role(%s,%s,'member')", (role, maintenance_role))
+            row = cur.fetchone()
+            member = bool(next(iter(row.values())) if isinstance(row, dict) else row[0])
+            if member:
+                raise RuntimeError(f"role {role!r} unexpectedly inherits maintenance role {maintenance_role!r}")
+    finally:
+        cur.close()
+
+
+def harden_owner_default_privileges(raw, *, runtime_role=DEFAULT_RUNTIME_ROLE):
+    """Tighten future owner-created objects before an existing-deployment migration.
+
+    This is deliberately role/password neutral.  It is safe for a NOCREATEROLE
+    schema owner and must run before Event Storage v2 creates partitions/tables
+    on an older deployment that may still have broad historical defaults.
+    """
+    from psycopg2 import sql
+    cur = raw.cursor()
+    try:
+        if not _role_exists(cur, runtime_role):
+            raise RuntimeError(f"existing split-role upgrade requires role {runtime_role!r}")
+        runtime = sql.Identifier(runtime_role)
+        cur.execute(sql.SQL(
+            "ALTER DEFAULT PRIVILEGES IN SCHEMA public "
+            "REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLES FROM {}"
+        ).format(runtime))
+        cur.execute(sql.SQL(
+            "ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO {}"
+        ).format(runtime))
+        cur.execute(sql.SQL(
+            "ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE, SELECT ON SEQUENCES TO {}"
+        ).format(runtime))
+        raw.commit()
+    except Exception:
+        raw.rollback()
+        raise
+    finally:
+        cur.close()
 
 
 def _provision_runtime_roles(raw, *, runtime_role, ingest_role, dashboard_role, maintenance_role):
@@ -150,7 +225,7 @@ def _provision_runtime_roles(raw, *, runtime_role, ingest_role, dashboard_role, 
 
 
 def _apply_grants(raw, *, runtime_role, ingest_role, dashboard_role, maintenance_role,
-                  role_admin_raw=None):
+                  role_admin_raw=None, preserve_existing_roles=False):
     """Apply the split-role boundary to owner-created application objects.
 
     ``raw`` is the schema-owner connection.  ``role_admin_raw`` may be a
@@ -160,13 +235,23 @@ def _apply_grants(raw, *, runtime_role, ingest_role, dashboard_role, maintenance
     """
     from psycopg2 import sql
 
-    passwords = _provision_runtime_roles(
-        role_admin_raw or raw,
-        runtime_role=runtime_role,
-        ingest_role=ingest_role,
-        dashboard_role=dashboard_role,
-        maintenance_role=maintenance_role,
-    )
+    if preserve_existing_roles:
+        _validate_existing_runtime_roles(
+            raw,
+            runtime_role=runtime_role,
+            ingest_role=ingest_role,
+            dashboard_role=dashboard_role,
+            maintenance_role=maintenance_role,
+        )
+        passwords = {}
+    else:
+        passwords = _provision_runtime_roles(
+            role_admin_raw or raw,
+            runtime_role=runtime_role,
+            ingest_role=ingest_role,
+            dashboard_role=dashboard_role,
+            maintenance_role=maintenance_role,
+        )
 
     cur = raw.cursor()
     try:
@@ -197,11 +282,20 @@ def _apply_grants(raw, *, runtime_role, ingest_role, dashboard_role, maintenance
         cur.execute(sql.SQL(
             "GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO {}"
         ).format(runtime))
-        # These ALTER DEFAULT PRIVILEGES statements execute as the schema owner,
-        # so future owner-created objects inherit the runtime baseline.
+        # These ALTER DEFAULT PRIVILEGES statements execute as the schema owner.
+        # Future owner-created tables fail closed as read-only to runtime. This is
+        # especially important for Event Storage v2 partitions created later by
+        # the SECURITY DEFINER maintenance function: a future child partition
+        # must never silently inherit INSERT/UPDATE/DELETE/TRUNCATE from a broad
+        # runtime default grant. Explicit mutable privileges are applied only to
+        # known current tables by this boundary tool.
         cur.execute(sql.SQL(
             "ALTER DEFAULT PRIVILEGES IN SCHEMA public "
-            "GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO {}"
+            "REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLES FROM {}"
+        ).format(runtime))
+        cur.execute(sql.SQL(
+            "ALTER DEFAULT PRIVILEGES IN SCHEMA public "
+            "GRANT SELECT ON TABLES TO {}"
         ).format(runtime))
         cur.execute(sql.SQL(
             "ALTER DEFAULT PRIVILEGES IN SCHEMA public "
@@ -219,6 +313,52 @@ def _apply_grants(raw, *, runtime_role, ingest_role, dashboard_role, maintenance
             "GRANT SELECT ON TABLE public.logs TO {}; "
             "GRANT INSERT ({}) ON TABLE public.logs TO {}"
         ).format(runtime, cols, runtime))
+
+        # Event Storage v2 is a derived hot query plane. Runtime may read it,
+        # but only the listener can append/refresh projection rows and only
+        # maintenance can evict verified hot projections. Child partitions
+        # are also stripped of inherited broad mutation grants so direct
+        # partition access cannot bypass the parent policy.
+        cur.execute(
+            "SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace "
+            "WHERE n.nspname='public' AND (c.relname='security_events' OR c.relname LIKE 'security_events_%') "
+            "AND c.relkind IN ('r','p')"
+        )
+        event_tables = [r[0] if not isinstance(r, dict) else r['relname'] for r in cur.fetchall()]
+        for table_name in event_tables:
+            table = sql.Identifier('public', table_name)
+            for role in (runtime, ingest, dashboard, maintenance):
+                cur.execute(sql.SQL(
+                    "REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLE {} FROM {}"
+                ).format(table, role))
+            cur.execute(sql.SQL("GRANT SELECT ON TABLE {} TO {}").format(table, runtime))
+
+        cur.execute(sql.SQL(
+            "GRANT INSERT ON TABLE public.security_events TO {}"
+        ).format(ingest))
+        cur.execute(sql.SQL(
+            "GRANT UPDATE (fields,user_name,identity_id,src_port,dst_port,event_type,event_code,vendor,product) "
+            "ON TABLE public.security_events TO {}"
+        ).format(ingest))
+        cur.execute(sql.SQL(
+            "GRANT DELETE ON TABLE public.security_events TO {}"
+        ).format(maintenance))
+
+        for table_name in ('assets', 'identities'):
+            table = sql.Identifier('public', table_name)
+            for role in (runtime, ingest, dashboard, maintenance):
+                cur.execute(sql.SQL(
+                    "REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLE {} FROM {}"
+                ).format(table, role))
+            cur.execute(sql.SQL("GRANT SELECT ON TABLE {} TO {}").format(table, runtime))
+            cur.execute(sql.SQL("GRANT INSERT, UPDATE ON TABLE {} TO {}").format(table, ingest))
+
+        partition_fn = sql.SQL(
+            "public.minisiem_ensure_security_event_partitions(TIMESTAMPTZ, INTEGER)"
+        )
+        for role in (runtime, ingest, dashboard, maintenance):
+            cur.execute(sql.SQL("REVOKE ALL ON FUNCTION {} FROM {}").format(partition_fn, role))
+        cur.execute(sql.SQL("GRANT EXECUTE ON FUNCTION {} TO {}").format(partition_fn, maintenance))
 
         # Runtime services may inspect, but never alter, the migration ledger.
         cur.execute(sql.SQL(
@@ -319,6 +459,10 @@ def _apply_grants(raw, *, runtime_role, ingest_role, dashboard_role, maintenance
         cur.execute("REVOKE ALL ON TABLE public.archive_segments FROM PUBLIC")
         cur.execute("REVOKE ALL ON TABLE public.archive_occurrence_catalog FROM PUBLIC")
         cur.execute("REVOKE ALL ON TABLE public.ai_usage_audit FROM PUBLIC")
+        cur.execute("REVOKE ALL ON TABLE public.security_events FROM PUBLIC")
+        cur.execute("REVOKE ALL ON TABLE public.assets FROM PUBLIC")
+        cur.execute("REVOKE ALL ON TABLE public.identities FROM PUBLIC")
+        cur.execute("REVOKE ALL ON FUNCTION public.minisiem_ensure_security_event_partitions(TIMESTAMPTZ, INTEGER) FROM PUBLIC")
         raw.commit()
         return passwords
     except Exception:
@@ -355,7 +499,13 @@ def _verify_login(base_cfg: dict, cred_path: Path, identity: str):
                    has_table_privilege(current_user,'public.ai_usage_audit','INSERT') AS can_insert_ai_usage,
                    has_table_privilege(current_user,'public.ai_usage_audit','UPDATE') AS can_update_ai_usage,
                    has_table_privilege(current_user,'public.ai_usage_audit','DELETE') AS can_delete_ai_usage,
-                   has_table_privilege(current_user,'public.ai_usage_audit','TRUNCATE') AS can_truncate_ai_usage
+                   has_table_privilege(current_user,'public.ai_usage_audit','TRUNCATE') AS can_truncate_ai_usage,
+                   has_table_privilege(current_user,'public.security_events','SELECT') AS can_read_events_v2,
+                   has_table_privilege(current_user,'public.security_events','INSERT') AS can_insert_events_v2,
+                   has_table_privilege(current_user,'public.security_events','DELETE') AS can_delete_events_v2,
+                   has_table_privilege(current_user,'public.assets','INSERT') AS can_insert_assets,
+                   has_table_privilege(current_user,'public.identities','INSERT') AS can_insert_identities,
+                   has_function_privilege(current_user,'public.minisiem_ensure_security_event_partitions(timestamptz,integer)','EXECUTE') AS can_manage_event_partitions
             """
         ).fetchone()
         data = dict(row)
@@ -375,6 +525,16 @@ def _verify_login(base_cfg: dict, cred_path: Path, identity: str):
             raise RuntimeError(f"{identity} AI usage INSERT privilege mismatch: {data}")
         if data["can_update_ai_usage"] or data["can_delete_ai_usage"] or data["can_truncate_ai_usage"]:
             raise RuntimeError(f"{identity} can mutate AI usage audit evidence: {data}")
+        if not data["can_read_events_v2"]:
+            raise RuntimeError(f"{identity} cannot read Event Storage v2: {data}")
+        if bool(data["can_insert_events_v2"]) != (identity == "listener"):
+            raise RuntimeError(f"{identity} Event Storage v2 INSERT privilege mismatch: {data}")
+        if bool(data["can_delete_events_v2"]) != (identity == "maintenance"):
+            raise RuntimeError(f"{identity} Event Storage v2 DELETE privilege mismatch: {data}")
+        if bool(data["can_insert_assets"]) != (identity == "listener") or bool(data["can_insert_identities"]) != (identity == "listener"):
+            raise RuntimeError(f"{identity} entity-observation privilege mismatch: {data}")
+        if bool(data["can_manage_event_partitions"]) != (identity == "maintenance"):
+            raise RuntimeError(f"{identity} partition-maintenance privilege mismatch: {data}")
         dbmod.ensure_runtime_ready(cfg)
         return data
     finally:
@@ -389,16 +549,23 @@ def main():
     ap.add_argument("--ingest-role", default=DEFAULT_INGEST_ROLE)
     ap.add_argument("--dashboard-role", default=DEFAULT_DASHBOARD_ROLE)
     ap.add_argument("--maintenance-role", default=DEFAULT_MAINTENANCE_ROLE)
+    ap.add_argument("--preserve-existing-credentials", action="store_true",
+                    help="grants-only refresh for an existing split-role deployment; never creates roles or rotates passwords")
     args = ap.parse_args()
 
     base_path = Path(args.db_config).resolve()
     raw_base = json.loads(base_path.read_text(encoding="utf-8"))
-    cfg = dbmod.load_config(str(base_path))
+    cfg = json.loads(json.dumps(dbmod.DEFAULT_CONFIG))
+    for key, value in raw_base.items():
+        if key in ("sqlite", "postgres") and isinstance(value, dict):
+            cfg[key].update(value)
+        else:
+            cfg[key] = value
     if cfg.get("backend") != "postgres":
         raise SystemExit("PostgreSQL backend is required")
 
-    owner_user = args.owner_user or cfg["postgres"].get("user") or ""
-    owner_password = cfg["postgres"].get("password") or getpass.getpass(
+    owner_user = args.owner_user or cfg.get("postgres_privilege_boundary", {}).get("owner_role") or cfg["postgres"].get("user") or ""
+    owner_password = cfg["postgres"].get("password") or __import__("os").environ.get(OWNER_PASSWORD_ENV) or getpass.getpass(
         f"PostgreSQL password for owner '{owner_user}': "
     )
     if not owner_user:
@@ -427,6 +594,7 @@ def main():
             ingest_role=args.ingest_role,
             dashboard_role=args.dashboard_role,
             maintenance_role=args.maintenance_role,
+            preserve_existing_roles=args.preserve_existing_credentials,
         )
     finally:
         raw.close()
@@ -437,6 +605,16 @@ def main():
         "dashboard": root / "db-dashboard-credentials.json",
         "maintenance": root / "db-maintenance-credentials.json",
     }
+    if args.preserve_existing_credentials:
+        missing = [str(p) for p in paths.values() if not p.is_file()]
+        if missing:
+            raise SystemExit("preserve-existing mode requires existing credential files: " + ", ".join(missing))
+        verify_base = {"_path": str(base_path)}
+        results = {name: _verify_login(verify_base, path, name) for name, path in paths.items()}
+        print("PostgreSQL grants refreshed; existing runtime roles/passwords were preserved.")
+        for name, result in results.items():
+            print(f"  {name}: role={result['role']} => verified")
+        return
     _write_json(paths["listener"], _component_config(raw_base, args.ingest_role, passwords[args.ingest_role], "listener"))
     _write_json(paths["dashboard"], _component_config(raw_base, args.dashboard_role, passwords[args.dashboard_role], "dashboard"))
     _write_json(paths["maintenance"], _component_config(raw_base, args.maintenance_role, passwords[args.maintenance_role], "maintenance"))

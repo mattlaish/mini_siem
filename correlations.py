@@ -152,11 +152,14 @@ def _parse_ts(iso: str):
 
 def _fetch_window(conn, since_iso: str, until_iso: str = None, severity: str = None,
                    group_by: str = None):
-    sql = """SELECT id, received_at, source_ip, hostname, app_name, severity, message
-             FROM logs WHERE received_at >= ?"""
+    pg = getattr(conn, "backend", "sqlite") == "postgres"
+    relation = "security_event_logs" if pg else "logs"
+    time_col = "event_time" if pg else "received_at"
+    sql = (f"SELECT id, received_at, source_ip, hostname, app_name, severity, message "
+           f"FROM {relation} WHERE {time_col} >= " + ("?::timestamptz" if pg else "?"))
     params = [since_iso]
     if until_iso:
-        sql += " AND received_at <= ?"
+        sql += " AND " + time_col + (" <= ?::timestamptz" if pg else " <= ?")
         params.append(until_iso)
     if severity:
         syns = severity_mod.synonyms_of(severity)
@@ -164,7 +167,7 @@ def _fetch_window(conn, since_iso: str, until_iso: str = None, severity: str = N
             syns = [severity.lower()]
         sql += f" AND LOWER(severity) IN ({','.join('?' * len(syns))})"
         params.extend(syns)
-    sql += " ORDER BY received_at ASC LIMIT ?"
+    sql += " ORDER BY " + time_col + " ASC LIMIT ?"
     params.append(FETCH_LIMIT)
     rows = [dict(r) for r in conn.execute(sql, params).fetchall()]
     # Cross-source identity resolution — see _resolve_identity's docstring.
