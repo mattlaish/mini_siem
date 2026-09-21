@@ -139,3 +139,70 @@ The repository has undergone full placeholder truth alignment. Treat `PLACEHOLDE
 
 
 Artifact-level verification for this slice: clean extraction, ZIP CRC/path-traversal/symlink checks, required-file and syntax gates, complete source-to-extracted SHA-256 parity, placeholder-truth gate, and the extracted AI/progressive focused suite all pass; extracted focused result is **41 passed / 1 skipped**. The skip remains the live OpenAI test because no API key is present.
+
+## 2026-09-19 Event Storage v2 handover
+
+Current Event Storage v2 status: `IMPLEMENTED_TESTING_DEFERRED`.
+
+Use `EVENT_STORAGE_V2.md` as the canonical schema/boundary reference.  Keep
+`logs/log_fields` as raw evidence and `security_events` as the PostgreSQL typed
+hot projection; do not replace raw evidence IDs.  New PostgreSQL ingest must use
+the shared storage path so raw, normalized and projection writes share a
+transaction.  Full IP and CIDR queries must remain typed/index-friendly;
+host/destination bare searches remain prefix and `*...*` is the explicit
+contains opt-in.  Future partitions must not receive broad runtime mutation
+through default privileges.  The daily partition timer uses only the
+maintenance role and may pre-create partitions but never drop evidence.
+
+The `assets`/`identities` tables and `security_event_context` are foundations,
+not Phase 13.4 completion.  Phase 13 remains `PLANNED`.
+
+Current same-suite comparison: parent 98/41/1 versus current 109/37/1
+(pass/fail/skip), with zero newly failing node IDs.  Live PostgreSQL gates remain
+`NOT_RUN/DEFERRED` because this environment has no usable PostgreSQL target.
+
+Event Storage v2 artifact smoke: clean-extracted complete source passed the
+27-test focused PostgreSQL/Event Storage suite plus packaging integrity gates.
+Keep status `IMPLEMENTED_TESTING_DEFERRED` until the documented live PostgreSQL
+gates actually run.
+
+## 2026-09-19 installer split handover
+
+Canonical operator workflow is now two explicit scripts: `fresh-install.sh` for new installations and `upgrade-existing.sh` for existing installations. Do not merge them back into a mode-heavy operator script. `install-services.sh` is a lower-level unit/permission helper; its PostgreSQL fresh-bootstrap option requires the internal fresh-install marker and rejects direct operator use.
+
+Existing split-role PostgreSQL upgrade uses `tools/postgres_upgrade_existing.py`: temporary owner secret only, pre-DDL default-privilege lockdown, migrations/backfill, grants-only refresh, existing runtime credentials preserved, post-upgrade privilege verification. It does not solve legacy shared owner/runtime conversion; keep that state separate and deferred. Status remains `IMPLEMENTED_TESTING_DEFERRED` until live PostgreSQL/systemd/rollback gates pass.
+
+Dual-entrypoint validation checkpoint: 27 focused tests pass. Identical broad-suite comparison is parent 109 passed / 37 failed / 1 skipped vs current 112 passed / 37 failed / 1 skipped, zero new failing node IDs. Full collection still stops on the same three missing Flask/Werkzeug modules. Do not promote the installer/upgrade workflow beyond `IMPLEMENTED_TESTING_DEFERRED` until live PostgreSQL/systemd/rollback/reboot gates run.
+
+Artifact smoke checkpoint: clean-extracted dual-entrypoint complete-source package passed 27/27 focused tests and packaging integrity; handoff must use only the subsequently rebuilt/re-smoked final ZIP hash.
+
+
+## 2026-09-19 handover update — legacy PostgreSQL owner upgrade fix
+
+Current patch scope is existing upgrades only. Do not change fresh-install owner semantics. A real NAS deployment showed database `minisiem` owned by legacy role `minisiem`; runtime roles `minisiem_ingest`, `minisiem_dashboard`, `minisiem_maintenance`, and NOLOGIN group `minisiem_runtime` already existed. There was no `minisiem_owner` role. The previous upgrader guessed `minisiem_owner` and failed before migration.
+
+`upgrade-existing.sh` now resolves an unset owner through the installed dashboard runtime credential using the installed project venv, then uses that owner for pg_dump and `postgres_upgrade_existing.py`. It also handles PostgreSQL server/client major mismatch by selecting a compatible host pg_dump or, for a localhost Docker port mapping, the matching PostgreSQL container pg_dump/pg_restore. Normal cutover and rollback run `install-services.sh` from `/opt/mini_siem` (or the configured target) to avoid wrong-CWD `import db` failures.
+
+Fresh install remains unchanged. Overall status remains `IMPLEMENTED_TESTING_DEFERRED` until live NAS rerun succeeds.
+
+### 2026-09-19 existing-upgrade migration correction
+
+The NAS live run proved owner discovery/backup could proceed but failed inside generic `db.initialize()` during owner DDL. Existing PostgreSQL upgrade is now ledger-driven in `tools/postgres_upgrade_existing.py`: require a non-empty `schema_migrations`, apply only pending v1-v30 statements (the observed NAS baseline is v26), repair normalized log fields, execute Event Storage v2 PostgreSQL DDL one statement at a time with screen-visible failure context, and record v31-v33 only after successful DDL. Do not reintroduce `db.initialize()` into the existing-upgrade path. Fresh install remains unchanged. Status remains `IMPLEMENTED_TESTING_DEFERRED` until the NAS completes live 26→33 migration/backfill and post-cutover gates.
+
+
+### 2026-09-19 executable-mode packaging repair
+
+Complete-source packaging now forces declared executable entrypoints/shebang tools to ZIP Unix mode `0755` and verifies those modes in both archive metadata and a real standard-`unzip` extraction. This fixes NAS upgrades requiring manual `chmod` after extraction. The change is packaging-only and does not alter fresh-install behavior. Focused upgrade/PostgreSQL/Event Storage/build validation is 30 PASS / 0 FAIL before final artifact rebuild.
+
+
+## 2026-09-20 fresh-install configuration boundary update
+
+Canonical fresh operator workflow is now `python3 configure-db.py` followed by
+`sudo ./fresh-install.sh`. Do not merge configuration selection back into the
+fresh installer until this boundary has completed live qualification.
+`fresh-install.sh` must consume the exact generated `db-config.json`; PostgreSQL
+selection must never fall back to SQLite on parse, dependency, bootstrap, schema,
+or runtime-readiness failure. Explicit runtime `--db-config` paths also fail
+closed when missing/invalid. PostgreSQL systemd units are installed only after
+owner migration/schema verification and split runtime credential verification.
+`upgrade-existing.sh` remains a separate unchanged path.

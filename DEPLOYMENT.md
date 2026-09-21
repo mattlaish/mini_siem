@@ -4,7 +4,7 @@
 
 PostgreSQL runtime identities must never repair or initialize schema. Schema initialization and migration are explicit owner/migrator operations and must complete before listener/dashboard startup.
 
-For this baseline the expected migration version is 30. Runtime startup is fail-closed when any migration is pending or any required runtime/archive table is missing.
+For this baseline the expected migration version is 33. Runtime startup is fail-closed when any migration is pending or any required runtime/archive table is missing.
 
 Upgrade order:
 
@@ -53,7 +53,7 @@ Restore requires validated backup metadata, checksum verification, owner migrati
 Status: IMPLEMENTED_TESTING_DEFERRED
 ## External AI deployment notes
 
-Systemd deployments keep the AI provider encryption master at `/var/lib/mini-siem/ai-secret-master.key` (0600) and pass its path only to the dashboard process. OpenAI external mode uses `https://api.openai.com/v1/responses` when protocol is `auto`; local OpenAI-compatible endpoints retain `/chat/completions`. After a PostgreSQL upgrade to migration 30, rerun privilege provisioning so `ai_usage_audit` is SELECT for runtime identities, INSERT for dashboard, and non-mutable otherwise.
+Systemd deployments keep the AI provider encryption master at `/var/lib/mini-siem/ai-secret-master.key` (0600) and pass its path only to the dashboard process. OpenAI external mode uses `https://api.openai.com/v1/responses` when protocol is `auto`; local OpenAI-compatible endpoints retain `/chat/completions`. After a PostgreSQL upgrade to migration 33, rerun privilege provisioning so `ai_usage_audit` is SELECT for runtime identities, INSERT for dashboard, and non-mutable otherwise.
 
 
 ## PostgreSQL bootstrap boundary — 2026-09-18
@@ -77,3 +77,34 @@ starting units.
 Fresh bootstrap refuses to adopt an existing database with public/application
 objects. Existing deployments must first use the read-only `inspect-existing`
 mode; automatic database recreation or owner transfer is forbidden.
+
+## PostgreSQL Event Storage v2 deployment — 2026-09-19
+
+Status: `IMPLEMENTED_TESTING_DEFERRED`
+
+Migration ledger version for this source is **33**.  Existing PostgreSQL
+deployments must apply owner migration/backfill before runtime services are
+restarted; runtime accounts must not repair the schema.  Use
+`tools/postgres_event_storage_v2.py` with the schema owner for the explicit
+migration/backfill/qualification step, then rerun the split privilege boundary
+and read-only privilege check.
+
+For split-role PostgreSQL deployments `install-services.sh` installs
+`mini-siem-event-partitions.timer`.  The timer runs the bounded partition
+maintenance command daily with `db-maintenance-credentials.json`.  It does not
+store/use the schema-owner credential and does not drop partitions.  The
+maintenance credential remains root-only; the timer's oneshot service is
+sandboxed and calls only the bounded database function.
+
+A deployment is not Event Storage v2-qualified until live PostgreSQL checks
+confirm migration/backfill, native column types, partitions and pruning,
+representative composite-index `EXPLAIN`, runtime role grants, hot projection
+archive eviction, and post-migration service readiness.
+
+## Deployment entry points
+
+- New host/database: `fresh-install.sh`.
+- Existing operational installation: run `upgrade-existing.sh --target /opt/mini_siem` from a separately extracted new source package.
+- `install-services.sh` is an internal/low-level service reconciliation helper, not the operator upgrade interface.
+
+The existing-upgrade script retains the previous application tree and writes upgrade evidence/DB backup outside the target tree. For PostgreSQL it supports already split-role deployments and preserves existing component DB passwords. Live production qualification remains deferred.

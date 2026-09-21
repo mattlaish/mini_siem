@@ -24,3 +24,11 @@ def test_configure_db_does_not_collect_or_persist_postgres_password():
     assert '"password": ""' in text
     assert 'ask("Password"' not in text
     assert 'ask("Username"' not in text
+
+
+def test_install_services_database_selection_is_fail_closed():
+    text = (ROOT / "install-services.sh").read_text()
+    assert "Missing ${SCRIPT_DIR}/db-config.json; run configure-db.py before installation." in text
+    assert "Falls back to sqlite if db-config.json is absent/unreadable" not in text
+    assert "|| echo sqlite" not in text
+    assert 'DB_BACKEND="sqlite"' not in text

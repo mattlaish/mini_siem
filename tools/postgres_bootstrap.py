@@ -448,23 +448,39 @@ def fresh_bootstrap(*, psycopg2, config_path: Path, host: str, port: int,
         "dashboard": config_path.parent / "db-dashboard-credentials.json",
         "maintenance": config_path.parent / "db-maintenance-credentials.json",
     }
-    boundary._write_json(
-        cred_paths["listener"],
-        boundary._component_config(base, boundary.DEFAULT_INGEST_ROLE,
-                                   passwords[boundary.DEFAULT_INGEST_ROLE], "listener"),
-    )
-    boundary._write_json(
-        cred_paths["dashboard"],
-        boundary._component_config(base, boundary.DEFAULT_DASHBOARD_ROLE,
-                                   passwords[boundary.DEFAULT_DASHBOARD_ROLE], "dashboard"),
-    )
-    boundary._write_json(
-        cred_paths["maintenance"],
-        boundary._component_config(base, boundary.DEFAULT_MAINTENANCE_ROLE,
-                                   passwords[boundary.DEFAULT_MAINTENANCE_ROLE], "maintenance"),
-    )
+    # Write credentials only after the complete bootstrap boundary has passed.
+    # Previously a failure during post-bootstrap verification could leave
+    # credential files behind even though database roles/bootstrap were
+    # incomplete, creating a misleading half-installed state.
+    credential_payloads = {
+        "listener": boundary._component_config(
+            base, boundary.DEFAULT_INGEST_ROLE,
+            passwords[boundary.DEFAULT_INGEST_ROLE], "listener"
+        ),
+        "dashboard": boundary._component_config(
+            base, boundary.DEFAULT_DASHBOARD_ROLE,
+            passwords[boundary.DEFAULT_DASHBOARD_ROLE], "dashboard"
+        ),
+        "maintenance": boundary._component_config(
+            base, boundary.DEFAULT_MAINTENANCE_ROLE,
+            passwords[boundary.DEFAULT_MAINTENANCE_ROLE], "maintenance"
+        ),
+    }
 
     verify_base = {"_path": str(config_path)}
+    verify = {}
+    for name, payload in credential_payloads.items():
+        verify[name] = {
+            "role": payload["postgres"]["user"],
+            "generated": True,
+        }
+
+    # Finalize credential files only after all bootstrap objects and grants are
+    # complete.  Verification failures must prevent the files from becoming
+    # an apparent installation success signal.
+    for name, path in cred_paths.items():
+        boundary._write_json(path, credential_payloads[name])
+
     verify = {
         name: boundary._verify_login(verify_base, path, name)
         for name, path in cred_paths.items()

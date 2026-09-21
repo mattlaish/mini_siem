@@ -69,6 +69,7 @@ RUNTIME_REQUIRED_TABLES = (
     "api_pollers", "users", "iocs", "ioc_matches", "reports", "ioc_feeds",
     "audit_log", "log_fields", "api_keys", "schema_migrations", "ai_usage_audit",
     "runtime_stats", "archive_segments", "archive_occurrence_catalog",
+    "security_events", "assets", "identities",
 )
 
 
@@ -94,6 +95,7 @@ def load_config(config_path: str = None, sqlite_fallback: str = "siem.db",
     different database through the credential file.
     """
     candidates = []
+    explicit_config = bool(config_path)
     if config_path:
         candidates.append(config_path)
     here = os.path.dirname(os.path.abspath(__file__))
@@ -102,17 +104,27 @@ def load_config(config_path: str = None, sqlite_fallback: str = "siem.db",
     merged = None
     for path in candidates:
         if path and os.path.exists(path):
-            with open(path) as f:
-                user_cfg = json.load(f)
+            try:
+                with open(path, encoding="utf-8") as f:
+                    user_cfg = json.load(f)
+            except Exception as exc:
+                raise RuntimeError(f"Invalid database configuration {path}: {exc}") from exc
             merged = json.loads(json.dumps(DEFAULT_CONFIG))
             for k, v in user_cfg.items():
                 if k in ("sqlite", "postgres") and isinstance(v, dict):
                     merged[k].update(v)
                 else:
                     merged[k] = v
+            backend = merged.get("backend")
+            if backend not in ("sqlite", "postgres"):
+                raise RuntimeError(
+                    f"Database configuration {path} must explicitly select sqlite or postgres"
+                )
             break
 
     if merged is None:
+        if explicit_config:
+            raise RuntimeError(f"Database configuration not found: {config_path}")
         merged = config_from_path(sqlite_fallback)
 
     if credentials_path:
@@ -180,6 +192,20 @@ class Connection:
             cur.execute(sql, params)
             return cur
         return self.raw.execute(sql, params)
+
+    def execute_raw(self, sql: str):
+        """Execute trusted SQL text without placeholder interpretation.
+
+        Migration DDL may legitimately contain PostgreSQL literal percent signs
+        (for example LIKE patterns, check expressions, or generated SQL).  The
+        normal execute() path intentionally performs parameter handling and is
+        not suitable for static migration statements.
+        """
+        if self.backend == "postgres":
+            cur = self.raw.cursor()
+            cur.execute(sql)
+            return cur
+        return self.raw.execute(sql)
 
     def executemany(self, sql: str, seq_of_params):
         sql = self._sql(sql)
@@ -418,7 +444,8 @@ def _schema_statements(backend: str):
             id      {pk},
             log_id  INTEGER NOT NULL,
             field   TEXT NOT NULL,
-            value   TEXT
+            value   TEXT,
+            value_norm TEXT
         )""",
         "CREATE INDEX IF NOT EXISTS idx_lf_field_value ON log_fields(field, value)",
         "CREATE INDEX IF NOT EXISTS idx_lf_log_id ON log_fields(log_id)",
@@ -467,7 +494,12 @@ def _schema_statements(backend: str):
         )""",
         "CREATE INDEX IF NOT EXISTS idx_archive_occ_segment ON archive_occurrence_catalog(segment_id)",
     ]
-    if backend != "postgres":
+    if backend == "postgres":
+        # PostgreSQL Event Storage v2 is an owner-created typed query projection.
+        # The historical logs/log_fields tables remain the raw evidence plane.
+        from event_storage_v2 import postgres_schema_statements
+        stmts.extend(postgres_schema_statements())
+    else:
         # FTS5 full-text index over message text for fast search (replaces
         # slow leading-wildcard LIKE scans). sqlite-only; Postgres would use
         # tsvector/GIN instead. 'content' is unindexed external-content style:
@@ -635,13 +667,37 @@ def _migrations():
         "CREATE INDEX IF NOT EXISTS idx_ai_usage_at ON ai_usage_audit(at)",
         "CREATE INDEX IF NOT EXISTS idx_ai_usage_model ON ai_usage_audit(model)",
         "CREATE INDEX IF NOT EXISTS idx_ai_usage_status ON ai_usage_audit(status)",
+        # Migration ledger markers 31-33. The owner-only initialize path uses
+        # idempotent dialect-aware helpers for legacy log_fields and Event
+        # Storage v2 before these markers are recorded.
+        "SELECT 1",
+        "SELECT 1",
+        "SELECT 1",
     ]
 
 
 
+def ensure_log_fields_normalized_schema(conn: Connection):
+    """Owner/setup-only repair for legacy log_fields normalization columns.
+
+    This runs from ``initialize`` only; PostgreSQL runtime services never call
+    it because ``ensure_runtime_ready`` is DDL-free.
+    """
+    if conn.backend == "postgres":
+        if not postgres_schema_has_column(conn.raw, "log_fields", "value_norm"):
+            _execute_schema_sql(conn, "ALTER TABLE log_fields ADD COLUMN value_norm TEXT")
+    else:
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(log_fields)").fetchall()}
+        if "value_norm" not in cols:
+            _execute_schema_sql(conn, "ALTER TABLE log_fields ADD COLUMN value_norm TEXT")
+    _execute_schema_sql(conn, "CREATE INDEX IF NOT EXISTS idx_lf_field_value_norm ON log_fields(field, value_norm)")
+    conn.commit()
+
+
 def ensure_schema_baseline(conn, config: dict):
     """Baseline existing databases created before migration tracking existed."""
-    conn.execute(
+    _execute_schema_sql(
+        conn,
         """CREATE TABLE IF NOT EXISTS schema_migrations (
             version INTEGER PRIMARY KEY,
             applied_at TEXT NOT NULL
@@ -861,13 +917,27 @@ def ensure_runtime_ready(config: dict, required_tables=None):
         conn.close()
 
 
+def _execute_schema_sql(conn: Connection, sql: str):
+    """Execute trusted static schema/migration SQL without parameter parsing.
+
+    PostgreSQL DDL may legitimately contain percent tokens (for example PL/pgSQL
+    format() calls using %I/%L). Those are SQL text, not psycopg2 parameters.
+    Runtime/query SQL must continue using ``execute()`` with parameters.
+    """
+    if conn.backend == "postgres":
+        return conn.execute_raw(sql)
+    return conn.execute(sql)
+
+
 def initialize(config: dict):
     """Create all tables and indexes if missing, then apply migrations.
     Idempotent."""
     conn = connect(config)
     try:
         for stmt in _schema_statements(config.get("backend", "sqlite")):
-            conn.execute(stmt)
+            _execute_schema_sql(conn, stmt)
+
+        ensure_log_fields_normalized_schema(conn)
 
         # Durable migration tracking. This prevents repeated PostgreSQL
         # ALTER TABLE execution on every service restart.
@@ -881,7 +951,7 @@ def initialize(config: dict):
             if version in applied:
                 continue
             try:
-                conn.execute(stmt)
+                _execute_schema_sql(conn, stmt)
                 conn.execute(
                     "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
                     (version, _datetime.datetime.utcnow().isoformat()),
@@ -893,6 +963,27 @@ def initialize(config: dict):
                 except Exception:
                     pass
                 raise
+        # Keep value_norm deterministic for legacy rows after the owner-only
+        # migration. New writes populate it directly.
+        try:
+            conn.execute("UPDATE log_fields SET value_norm=lower(value) WHERE value_norm IS NULL AND value IS NOT NULL")
+            conn.commit()
+        except Exception:
+            try:
+                conn.raw.rollback()
+            except Exception:
+                pass
+            raise
+
+        # Fresh PostgreSQL installs pre-create the current and next two monthly
+        # partitions. Runtime insertions still have a DEFAULT safety partition,
+        # while a maintenance timer can call the bounded SECURITY DEFINER
+        # function to stay ahead without general DDL privileges.
+        if config.get("backend") == "postgres":
+            from event_storage_v2 import ensure_partitions_owner
+            ensure_partitions_owner(conn, months=3)
+            conn.commit()
+
         # seed default source profiles (Windows/NXLog, Sophos) if none exist
         try:
             import profiles as _profiles_mod

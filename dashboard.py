@@ -761,108 +761,135 @@ def _fts_build_match(include, exclude):
     return ""
 
 
-def _subnet_clause(column, term):
-    """If `term` looks like a subnet (CIDR like 192.168.1.0/24, or a bare
-    dotted prefix like 192.168.1.0 / 192.168.1. / 192.168.), return
-    (sql_clause, params) that matches any IP inside it. Otherwise return None.
+def _like_escape(value):
+    """Escape a literal for SQL LIKE with ``ESCAPE '\\'`` semantics."""
+    return str(value).replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
-    /8, /16, /24 use anchored octet-boundary LIKE (index-friendly, and avoids
-    the '192.168.1' also matching '192.168.10' string-prefix bug). Arbitrary
-    CIDR masks (/25, /23, etc.) fall back to an integer range on IPs that
-    parse, which is correct but scans.
-    """
-    t = term.strip()
-    # explicit CIDR
-    if "/" in t:
+
+def _postgres_tsquery_token(needle):
+    """Return a conservative PostgreSQL simple-tsquery prefix token."""
+    cleaned = re.sub(r'[^\w.\-]', ' ', str(needle or '')).strip()
+    if not cleaned:
+        return ""
+    parts = [p for p in cleaned.split() if p]
+    return " & ".join(p.replace("'", "") + ":*" for p in parts)
+
+
+def _parse_field_filter(name, raw, source="chip"):
+    """Parse exact/prefix/explicit-contains semantics for extracted fields."""
+    value = str(raw or "").strip()
+    if value.startswith("*") and value.endswith("*") and len(value) > 2:
+        return {"field": name, "mode": "contains", "needle": value[1:-1].casefold(), "source": source}
+    if value.endswith("*") and not value.startswith("*"):
+        return {"field": name, "mode": "prefix", "needle": value[:-1].casefold(), "source": source}
+    return {"field": name, "mode": "exact", "needle": value.casefold(), "source": source}
+
+
+def _field_value_predicate(alias, mode, needle, backend="sqlite"):
+    """Return indexed field-value predicate and parameters."""
+    col = f"{alias}.value_norm"
+    if mode == "exact":
+        if str(backend).startswith("postgres"):
+            return f"{col} = ?", [needle]
+        return f"{col} = ? COLLATE NOCASE", [needle]
+    pattern = _like_escape(needle) + "%" if mode == "prefix" else "%" + _like_escape(needle) + "%"
+    if str(backend).startswith("postgres"):
+        return f"{col} LIKE ? ESCAPE '\\'", [pattern]
+    return f"{col} LIKE ? COLLATE NOCASE ESCAPE '\\'", [pattern]
+
+
+def _concept_match_mode(concept, term):
+    """Choose exact/prefix/explicit-contains semantics for identity filters."""
+    raw = str(term or "").strip()
+    if raw.startswith("*") and raw.endswith("*") and len(raw) > 2:
+        return "contains", raw[1:-1]
+    if raw.endswith("*") and not raw.startswith("*"):
+        return "prefix", raw[:-1]
+    if concept == "source":
         try:
-            net = ipaddress.ip_network(t, strict=False)
+            ipaddress.ip_address(raw)
+            return "exact", raw
         except ValueError:
-            return None
-        prefix = net.prefixlen
-        if prefix in (8, 16, 24) and net.version == 4:
-            octets = str(net.network_address).split(".")
-            keep = prefix // 8
-            base = ".".join(octets[:keep]) + "."
-            return (f"{column} LIKE ?", [base + "%"])
-        # non-octet CIDR: integer range over parseable IPv4 in the column
-        first = int(net.network_address)
-        last = int(net.broadcast_address)
-        # SQLite can't parse IPs; do it by matching the /24-ish prefix broadly
-        # then it's still correct because we bound by the LIKE of the first
-        # three octets when possible. Simplest correct fallback: octet prefix
-        # of the common part, then Python can't post-filter here — so we use a
-        # broad LIKE on the shared leading octets.
-        shared = str(net.network_address).split(".")
-        # find how many leading octets are fixed across the range
-        fo = str(ipaddress.ip_address(first)).split(".")
-        lo = str(ipaddress.ip_address(last)).split(".")
-        common = []
-        for a, b in zip(fo, lo):
-            if a == b:
-                common.append(a)
-            else:
-                break
-        if common:
-            return (f"{column} LIKE ?", [".".join(common) + ".%"])
-        return None
-    # bare dotted forms treated as octet-boundary subnets
-    # 192.168.1.0 / 192.168.1. / 192.168. / 192.168
-    m = t.rstrip(".")
-    parts = m.split(".")
-    if 1 <= len(parts) <= 3 and all(p.isdigit() and 0 <= int(p) <= 255 for p in parts):
-        # e.g. "192.168.1" -> match "192.168.1." prefix (a /24)
-        return (f"{column} LIKE ?", [".".join(parts) + ".%"])
-    if len(parts) == 4 and all(p.isdigit() for p in parts):
-        # a full IP ending in .0 is commonly "the whole /24"
-        if parts[3] == "0":
-            return (f"{column} LIKE ?", [".".join(parts[:3]) + ".%"])
-    return None
+            if "/" in raw:
+                try:
+                    ipaddress.ip_network(raw, strict=False)
+                    return "cidr", raw
+                except ValueError:
+                    pass
+    if concept == "destination":
+        try:
+            ipaddress.ip_address(raw)
+            return "exact_ip", raw
+        except ValueError:
+            pass
+    # Host/destination text defaults to prefix so ordinary filters remain
+    # B-tree/text_pattern_ops friendly. Contains requires explicit *...*.
+    return "prefix", raw
 
 
-def _concept_clause(column, concept, term, negate):
-    """Build the WHERE clause for one search term against a canonical
-    concept (source / host / destination): matches the base COLUMN (which
-    is already correct for most sources) OR any of the concept's configured
-    alias field names in log_fields (the safety net for sources that use a
-    different field name for the same idea, e.g. Sophos's endpoint_ip for
-    "source"). Resolved fresh per request from get_search_aliases(), so
-    editing the config applies to historical data immediately — nothing to
-    reindex.
-    Returns (sql, params); sql is already negated (NOT ...) if requested.
-    """
+def _base_match_clause(column, concept, mode, needle, backend="sqlite_like"):
+    pg = str(backend).startswith("postgres")
+    if pg and concept == "source":
+        if mode == "cidr":
+            return "l.src_ip <<= ?::cidr", [needle]
+        if mode == "exact":
+            return "l.src_ip = ?::inet", [needle]
+    if pg and concept == "destination" and mode == "exact_ip":
+        return "l.dst_ip = ?::inet", [needle]
+    if mode in ("exact", "exact_ip"):
+        if pg:
+            return f"lower({column}) = ?", [needle.casefold()]
+        return f"{column} = ? COLLATE NOCASE", [needle]
+    pattern = _like_escape(needle) + "%" if mode == "prefix" else "%" + _like_escape(needle) + "%"
+    if pg:
+        return f"lower({column}) LIKE ? ESCAPE '\\'", [pattern.casefold()]
+    return f"{column} LIKE ? COLLATE NOCASE ESCAPE '\\'", [pattern]
+
+
+def _alias_match_clause(concept, mode, needle, aliases, backend="sqlite_like"):
+    if not aliases:
+        return "", []
+    ph = ",".join("?" * len(aliases))
+    # Alias fields are text/EAV. CIDR cannot be expressed safely with typed
+    # operators here; direct canonical INET remains the fast path.
+    alias_mode = "prefix" if mode == "cidr" else ("exact" if mode == "exact_ip" else mode)
+    pred, pp = _field_value_predicate("hf", alias_mode, needle, backend=backend)
+    return (f"EXISTS (SELECT 1 FROM log_fields hf WHERE hf.log_id=l.id "
+            f"AND hf.field IN ({ph}) AND {pred})"), list(aliases) + pp
+
+
+def _concept_clause(column, concept, term, negate, backend="sqlite_like"):
     aliases = get_search_aliases().get(concept) or []
-    subnet = _subnet_clause(column, term)
-    if subnet:
-        col_sql, col_params = subnet
-        needle = None  # subnet clause already encodes the match
-    else:
-        col_sql, col_params = f"{column} LIKE ?", [f"%{term}%"]
-
-    if aliases:
-        ph = ",".join("?" * len(aliases))
-        if subnet:
-            # same subnet-boundary LIKE pattern, applied to the alias value
-            alias_pattern = col_params[-1]  # the LIKE pattern _subnet_clause built
-            alias_sql = (f"EXISTS (SELECT 1 FROM log_fields hf WHERE hf.log_id = l.id "
-                         f"AND hf.field IN ({ph}) AND hf.value LIKE ?)")
-            alias_params = list(aliases) + [alias_pattern]
-        else:
-            alias_sql = (f"EXISTS (SELECT 1 FROM log_fields hf WHERE hf.log_id = l.id "
-                         f"AND hf.field IN ({ph}) AND LOWER(hf.value) LIKE ?)")
-            alias_params = list(aliases) + [f"%{term.lower()}%"]
-        sql = f"({col_sql} OR {alias_sql})"
-        params = col_params + alias_params
-    else:
-        sql = f"({col_sql})"
-        params = col_params
-
+    mode, needle = _concept_match_mode(concept, term)
+    base_sql, base_params = _base_match_clause(column, concept, mode, needle, backend)
+    alias_sql, alias_params = _alias_match_clause(concept, mode, needle.casefold(), aliases, backend)
+    sql = f"({base_sql}" + (f" OR {alias_sql}" if alias_sql else "") + ")"
+    params = base_params + alias_params
     return (f"NOT {sql}" if negate else sql), params
 
 
+def _concept_filter_terms(raw):
+    out = []
+    for term in ([t.strip() for t in str(raw or "").split(",")] if "," in str(raw or "") else [str(raw or "").strip()]):
+        if not term:
+            continue
+        negate = term.startswith("!=") or term.startswith("!")
+        needle = (term[2:] if term.startswith("!=") else term[1:]).strip() if negate else term
+        if needle:
+            out.append((needle, negate))
+    return out
+
 
 def _build_log_query(args, select_cols, search_backend=None):
-    """Shared WHERE builder for log search + export. Supports q, source_ip,
-    hostname, severity (synonym-aware), time range (from/to ISO), and ids."""
+    """Shared index-friendly WHERE builder for SQLite and PostgreSQL v2."""
+    if search_backend is None:
+        try:
+            search_backend = "postgres_v2" if _db_config().get("backend") == "postgres" else "sqlite_like"
+        except Exception:
+            search_backend = "sqlite_like"
+    pg = str(search_backend).startswith("postgres")
+    relation = "security_event_logs" if pg else "logs"
+
     q = args.get("q", "").strip()
     source_ip = args.get("source_ip", "").strip()
     hostname = args.get("hostname", "").strip()
@@ -876,154 +903,94 @@ def _build_log_query(args, select_cols, search_backend=None):
     if ids:
         id_list = [int(i) for i in ids.split(",") if i.strip().isdigit()][:500]
         if id_list:
-            clauses.append(f"id IN ({','.join('?' * len(id_list))})")
+            clauses.append(f"l.id IN ({','.join('?' * len(id_list))})")
             params.extend(id_list)
+
     if q:
-        # Message search via FTS5 (fast, indexed) instead of leading-wildcard
-        # LIKE scans. Preserves the existing syntax:
-        #   error                 -> message contains the word "error"
-        #   !tasklist             -> excludes "tasklist"
-        #   error, !tasklist      -> has "error" AND not "tasklist"
-        # Terms are comma-separated. Each term becomes a prefix token match
-        # (term*) so "fort" still finds "fortigate"; excluded terms become
-        # FTS NOT clauses. If a term can't be expressed in FTS (empty after
-        # cleaning), it's skipped. The whole thing is one MATCH subquery.
-        include, exclude = [], []
         terms = [t.strip() for t in q.split(",")] if "," in q else [q.strip()]
-        for term in terms:
-            if not term:
-                continue
-            neg = term.startswith("!=") or term.startswith("!")
-            needle = (term[2:] if term.startswith("!=") else term[1:]).strip() if neg else term
-            tok = _fts_token(needle)
-            if not tok:
-                continue
-            (exclude if neg else include).append(tok)
-        match_expr = _fts_build_match(include, exclude)
-        if match_expr:
-            clauses.append("id IN (SELECT rowid FROM logs_fts WHERE logs_fts MATCH ?)")
-            params.append(match_expr)
-        else:
-            # nothing expressible in FTS (e.g. only punctuation) — fall back to
-            # a LIKE on the single term so the search still does something.
+        if pg:
             for term in terms:
-                t = term.strip()
-                if not t:
+                if not term:
                     continue
-                neg = t.startswith("!=") or t.startswith("!")
-                needle = (t[2:] if t.startswith("!=") else t[1:]).strip() if neg else t
-                if needle:
-                    clauses.append("message NOT LIKE ?" if neg else "message LIKE ?")
-                    params.append(f"%{needle}%")
-    if source_ip:
-        # Supports exclusion (!term), partial match, subnet (CIDR or dotted
-        # prefix like 192.168.1.0), comma-separated:
-        #   sophos-central     -> source contains it
-        #   192.168.1.0/24     -> any IP in that subnet
-        #   192.168.1.0        -> treated as the /24
-        #   !10.0.0.0/8        -> exclude that subnet
-        # Also matches the "source" concept's configured alias fields (Setup
-        # -> Search field aliases), so an IP that lives in a different field
-        # per source — Fortigate's src= vs Sophos's endpoint_ip — is
-        # findable with ONE search regardless of which source it came from.
-        for term in ([t.strip() for t in source_ip.split(",")] if "," in source_ip else [source_ip]):
-            if not term:
-                continue
-            negate = term.startswith("!=") or term.startswith("!")
-            needle = (term[2:] if term.startswith("!=") else term[1:]).strip() if negate else term
-            if not needle:
-                continue
-            sql, sp = _concept_clause("source_ip", "source", needle, negate)
-            clauses.append(sql)
-            params.extend(sp)
-    if hostname:
-        # Same inclusion/exclusion/partial/subnet semantics as source, and
-        # the same alias-fallback behavior via the "host" concept aliases.
-        for term in ([t.strip() for t in hostname.split(",")] if "," in hostname else [hostname]):
-            if not term:
-                continue
-            negate = term.startswith("!=") or term.startswith("!")
-            needle = (term[2:] if term.startswith("!=") else term[1:]).strip() if negate else term
-            if not needle:
-                continue
-            sql, sp = _concept_clause("hostname", "host", needle, negate)
-            clauses.append(sql)
-            params.extend(sp)
-    if destination:
-        # New: Destination previously had a column and a display, but no
-        # search box at all. Same semantics as source/host, via the
-        # "destination" concept aliases.
-        for term in ([t.strip() for t in destination.split(",")] if "," in destination else [destination]):
-            if not term:
-                continue
-            negate = term.startswith("!=") or term.startswith("!")
-            needle = (term[2:] if term.startswith("!=") else term[1:]).strip() if negate else term
-            if not needle:
-                continue
-            sql, sp = _concept_clause("destination", "destination", needle, negate)
-            clauses.append(sql)
-            params.extend(sp)
+                neg = term.startswith("!=") or term.startswith("!")
+                needle = (term[2:] if term.startswith("!=") else term[1:]).strip() if neg else term
+                tok = _postgres_tsquery_token(needle)
+                if tok:
+                    expr = "to_tsvector('simple',COALESCE(l.message,'')) @@ to_tsquery('simple',?)"
+                    clauses.append("NOT (" + expr + ")" if neg else expr)
+                    params.append(tok)
+        else:
+            include, exclude = [], []
+            for term in terms:
+                if not term:
+                    continue
+                neg = term.startswith("!=") or term.startswith("!")
+                needle = (term[2:] if term.startswith("!=") else term[1:]).strip() if neg else term
+                tok = _fts_token(needle)
+                if tok:
+                    (exclude if neg else include).append(tok)
+            match_expr = _fts_build_match(include, exclude)
+            if match_expr:
+                clauses.append("l.id IN (SELECT rowid FROM logs_fts WHERE logs_fts MATCH ?)")
+                params.append(match_expr)
+            else:
+                for term in terms:
+                    neg = term.startswith("!=") or term.startswith("!")
+                    needle = (term[2:] if term.startswith("!=") else term[1:]).strip() if neg else term
+                    if needle:
+                        clauses.append("l.message NOT LIKE ?" if neg else "l.message LIKE ?")
+                        params.append(f"%{needle}%")
+
+    for needle, negate in _concept_filter_terms(source_ip):
+        sql, sp = _concept_clause("l.source_ip", "source", needle, negate, backend=search_backend)
+        clauses.append(sql); params.extend(sp)
+    for needle, negate in _concept_filter_terms(hostname):
+        sql, sp = _concept_clause("l.hostname", "host", needle, negate, backend=search_backend)
+        clauses.append(sql); params.extend(sp)
+    for needle, negate in _concept_filter_terms(destination):
+        sql, sp = _concept_clause("l.destination", "destination", needle, negate, backend=search_backend)
+        clauses.append(sql); params.extend(sp)
+
     if severity:
-        # Severity supports operators for richer filtering:
-        #   informational        -> exactly that severity (synonym-aware)
-        #   !=informational      -> everything EXCEPT that severity
-        #   >=warning            -> warning and MORE severe (rank-based)
-        #   >warning / <= / <    -> other rank comparisons
-        # Rank: emergency(0) most severe .. debug(7) least. ">=warning"
-        # means "at least as severe as warning" = rank <= warning's rank.
-        SEV_RANK = ("emergency", "alert", "critical", "error", "warning",
-                    "notice", "informational", "debug")
+        SEV_RANK = ("emergency", "alert", "critical", "error", "warning", "notice", "informational", "debug")
         rank_of = {s: i for i, s in enumerate(SEV_RANK)}
-        op = "="
-        val = severity
+        op, val = "=", severity
         for cand in ("!=", ">=", "<=", ">", "<"):
             if severity.startswith(cand):
-                op = cand
-                val = severity[len(cand):].strip()
-                break
-        canon = (severity_mod.synonyms_of(val) or [val.lower()])
+                op, val = cand, severity[len(cand):].strip(); break
+        canon = severity_mod.synonyms_of(val) or [val.lower()]
         canon_name = canon[0] if canon else val.lower()
         if op == "=":
-            clauses.append(f"LOWER(severity) IN ({','.join('?' * len(canon))})")
-            params.extend(canon)
+            clauses.append(f"LOWER(l.severity) IN ({','.join('?' * len(canon))})"); params.extend(canon)
         elif op == "!=":
-            clauses.append(f"LOWER(severity) NOT IN ({','.join('?' * len(canon))})")
-            params.extend(canon)
-        elif op in (">=", ">", "<=", "<") and canon_name in rank_of:
-            # map the operator on *severity* to an operator on *rank*.
-            # more severe = lower rank number, so >= severity => <= rank.
+            clauses.append(f"LOWER(l.severity) NOT IN ({','.join('?' * len(canon))})"); params.extend(canon)
+        elif canon_name in rank_of:
             target = rank_of[canon_name]
             rank_op = {">=": "<=", ">": "<", "<=": ">=", "<": ">"}[op]
             cases = " ".join(f"WHEN '{s}' THEN {i}" for i, s in enumerate(SEV_RANK))
-            clauses.append(f"(CASE LOWER(severity) {cases} ELSE 99 END) {rank_op} ?")
-            params.append(target)
+            clauses.append(f"(CASE LOWER(l.severity) {cases} ELSE 99 END) {rank_op} ?"); params.append(target)
+
     if time_from:
-        clauses.append("received_at >= ?")
+        clauses.append("l.event_time >= ?::timestamptz" if pg else "l.received_at >= ?")
         params.append(time_from)
     if time_to:
-        clauses.append("received_at <= ?")
+        clauses.append("l.event_time <= ?::timestamptz" if pg else "l.received_at <= ?")
         params.append(time_to)
 
     where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
-    # base-column sort: sort=<col>&dir=asc|desc. Whitelisted to real columns
-    # so this can't be used for SQL injection. Extracted-field sort (sort=x_*)
-    # is handled separately in _query_logs_extracted and ignored here.
-    SORTABLE = {"received_at": "received_at", "source_ip": "source_ip",
-                "severity": "severity", "hostname": "hostname",
-                "app_name": "app_name", "id": "id"}
+    SORTABLE = {"received_at": "event_time" if pg else "received_at", "source_ip": "source_ip",
+                "severity": "severity", "hostname": "hostname", "app_name": "app_name", "id": "id"}
     sort = (args.get("sort") or "").strip()
     direction = "ASC" if (args.get("dir") or "").lower() == "asc" else "DESC"
-    # severity should sort by actual rank (emergency..debug), not alphabetically
-    SEV_RANK = ("emergency", "alert", "critical", "error", "warning",
-                "notice", "informational", "debug")
+    SEV_RANK = ("emergency", "alert", "critical", "error", "warning", "notice", "informational", "debug")
     if sort == "severity":
         cases = " ".join(f"WHEN '{s}' THEN {i}" for i, s in enumerate(SEV_RANK))
-        order = f"ORDER BY CASE LOWER(severity) {cases} ELSE 99 END {direction}, id DESC"
+        order = f"ORDER BY CASE LOWER(l.severity) {cases} ELSE 99 END {direction}, l.id DESC"
     elif sort in SORTABLE:
-        order = f"ORDER BY {SORTABLE[sort]} {direction}, id DESC"
+        order = f"ORDER BY l.{SORTABLE[sort]} {direction}, l.id DESC"
     else:
-        order = "ORDER BY id DESC"
-    sql = f"SELECT {select_cols} FROM logs l {where} {order}"
+        order = "ORDER BY l.event_time DESC, l.id DESC" if pg else "ORDER BY l.id DESC"
+    sql = f"SELECT {select_cols} FROM {relation} l {where} {order}"
     return sql, params
 
 
@@ -1059,8 +1026,10 @@ def _query_logs_extracted(args, limit, select_cols, sort_cap=100000):
     fields, filters, sort, direction = _extraction_args(args)
     needs = bool(fields or filters or sort.startswith("x_"))
 
-    base_sql, base_params = _build_log_query(args, select_cols)
     conn = get_conn()
+    search_backend = "postgres_v2" if getattr(conn, "backend", "sqlite") == "postgres" else "sqlite_like"
+    relation = "security_event_logs" if search_backend == "postgres_v2" else "logs"
+    base_sql, base_params = _build_log_query(args, select_cols, search_backend=search_backend)
     try:
         if not needs:
             limited_sql = base_sql + " LIMIT ?"
@@ -1092,10 +1061,12 @@ def _query_logs_extracted(args, limit, select_cols, sort_cap=100000):
                 needle, negate = spec, False
             if negate:
                 # EXCLUDE: no row for this field matching the value.
+                spec2 = _parse_field_filter(name, needle, "query")
+                pred, pred_params = _field_value_predicate("fx", spec2["mode"], spec2["needle"], backend=search_backend)
                 extra_where.append(
                     "NOT EXISTS (SELECT 1 FROM log_fields fx WHERE fx.log_id = l.id "
-                    "AND fx.field = ? AND LOWER(fx.value) LIKE ?)")
-                extra_params.extend([name, f"%{needle}%"])
+                    "AND fx.field = ? AND " + pred + ")")
+                extra_params.extend([name] + pred_params)
             else:
                 if or_mode:
                     # kept in a SEPARATE accumulator (not extra_params) because
@@ -1108,15 +1079,20 @@ def _query_logs_extracted(args, limit, select_cols, sort_cap=100000):
                     # "where appended", desyncing every ? placeholder after
                     # the first negate+OR mix. Appending both the clause and
                     # its params after the loop, together, keeps them aligned.
+                    spec2 = _parse_field_filter(name, needle, "query")
+                    pred, pred_params = _field_value_predicate("fo", spec2["mode"], spec2["needle"], backend=search_backend)
                     or_group.append(
                         "EXISTS (SELECT 1 FROM log_fields fo WHERE fo.log_id = l.id "
-                        "AND fo.field = ? AND LOWER(fo.value) LIKE ?)")
-                    or_group_params.extend([name, f"%{needle}%"])
+                        "AND fo.field = ? AND " + pred + ")")
+                    or_group_params.extend([name] + pred_params)
                 else:
+                    spec2 = _parse_field_filter(name, needle, "query")
+                    alias = f"f{ji}"
+                    pred, pred_params = _field_value_predicate(alias, spec2["mode"], spec2["needle"], backend=search_backend)
                     joins.append(
-                        f"JOIN log_fields f{ji} ON f{ji}.log_id = l.id "
-                        f"AND f{ji}.field = ? AND LOWER(f{ji}.value) LIKE ?")
-                    join_params.extend([name, f"%{needle}%"])
+                        f"JOIN log_fields {alias} ON {alias}.log_id = l.id "
+                        f"AND {alias}.field = ? AND {pred}")
+                    join_params.extend([name] + pred_params)
                     ji += 1
         if or_group:
             # single positive filter behaves the same whether "AND" or "OR"
@@ -1131,7 +1107,7 @@ def _query_logs_extracted(args, limit, select_cols, sort_cap=100000):
         combined_where = " AND ".join(where_clauses)
 
         cols = ", ".join("l." + c.strip() for c in select_cols.split(","))
-        sql = f"SELECT {cols} FROM logs l " + " ".join(joins)
+        sql = f"SELECT {cols} FROM {relation} l " + " ".join(joins)
         params = list(join_params)
         if combined_where:
             sql += " WHERE " + combined_where
@@ -1141,7 +1117,7 @@ def _query_logs_extracted(args, limit, select_cols, sort_cap=100000):
 
         if sort.startswith("x_"):
             name = sort[2:]
-            sv_sql = (f"SELECT l.id AS lid, sv.value AS sval FROM logs l "
+            sv_sql = (f"SELECT l.id AS lid, sv.value AS sval FROM {relation} l "
                       + " ".join(joins)
                       + " LEFT JOIN log_fields sv ON sv.log_id = l.id AND sv.field = ?")
             sv_params = list(join_params) + [name]
@@ -1166,7 +1142,7 @@ def _query_logs_extracted(args, limit, select_cols, sort_cap=100000):
             if not page_ids:
                 return []
             ph = placeholders(len(page_ids))
-            fetch_sql = "SELECT " + cols + " FROM logs l WHERE l.id IN (" + ph + ")"
+            fetch_sql = "SELECT " + cols + f" FROM {relation} l WHERE l.id IN (" + ph + ")"
             fetched = {r["id"]: dict(r) for r in conn.execute(fetch_sql, page_ids).fetchall()}
             rows = [fetched[i] for i in page_ids if i in fetched]
         else:
@@ -1174,7 +1150,9 @@ def _query_logs_extracted(args, limit, select_cols, sort_cap=100000):
             SORTABLE = {"received_at", "source_ip", "severity", "hostname",
                         "app_name", "id"}
             if sort in SORTABLE:
-                safe_sort = identifier("l." + sort, allowed={"l." + c for c in SORTABLE})
+                sort_col = "event_time" if search_backend == "postgres_v2" and sort == "received_at" else sort
+                allowed = {"l." + c for c in SORTABLE} | {"l.event_time"}
+                safe_sort = identifier("l." + sort_col, allowed=allowed)
                 d = "ASC" if direction == "asc" else "DESC"
                 sql += " ORDER BY " + safe_sort + " " + d + ", l.id DESC LIMIT ?"
             else:

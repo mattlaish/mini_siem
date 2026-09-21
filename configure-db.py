@@ -93,10 +93,11 @@ def main():
     print(f"\nWrote {CONFIG_PATH}")
     print(f"Backend set to: {dbmod.describe(cfg)}")
     if cfg.get("backend") == "postgres":
-        print("\nRequired next step before starting services:")
-        print("  MINISIEM_PG_BOOTSTRAP_USER=<customer-admin> sudo -E ./install-services.sh --bootstrap-postgres")
-        print("For an existing database, run tools/postgres_bootstrap.py --mode inspect-existing first.")
-        print("Customer DBA credentials are bootstrap-only and are not written to runtime configuration.")
+        print("\nNext step for a fresh deployment:")
+        print("  sudo ./fresh-install.sh")
+        print("fresh-install.sh will ask for the temporary PostgreSQL bootstrap/admin user if needed.")
+        print("The bootstrap password is requested interactively and is not written to runtime configuration.")
+        print("For an existing database, use upgrade-existing.sh; do not run fresh bootstrap over operational data.")
     else:
         print("Start the SIEM as usual (python3 siem.py) — it reads this file automatically.")
 

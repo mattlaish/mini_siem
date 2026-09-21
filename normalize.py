@@ -83,12 +83,16 @@ def load_patterns_from_conn(conn) -> list:
 
 
 def write_fields(conn, log_id: int, fields: dict):
-    """Insert extracted fields for one log (caller holds any needed
-    lock and commits)."""
+    """Insert extracted fields for one log (caller holds any needed lock).
+
+    ``value_norm`` is the case-folded indexed representation used by exact and
+    prefix query semantics; ``value`` preserves the display/evidence value.
+    """
     for k, v in fields.items():
+        text = str(v)[:300]
         conn.execute(
-            "INSERT INTO log_fields (log_id, field, value) VALUES (?,?,?)",
-            (log_id, k[:60], str(v)[:300]))
+            "INSERT INTO log_fields (log_id, field, value, value_norm) VALUES (?,?,?,?)",
+            (log_id, str(k)[:60], text, text.casefold()))
 
 
 class FieldIndexer:
@@ -125,10 +129,19 @@ class FieldIndexer:
             except Exception as exc:
                 print(f"[profiles] reload failed: {exc}")
 
+    def extract(self, event: dict) -> dict:
+        """Return the current ingest-time normalized field map without I/O."""
+        return extract_fields(event.get("message"), self._patterns,
+                              json_obj=event.get("_json"))
+
     def process(self, log_id: int, event: dict) -> int:
-        """Extract and store fields for one event. Returns field count."""
-        fields = extract_fields(event.get("message"), self._patterns,
-                                json_obj=event.get("_json"))
+        """Extract and store fields for one event. Returns field count.
+
+        New primary ingest paths pass the fields into ``Storage.insert_log`` so
+        raw evidence and Event Storage v2 are atomic.  This method remains for
+        compatibility/reindex callers and refreshes the typed projection too.
+        """
+        fields = self.extract(event)
         # Capture "unidentified" JSON events — ones that matched no source
         # profile or mapped poorly (blank host/message) — so the UI can show
         # the operator a raw sample that needs a mapping profile.
@@ -140,6 +153,12 @@ class FieldIndexer:
             return 0
         with self.storage.lock:
             write_fields(self.storage.conn, log_id, fields)
+            try:
+                from event_storage_v2 import update_projection_fields
+                update_projection_fields(self.storage.conn, log_id, event, fields)
+            except Exception:
+                self.storage.conn.rollback()
+                raise
             self.storage.conn.commit()
         return len(fields)
 

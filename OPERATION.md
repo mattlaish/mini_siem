@@ -274,3 +274,15 @@ Backup and restore are operator workflows. Runtime services do not repair schema
 
 ## Phase 12.4 Performance & Capacity Qualification
 Status: IMPLEMENTED_TESTING_DEFERRED
+
+## Event Storage v2 partition maintenance
+
+Status: `IMPLEMENTED_TESTING_DEFERRED`
+
+On PostgreSQL split-role deployments, `mini-siem-event-partitions.timer` invokes
+`tools/postgres_event_partition_maintenance.py` daily to pre-create three
+monthly partitions through the bounded maintenance-role function.  Check it
+with `systemctl status mini-siem-event-partitions.timer` and inspect oneshot
+logs with `journalctl -u mini-siem-event-partitions.service`.  The job does not
+perform retention or partition DROP.  Evidence deletion remains explicit
+archive/retention work.

@@ -87,7 +87,7 @@ Implemented coverage:
 
 Evidence collected in the implementation environment:
 - targeted AI/PostgreSQL/warning-context suite: **33 passed, 1 skipped**; the skip is the intentionally disabled live OpenAI call;
-- fresh SQLite initialization: schema migration ledger = **30**, `ai_usage_audit` present, and legacy plaintext `ai_api_key` migrated to ciphertext;
+- fresh SQLite initialization: schema migration ledger = **33**, `ai_usage_audit` present, and legacy plaintext `ai_api_key` migrated to ciphertext;
 - changed Python files: `py_compile` PASS;
 - all shell scripts: `bash -n` PASS;
 - AI page inline JavaScript: Node `--check` PASS;
@@ -202,3 +202,145 @@ Do not claim live OpenAI qualification, product-level `TESTED`, or `RELEASED` un
 
 
 Artifact-level verification for this slice: clean extraction, ZIP CRC/path-traversal/symlink checks, required-file and syntax gates, complete source-to-extracted SHA-256 parity, placeholder-truth gate, and the extracted AI/progressive focused suite all pass; extracted focused result is **41 passed / 1 skipped**. The skip remains the live OpenAI test because no API key is present.
+
+## 2026-09-19 — PostgreSQL Event Storage v2 evidence
+
+Status: `IMPLEMENTED_TESTING_DEFERRED`.
+
+Current local evidence before final artifact packaging:
+- Event Storage v2/PostgreSQL focused suite: **27 passed**;
+- same dependency-available repository suite as the parent baseline, excluding
+  `test_admin_bootstrap.py`, `test_dashboard_routes.py`, and
+  `test_log_search_logic.py` because Flask/Werkzeug are unavailable: **109
+  passed / 37 failed / 1 skipped**;
+- exact parent result for that suite: **98 passed / 41 failed / 1 skipped**;
+- failure-set diff: **0 new failures**; four inherited query/normalized-field
+  contract failures are fixed.
+
+Live PostgreSQL gates are **NOT_RUN/DEFERRED**: no PostgreSQL credentials/server
+are available in this environment.  Required live evidence includes real
+owner migration/backfill, native-type/partition inspection, partition pruning,
+representative `EXPLAIN`, split-role/future-partition privileges, PostgreSQL
+archive eviction, and restart/runtime readiness.  Source-level PostgreSQL mocks
+or DDL-string tests do not satisfy these gates.
+
+Current source gates: compileall PASS; 4/4 shell syntax PASS; 1/1 standalone JavaScript syntax PASS; placeholder truth PASS; static security scan: **0 findings / 30 files**; bounded secret-pattern scan: **0 findings / 325 text files**. Full pytest collection stops at the same three missing Flask/Werkzeug modules and is not counted as a pass.
+
+Artifact-level Event Storage v2 verification: the complete-source ZIP was
+clean-extracted and the 27-test Event Storage/PostgreSQL focused suite passed
+from the extracted artifact.  Packaging gates also passed ZIP CRC, path
+traversal, symlink rejection, junk/cache exclusion, required Event Storage v2
+files, Python/shell/JavaScript syntax, placeholder truth, and complete
+source-to-extracted SHA-256 parity.  This is artifact/source evidence only; the
+slice remains `IMPLEMENTED_TESTING_DEFERRED` because live PostgreSQL gates were
+not run.
+
+## Fresh-install / existing-upgrade entry-point qualification
+
+Current status: `IMPLEMENTED_TESTING_DEFERRED`.
+
+Local gates cover shell syntax and source contracts for mutual exclusion, non-secret owner configuration, preservation of existing split-role credential files, and the internal-only fresh-bootstrap switch. Required live acceptance before promotion to `TESTED`:
+
+- fresh SQLite install on a clean host;
+- fresh PostgreSQL install on a clean database;
+- existing split-role PostgreSQL migration from the prior canonical baseline to migration 33;
+- verify listener/dashboard/maintenance passwords are byte-for-byte unchanged across upgrade;
+- verify pre-migration default-privilege lockdown before new Event Storage partitions are created;
+- `pg_dump` recovery artifact and restore drill;
+- forced failure before cutover and after cutover with application-tree rollback;
+- systemd restart ordering and reboot;
+- runtime readiness, privilege check, partition timer, ingest/search/browser smoke after upgrade;
+- interrupted migration/backfill idempotent rerun;
+- legacy shared owner/runtime migration remains a separate deferred gate.
+
+### 2026-09-19 dual-entrypoint local evidence
+
+- fresh/upgrade/PostgreSQL/Event Storage/build focused suite: **27 passed / 0 failed**;
+- same dependency-available broad suite as parent (excluding the same three Flask/Werkzeug collection blockers): **112 passed / 37 failed / 1 skipped**;
+- parent Event Storage v2 artifact on the identical suite: **109 passed / 37 failed / 1 skipped**;
+- failure-set diff: **0 new failing node IDs**;
+- full collection remains incomplete: **150 tests collected before 3 collection errors** (`test_admin_bootstrap.py`, `test_dashboard_routes.py`, `test_log_search_logic.py`) because Flask/Werkzeug are unavailable;
+- repository compileall: PASS;
+- shell `bash -n`: **6/6 PASS**;
+- standalone JavaScript `node --check`: **1/1 PASS**;
+- placeholder-truth gate: PASS;
+- bounded secret-pattern scan: **0 findings / 329 text files**;
+- dynamic Flask security scan: **NOT_RUN** because Flask/Werkzeug are unavailable in this execution environment;
+- live PostgreSQL fresh install, existing upgrade, pg_dump restore, systemd cutover/rollback, reboot and credential-preservation checks remain **NOT_RUN/DEFERRED**.
+
+Artifact-level dual-entrypoint verification checkpoint: the complete-source ZIP was clean-extracted and the 27-test fresh/upgrade/PostgreSQL/Event Storage/build focused suite passed from the extracted artifact. Packaging integrity also passed CRC, traversal, symlink rejection, required files, Python/shell/JavaScript syntax, placeholder truth, and source-to-extracted SHA-256 parity. Final bytes are rebuilt after recording this evidence and must be re-smoked before handoff.
+
+
+## 2026-09-19 — Existing-upgrade owner discovery / pg_dump compatibility regression
+
+Status remains `IMPLEMENTED_TESTING_DEFERRED`; live PostgreSQL 26→33 migration on the NAS has not yet been rerun after this patch.
+
+Local validation for this patch:
+
+- `tests/test_install_entrypoints.py`: **6 passed / 0 failed**.
+- PostgreSQL/install/Event Storage focused set: **26 passed / 0 failed**.
+- Broad dependency-available comparison excluding the same three environment-blocked modules: parent **112 passed / 37 failed / 1 skipped**; current **115 passed / 37 failed / 1 skipped**; **0 new failing node IDs**.
+- `bash -n upgrade-existing.sh`: PASS.
+- `fresh-install.sh` SHA-256 before/after patch: unchanged.
+
+Live gates still `NOT_RUN/DEFERRED`: actual owner discovery against the NAS, PostgreSQL 18 container pg_dump fallback, verified custom-format archive on the NAS, schema migration 26→33, Event Storage v2 backfill, post-migration privilege checks, service cutover and rollback acceptance.
+
+## 2026-09-19 — Existing PostgreSQL ledger-driven migration regression
+
+- Existing-upgrade helper no longer calls `db.initialize(cfg)`.
+- Upgrade contract tests: **7 passed / 0 failed**.
+- PostgreSQL/install/Event Storage focused suite: **27 passed / 0 failed**.
+- Broad dependency-available comparison excluding the same three environment-blocked modules: parent **112 passed / 37 failed / 1 skipped**; current **116 passed / 37 failed / 1 skipped**; **0 new failing node IDs**.
+- `fresh-install.sh` SHA-256 remains `36b9d21836d979e8216a60c8e7a80613b764f97e4c2e74578b5a7d7315b42421` before/after this upgrade-only patch.
+- Live PostgreSQL 26→33 migration/backfill, privilege refresh, service cutover and rollback acceptance on the NAS remain `NOT_RUN/DEFERRED`.
+
+
+## 2026-09-19 — Executable-mode packaging regression
+
+- Packaging/entrypoint contract: executable ZIP metadata is forced to `0755` for intended entrypoints even when the source copy is `0644`; ordinary files retain their regular mode.
+- Standard `unzip` extraction is now an artifact gate and must preserve `0755` on every declared executable entrypoint.
+- Upgrade/PostgreSQL/Event Storage/build focused suite after the packaging repair: **30 passed / 0 failed**.
+- No fresh-install application logic changed; this patch is packaging metadata/integrity only.
+
+
+## 2026-09-20 — Fresh-install database-intent regression gates
+
+Status remains `IMPLEMENTED_TESTING_DEFERRED`. Local gates for this slice must
+prove:
+
+- a source artifact contains no runtime `db-config.json`;
+- `configure-db.py` creates an explicit SQLite or PostgreSQL deployment intent;
+- `fresh-install.sh` refuses to run without that configuration;
+- `fresh-install.sh` never deletes or re-runs the configured backend selection;
+- PostgreSQL selection can only enter the PostgreSQL bootstrap branch;
+- `install-services.sh` has no missing/unreadable-config SQLite fallback;
+- runtime `db.load_config()` fails closed when an explicitly supplied config is
+  missing or malformed;
+- PostgreSQL schema/ownership/runtime readiness gates complete before systemd
+  unit installation;
+- executable mode is preserved as 0755 after standard ZIP extraction.
+
+Required live gates remain: clean-host SQLite install, clean-database PostgreSQL
+fresh install, role/database creation, owner schema migration, split runtime
+credential login, service startup/reboot, and failure injection before systemd
+cutover. These remain `NOT_RUN/DEFERRED` until executed on the target NAS/lab.
+
+
+### 2026-09-20 local validation evidence
+
+- PostgreSQL/config/install/Event Storage/build focused regression: **39 passed / 0 failed**.
+- Disposable two-stage harness: `configure-db.py` PostgreSQL selection -> exact `db-config.json` preservation -> `fresh-install.sh` -> `install-services.sh --bootstrap-postgres`: **PASS**.
+- `upgrade-existing.sh`: byte-for-byte unchanged from parent, SHA-256 `f1bf5433eac3533c0936cf1ea15c768da3a8db68e1c03acdc82b70e32ed07286`.
+- repository `compileall`: PASS.
+- shell `bash -n`: PASS.
+- placeholder truth gate: PASS.
+- static security scan: **0 findings / 30 root Python files**.
+- live NAS PostgreSQL role/database/schema/systemd/reboot acceptance: **NOT_RUN/DEFERRED**.
+
+### Fresh PostgreSQL owner-initialization regression — 2026-09-21
+
+- Static PostgreSQL schema/migration SQL containing literal `%` tokens must execute through the raw trusted DDL path.
+- Parameterized runtime SQL remains on the normal psycopg2 parameterized path.
+- Regression test: `tests/test_db.py::test_postgres_initialize_executes_percent_ddl_as_raw_sql`.
+- Focused verification: 25 passed in `test_db.py`, `test_event_storage_v2.py`, `test_postgres_bootstrap.py`, and `test_install_entrypoints.py`.
+- Live NAS PostgreSQL schema bootstrap remains required for final qualification.

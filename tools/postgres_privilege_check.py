@@ -39,7 +39,13 @@ def inspect(config_path: Path, cred_path: Path, identity: str):
                    has_table_privilege(current_user,'public.archive_segments','INSERT') AS can_insert_archive_catalog,
                    has_table_privilege(current_user,'public.archive_segments','UPDATE') AS can_update_archive_catalog,
                    has_table_privilege(current_user,'public.archive_segments','DELETE') AS can_delete_archive_catalog,
-                   has_table_privilege(current_user,'public.archive_segments','TRUNCATE') AS can_truncate_archive_catalog
+                   has_table_privilege(current_user,'public.archive_segments','TRUNCATE') AS can_truncate_archive_catalog,
+                   has_table_privilege(current_user,'public.security_events','SELECT') AS can_read_security_events,
+                   has_table_privilege(current_user,'public.security_events','INSERT') AS can_insert_security_events,
+                   has_table_privilege(current_user,'public.security_events','DELETE') AS can_delete_security_events,
+                   has_table_privilege(current_user,'public.assets','INSERT') AS can_insert_assets,
+                   has_table_privilege(current_user,'public.assets','UPDATE') AS can_update_assets,
+                   has_function_privilege(current_user,'public.minisiem_ensure_security_event_partitions(timestamptz,integer)','EXECUTE') AS can_manage_event_partitions
             """
         ).fetchone()
         trigger = conn.execute(
@@ -58,6 +64,10 @@ def inspect(config_path: Path, cred_path: Path, identity: str):
         result["identity"] = identity
         expected_delete = identity == "maintenance"
         expected_archive_write = identity == "maintenance"
+        expected_event_insert = identity == "listener"
+        expected_event_delete = identity == "maintenance"
+        expected_entity_observe = identity == "listener"
+        expected_partition_manage = identity == "maintenance"
         result["ok"] = bool(
             result["can_select"]
             and result["can_insert"]
@@ -70,6 +80,12 @@ def inspect(config_path: Path, cred_path: Path, identity: str):
             and bool(result["can_update_archive_catalog"]) == expected_archive_write
             and bool(result["can_delete_archive_catalog"]) == expected_archive_write
             and not result["can_truncate_archive_catalog"]
+            and result["can_read_security_events"]
+            and bool(result["can_insert_security_events"]) == expected_event_insert
+            and bool(result["can_delete_security_events"]) == expected_event_delete
+            and bool(result["can_insert_assets"]) == expected_entity_observe
+            and bool(result["can_update_assets"]) == expected_entity_observe
+            and bool(result["can_manage_event_partitions"]) == expected_partition_manage
             and result["guard_triggers"] == 2
         )
         return result

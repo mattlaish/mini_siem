@@ -808,3 +808,22 @@ Status: IMPLEMENTED_TESTING_DEFERRED
 ## Source-truth guard
 
 The repository includes `PLACEHOLDER_TRUTH_ALIGNMENT.md`, `PLACEHOLDER_TRUTH_INVENTORY.json`, and `tools/check_placeholder_truth.py`. Placeholder/design/scaffold Python and no-op `assert True` tests do not count as implementation or test evidence. The overall product remains `IMPLEMENTED_TESTING_DEFERRED`; current canonical status is in `ROADMAP.md`.
+
+## PostgreSQL Event Storage v2 — 2026-09-19
+
+Status: `IMPLEMENTED_TESTING_DEFERRED`
+
+PostgreSQL deployments now retain `logs/log_fields` as the raw evidence plane
+while writing a typed, time-partitioned `security_events` hot query projection
+in the same ingest transaction.  The projection uses native `TIMESTAMPTZ`,
+`INET`, integer ports and `JSONB`, preserves raw event text, and links to the
+minimal observational `assets`/`identities` foundation.  PostgreSQL search uses
+exact IP/CIDR, prefix host/destination and explicit-contains semantics instead
+of default `%...%` matching.  Monthly partitions are pre-created by a bounded
+maintenance function/timer using the maintenance DB identity, never the schema
+owner.  See `EVENT_STORAGE_V2.md` for the schema, index, privilege, archive and
+qualification boundaries.  Phase 13 Entity Context remains `PLANNED`.
+
+## Install vs upgrade entry points
+
+Use `fresh-install.sh` for a new deployment and `upgrade-existing.sh` for an existing deployment. They are deliberately fail-closed and mutually exclusive. PostgreSQL fresh bootstrap is not an operator upgrade mechanism; the low-level `install-services.sh --bootstrap-postgres` switch is accepted only when invoked through the fresh-install entry point. Existing split-role PostgreSQL upgrades preserve listener/dashboard/maintenance credentials and use temporary owner authority only for backup, migration/backfill, and grants repair.

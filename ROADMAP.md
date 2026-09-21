@@ -4,11 +4,11 @@
 
 Current working parent artifact:
 
-`mini_siem_openai_responses_hardening_2026-09-18.zip`
+`mini_siem_openai_egress_hardened_2026-09-18.zip`
 
 SHA-256:
 
-`dfb2776c069b32b633f99b0770e303a8971d813aaa33af198667f795d1e8029f`
+`899b0ab317f565229c10a5a6c0bb2e0dc44893f6fe6660fc2d190501580ae3ec`
 
 That artifact descends from `mini_siem_installer_pg_owner_fix.zip`. The current
 working tree is a development baseline, not a release. No overall `TESTED` or
@@ -59,7 +59,7 @@ Implemented:
 - `tools/postgres_bootstrap.py --mode fresh` accepts a temporary customer bootstrap identity, creates/checks `minisiem_owner`, creates/checks the target database, runs schema initialization/migrations only as `minisiem_owner`, provisions split runtime roles, writes component credentials, verifies runtime readiness, and persists neither customer DBA nor owner password in `db-config.json`;
 - schema owner and PostgreSQL role-admin duties are separated: `minisiem_owner` remains `NOCREATEROLE`; temporary customer DBA/CREATEROLE authority creates/rotates runtime roles;
 - fresh bootstrap refuses a database owned by an unexpected role and refuses to adopt a database containing application/public objects;
-- `install-services.sh --bootstrap-postgres` can invoke the fresh bootstrap explicitly;
+- `fresh-install.sh` is the fail-closed operator entry point for a new install and is the only path allowed to invoke the internal PostgreSQL fresh-bootstrap mode;
 - PostgreSQL service installation now fails closed when the split runtime privilege boundary is absent;
 - listener/dashboard runtime schema readiness is checked before systemd unit installation/start.
 
@@ -69,19 +69,20 @@ Deferred:
 - live role/ownership/grant verification on supported PostgreSQL versions;
 - live systemd startup using the generated credentials.
 
-### P1B — Existing/legacy PostgreSQL upgrade to split boundary
+### P1B — Existing PostgreSQL upgrade
 
-Status: `PLANNED`
+Status: `IMPLEMENTED_TESTING_DEFERRED` for **already split-role** deployments; legacy shared-role conversion remains `PLANNED`.
 
-Current source provides a non-mutating `--mode inspect-existing` path that reports database owner, public object owners, public schema owner, migration versions, split-role presence, local credential-overlay state, and local systemd-unit presence. It explicitly does not recreate the database or transfer ownership.
+Implemented for the split-role path:
 
-Still required before this scope is implemented:
+- `upgrade-existing.sh` is the fail-closed operator entry point and refuses a fresh/empty target;
+- external `pg_dump` backup is mandatory before PostgreSQL mutation;
+- owner default privileges are tightened before new owner-created Event Storage objects;
+- `tools/postgres_upgrade_existing.py` performs additive owner migrations, idempotent backfill, grants-only refresh and runtime verification;
+- existing listener/dashboard/maintenance passwords and credential files are preserved; no role creation/rotation occurs during upgrade;
+- previous application tree is retained for source rollback.
 
-- backup-before-migration execution/evidence;
-- controlled legacy owner to `minisiem_owner` ownership migration;
-- idempotent interrupted owner/privilege migration recovery;
-- credential rotation/re-provision workflow;
-- explicit rollback/recovery procedure and tests.
+Still `PLANNED`: controlled legacy single-owner/runtime -> `minisiem_owner` + split-role ownership migration. Live split-role PostgreSQL upgrade/rollback/reboot qualification remains deferred.
 
 ## P2 — PostgreSQL privilege boundary qualification
 
@@ -90,6 +91,26 @@ Status: `IMPLEMENTED_TESTING_DEFERRED`
 Existing implementation includes runtime `ensure_runtime_ready()`, split listener/dashboard/maintenance credentials, runtime DDL denial, migration boundary, privilege checks, guard-trigger defense in depth, archive-maintenance separation, and AI usage-audit privilege separation.
 
 Required live gates include ownership verification, inherited privilege revocation, upgrade/downgrade, interrupted migration recovery, and PostgreSQL privilege regression.
+
+### P2A — PostgreSQL Event Storage v2
+
+Status: `IMPLEMENTED_TESTING_DEFERRED`
+
+Implemented: PostgreSQL-native typed `security_events`, monthly range
+partitioning, raw-evidence/typed-projection transactional ingest, composite
+entity+time indexes, JSONB/message search indexes, exact IP/CIDR and prefix
+query semantics, normalized dynamic-field lookup, minimal asset/identity
+relational foundation, archive hot-projection eviction, bounded maintenance-role
+partition pre-creation, owner-only idempotent legacy backfill/qualification, and
+fail-closed future-partition default privileges.  `tools/postgres_phase4_validation.py`
+uses the real v2 storage path rather than direct raw-log inserts.
+
+Local same-suite regression comparison improved from parent 98 passed / 41
+failed / 1 skipped to 109 passed / 37 failed / 1 skipped with zero new failing
+node IDs.  Live PostgreSQL migration/backfill, partition pruning/EXPLAIN,
+split-role privileges, archive eviction, service restart/readiness and sustained
+performance remain `NOT_RUN/DEFERRED`.  The `assets`/`identities` foundation
+does not implement Phase 13.4; all Phase 13 scopes remain `PLANNED`.
 
 ## P3 — Linux / systemd host hardening
 
@@ -101,13 +122,14 @@ Target: replace full-root syslog listener operation where feasible with a dedica
 
 Status: `IMPLEMENTED_TESTING_DEFERRED`
 
-Some repair/reconciliation behavior exists, but the canonical three-state contract is not yet fully implemented and qualified:
+The fresh-vs-existing operator boundary is now implemented but not live-qualified:
 
-- no installation -> fresh install;
-- interrupted fresh install -> `install.sh --resume` only;
-- operational installation -> `update.sh` only.
+- no installation -> `fresh-install.sh`;
+- operational installation -> `upgrade-existing.sh`;
+- the two entry points are mutually exclusive and fail closed;
+- `install-services.sh` is a low-level reconciliation helper, not the operator upgrade interface.
 
-Resume must never become force-install. Operational upgrade/resume distinction, checkpoint verification, backup/rollback, and interrupted owner-migration recovery still require implementation/qualification.
+`upgrade-existing.sh` stages the new source, preserves runtime state/credentials, creates backup evidence, performs owner-only PostgreSQL upgrade where applicable, retains the prior tree for rollback, then cuts over at the stable target path. Interrupted-upgrade/reboot/rollback and legacy shared-role migration remain live/deferred qualification items.
 
 ## P5 — Backup / restore / PostgreSQL reliability
 
@@ -193,3 +215,20 @@ P0 source truth + package cleanup
   -> P12 full qualification
   -> P13 release package
 ```
+
+## Installation entry-point split — 2026-09-19
+
+Status: `IMPLEMENTED_TESTING_DEFERRED`
+
+Implemented:
+- dedicated `fresh-install.sh` for new deployments only;
+- dedicated `upgrade-existing.sh` for operational deployments only;
+- direct operator access to PostgreSQL fresh bootstrap is fail-closed;
+- existing split-role PostgreSQL upgrade preserves runtime credentials and uses owner-only migration/backfill + grants-only refresh;
+- external PostgreSQL pre-upgrade dump and application-tree rollback retention;
+- source staging/cutover at a stable target path.
+
+Deferred live gates: real target PostgreSQL 30->33 upgrade, interrupted upgrade/resume/recovery, systemd cutover/rollback, reboot, pg_dump restore drill, and legacy shared-role -> split-role migration.
+
+- Existing PostgreSQL upgrade migration hardening: `IMPLEMENTED_TESTING_DEFERRED` — dedicated ledger-driven 26→33-compatible path implemented; live NAS migration/backfill/cutover still deferred. Fresh-install behavior unchanged.
+
