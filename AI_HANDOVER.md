@@ -155,7 +155,7 @@ through default privileges.  The daily partition timer uses only the
 maintenance role and may pre-create partitions but never drop evidence.
 
 The `assets`/`identities` tables and `security_event_context` are foundations,
-not Phase 13.4 completion.  Phase 13 remains `PLANNED`.
+not full broad-entity Phase 13.4 completion. Current 2026-09-23 handover sections below supersede the older blanket Phase 13 status.
 
 Current same-suite comparison: parent 98/41/1 versus current 109/37/1
 (pass/fail/skip), with zero newly failing node IDs.  Live PostgreSQL gates remain
@@ -206,3 +206,72 @@ or runtime-readiness failure. Explicit runtime `--db-config` paths also fail
 closed when missing/invalid. PostgreSQL systemd units are installed only after
 owner migration/schema verification and split runtime credential verification.
 `upgrade-existing.sh` remains a separate unchanged path.
+
+## 2026-09-23 product-boundary / investigation handover
+
+Delivery artifact for this alignment: `mini_siem_ai_investigation_scope_alignment_2026-09-23.zip` (complete source; SHA-256 is provided externally with the packaged artifact).
+
+Treat these as current source invariants:
+
+- mini-SIEM is not NAS-bound. NAS/appliance-like hosts are deployment test targets only; product logic remains generic Linux/PostgreSQL/systemd.
+- `archive.py` is the existing evidence lifecycle: checksummed archive segments, copy/move, `hot_days`, archive search and verified hot-copy eviction. Do not create a second hot/cold subsystem. Add further storage tiers only after measured scale/cost/retention evidence.
+- Generic REST ticketing is already implemented (`TicketWorker`) for Jira/ServiceNow/Zammad/osTicket/webhooks and includes alert `log_ids` plus `ai_analysis`. The known missing scheduled path is playbook report finding -> alert, not alert -> ticket.
+- Do not duplicate full logs into an investigation evidence store. SIEM/archive remain the evidence authority; tickets/SOAR may carry references and analysis.
+- The 14 correlation playbooks are detection/investigation content. Do not import full SOAR governance requirements unless playbooks later gain privileged/destructive response actions.
+- Progressive AI context is server-controlled and bounded. Short uses the trigger entity only; Medium can follow one confirmed destination/related-IP -> later-source pivot; Long can follow two. Current limits are 1/6/12 entities respectively. `peer_ip` participates in evidence matching but is deliberately not used to discover new pivot entities because it often identifies the logging device/collector. The LLM never receives DB query authority.
+
+
+## 2026-09-23 manual Investigate UI handover
+
+`/correlate` now exposes **Investigate** instead of the old manual ad-hoc form.
+The analyst enters an IP and controls two independent sliders: Short/Medium/Long
+retrospective scope (30m/90m/5h ending now) and 0-4 confirmed entity hops.
+Backend route: `POST /api/investigate/ip`; engine:
+`ai_soc.gather_ip_investigation()`.
+
+Do not reimplement pivot logic in JavaScript or the LLM. The server remains the
+authority: a destination is promoted only after it later appears as
+`logs.source_ip` in the selected window. Evidence for admitted entities may
+match source/destination/peer/indexed fields, while `peer_ip` is not a pivot
+discovery source. The old `/api/correlate` engine remains intact for playbooks
+and API compatibility even though the ad-hoc correlation form is no longer the
+primary manual UI.
+
+Validation for the manual Investigate delivery: 54 PASS in the manual/AI
+focused group, 40 PASS in DB/Event Storage/PostgreSQL/installer/source-builder,
+2 PASS placeholder truth, compileall/shell/Correlate-JS syntax PASS. Archive
+focused check remains 6 PASS / 2 inherited known failures (`hourly_log_stats`,
+`_record_query_telemetry_safe`). Live Flask/browser/PostgreSQL deployment gates
+remain deferred; do not promote overall status beyond
+`IMPLEMENTED_TESTING_DEFERRED`.
+
+## Current handover — 2026-09-23 priority hardening slice
+
+Canonical development direction now includes five implemented-but-not-live-
+qualified items: PostgreSQL bootstrap preflight; checkpointed fresh-install
+`--resume`; non-root listener/systemd least privilege; Alert Lifecycle; and
+scheduled playbook finding -> normal alert.
+
+Important product boundary: **do not turn mini-SIEM into a full case-management
+or SOAR product.** The SIEM owns collection, normalization, correlation,
+playbook/investigation, AI-assisted triage, lightweight alert workflow and
+outbound ticket/SOAR handoff. External ticket/SOAR platforms may be the
+incident system of record. Do not resurrect the old Phase 13 case-management
+references as implementation unless the product boundary is explicitly changed.
+
+Fresh-install resume is not force-install. It must keep enforcing same target,
+backend, deployment config and source fingerprint, reject operational installs,
+preserve generated owner/runtime secrets, and require re-entry of the temporary
+customer PostgreSQL bootstrap credential when needed. Do not persist that DBA
+credential.
+
+Alert Lifecycle is real runtime code now (`alert_workflow.py`, alert workflow
+columns/table, analyst API/UI, audit events). PostgreSQL workflow schema must
+stay dialect-aware and owner-only. Scheduled report alerts must stay idempotent
+and remain on the normal alert path so existing AI/ticket handling is reused.
+
+Current local evidence: focused slice 25 PASS; dependency-available broad suite
+162 PASS / 37 inherited FAIL / 1 SKIP with zero new failing node IDs compared
+with the parent. Three additional modules cannot collect because Flask/Werkzeug
+are not installed in this offline execution environment. Live PostgreSQL,
+systemd/SELinux and interrupted-install target acceptance remain deferred.

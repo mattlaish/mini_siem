@@ -1,14 +1,124 @@
 {
-  "artifact": "mini_siem_fresh_postgres_percent_init_fix_baseline_2026-09-21.zip",
-  "generated_at_utc": "2026-09-20T19:00:37.603696+00:00",
-  "parent": "mini_siem_config_then_fresh_baseline_2026-09-20.zip",
+  "artifact": "mini_siem_priority_hardening_alert_lifecycle_2026-09-23.zip",
+  "generated_at_utc": "2026-09-23T08:09:32.375724+00:00",
+  "parent": "mini_siem_manual_investigate_slider_2026-09-23.zip (SHA-256 70ba3097d2495b04cf17dc10dcd11c9fcbf0292d1ffb8b8a6338ba96c028049b)",
   "status": "IMPLEMENTED_TESTING_DEFERRED",
   "scope": [
-    "fresh-postgres-initialization"
+    "PostgreSQL bootstrap preflight",
+    "interrupted fresh-install --resume",
+    "listener/systemd least-privilege hardening",
+    "Alert Lifecycle",
+    "scheduled playbook finding to alert",
+    "case-management/SOAR explicitly out of core scope; external handoff retained"
   ],
-  "validation": {},
+  "validation": {
+    "status": "IMPLEMENTED_TESTING_DEFERRED",
+    "parent_artifact": "mini_siem_manual_investigate_slider_2026-09-23.zip",
+    "parent_sha256": "70ba3097d2495b04cf17dc10dcd11c9fcbf0292d1ffb8b8a6338ba96c028049b",
+    "focused_priority_slice": {
+      "passed": 25,
+      "failed": 0,
+      "suites": [
+        "tests/test_postgres_bootstrap_preflight.py",
+        "tests/test_fresh_install_resume.py",
+        "tests/test_systemd_least_privilege.py",
+        "tests/test_alert_lifecycle.py",
+        "tests/test_scheduled_playbook_alerts.py"
+      ]
+    },
+    "db_postgres_installer_builder_regression": {
+      "passed": 51,
+      "failed": 0
+    },
+    "dependency_available_broad_suite": {
+      "current": {
+        "passed": 162,
+        "failed": 37,
+        "skipped": 1
+      },
+      "parent": {
+        "passed": 137,
+        "failed": 37,
+        "skipped": 1
+      },
+      "new_failed_nodes": [],
+      "resolved_failed_nodes": [],
+      "inherited_failed_nodes": [
+        "tests/test_dashboard_live_refresh.py::test_auto_refresh_polls_only_logs_and_stats_at_split_intervals",
+        "tests/test_dashboard_live_refresh.py::test_background_refresh_is_non_overlapping_and_pauses_when_hidden",
+        "tests/test_dashboard_live_refresh.py::test_timeline_is_on_demand_not_rebuilt_by_log_poll",
+        "tests/test_evidence_archive_phase6.py::test_archive_move_evicts_only_verified_hot_copy_and_preserves_evidence_rollups",
+        "tests/test_evidence_archive_phase6.py::test_phase6_removes_age_delete_configuration_and_freezes_ioc_architecture",
+        "tests/test_imports.py::test_dashboard_imports",
+        "tests/test_imports.py::test_siem_imports",
+        "tests/test_ingest_performance.py::test_log_and_fields_share_one_batched_transaction",
+        "tests/test_ingest_performance.py::test_write_fields_uses_one_executemany_call",
+        "tests/test_ingest_performance.py::test_reindex_batches_deletes_and_inserts",
+        "tests/test_ingest_performance.py::test_forwarder_enqueue_is_non_blocking_when_sender_is_slow",
+        "tests/test_performance_phase3.py::test_sqlite_runtime_tuning_is_applied_and_bounded",
+        "tests/test_performance_phase3.py::test_sqlite_prefix_plan_uses_composite_identity_index",
+        "tests/test_performance_phase3.py::test_per_event_stdout_is_off_by_default",
+        "tests/test_performance_phase3.py::test_dashboard_log_refresh_uses_incremental_dom_and_event_delegation",
+        "tests/test_performance_phase4.py::test_db_writer_microbatches_and_rollups_are_transactional",
+        "tests/test_performance_phase4.py::test_post_processing_never_runs_before_log_id_is_persisted",
+        "tests/test_performance_phase4.py::test_alert_counter_uses_runtime_rollup",
+        "tests/test_performance_phase4.py::test_received_at_id_cursor_is_stable_across_equal_timestamps",
+        "tests/test_performance_phase4.py::test_dashboard_uses_incremental_cursor_and_timeline_virtualization",
+        "tests/test_performance_phase4.py::test_phase4_schema_has_cursor_and_rollup_indexes",
+        "tests/test_performance_phase4.py::test_db_writer_shutdown_flushes_partial_tail_without_waiting_full_delay",
+        "tests/test_performance_phase4.py::test_recent_rollup_counts_are_exact_across_partial_boundary_hours",
+        "tests/test_performance_phase5.py::test_fresh_sqlite_uses_incremental_auto_vacuum_without_full_vacuum",
+        "tests/test_performance_phase5.py::test_domain_suffix_lookup_matches_subdomains_but_not_bare_tld",
+        "tests/test_performance_phase5.py::test_nested_phase5_config_merges_with_defaults",
+        "tests/test_performance_phase5.py::test_dashboard_exposes_phase5_health_query_and_archive_status",
+        "tests/test_text_search_backend.py::test_text_search_environment_override",
+        "tests/test_text_search_backend.py::test_postgres_auto_prefers_indexed_fts",
+        "tests/test_text_search_backend.py::test_postgres_auto_falls_back_to_ilike_without_indexes",
+        "tests/test_text_search_backend.py::test_postgres_fts_sql_keeps_other_filters_conjunctive",
+        "tests/test_text_search_backend.py::test_postgres_trigram_uses_ilike_contains_semantics",
+        "tests/test_text_search_backend.py::test_postgres_optional_search_ddl_is_once_per_process_and_uses_persisted_mode",
+        "tests/test_text_search_backend.py::test_postgres_search_ddl_respects_selected_mode",
+        "tests/test_timeline_dialog_structure.py::test_timeline_uses_native_dialog_not_custom_overlay",
+        "tests/test_timeline_dialog_structure.py::test_timeline_desktop_and_mobile_sizing_and_horizontal_scrolling",
+        "tests/test_timeline_dialog_structure.py::test_timeline_event_can_locate_log_outside_current_page"
+      ]
+    },
+    "full_collection_blocked_modules": [
+      "tests/test_admin_bootstrap.py (Werkzeug unavailable)",
+      "tests/test_dashboard_routes.py (Flask unavailable)",
+      "tests/test_log_search_logic.py (Flask unavailable)"
+    ],
+    "syntax_and_truth": {
+      "compileall": "PASS",
+      "shell_syntax": "PASS (6 shell files)",
+      "index_inline_javascript": "PASS (node --check)",
+      "placeholder_truth": "PASS (2 pytest + executable truth gate)",
+      "static_high_risk_primitive_scan": "PASS (no shell=True/os.system/eval/exec/pickle.loads findings in changed runtime/install code)"
+    },
+    "implemented": [
+      "PostgreSQL bootstrap TCP/auth/current_user/CREATEDB+CREATEROLE-or-superuser preflight before DDL with operator-safe errors",
+      "Checkpointed interrupted fresh-install --resume bound to same target/backend/config/source and transient root-only generated database secrets",
+      "Listener non-root systemd identity with CAP_NET_BIND_SERVICE only; dashboard/maintenance capability bounding sets cleared",
+      "Lightweight Alert Lifecycle new/acknowledged/investigating/resolved/closed with assignee, note, history, audit, API/UI and dialect-aware schema",
+      "Scheduled weekly/monthly playbook findings convert idempotently into normal alerts and heal report-commit/alert-emission interruption"
+    ],
+    "product_boundary": "mini-SIEM does not implement full case-management or SOAR; external ticket/SOAR systems remain the incident-system handoff boundary.",
+    "deferred_live_gates": [
+      "real PostgreSQL bootstrap/preflight against production-like server",
+      "fresh-install interruption and --resume at every phase on a real host",
+      "generated systemd units, Linux capabilities and SELinux execution on target distributions",
+      "browser exercise of Alert Lifecycle UI/API",
+      "scheduled playbook -> alert -> AI/ticket external integration end-to-end",
+      "full dependency-provisioned pytest collection"
+    ],
+    "clean_extract_artifact_smoke": {
+      "candidate_focused_priority_slice": "25 PASS / 0 FAIL",
+      "candidate_db_postgres_installer_builder": "51 PASS / 0 FAIL",
+      "note": "Executed from a clean unzip of the delivery candidate; final package rebuild changes only ARTIFACT_MANIFEST.json validation metadata."
+    }
+  },
   "manifest_hash_scope": "all packaged files except ARTIFACT_MANIFEST.json itself",
-  "file_count_excluding_manifest": 331,
+  "file_count_excluding_manifest": 339,
   "files": [
     {
       "path": ".github/workflows/test.yml",
@@ -32,13 +142,13 @@
     },
     {
       "path": "AI_HANDOVER.md",
-      "size": 17176,
-      "sha256": "7cc3a9da9d74f7c1fe52ac7776f3886075d27bd2ad8b5ed65fb5a8e0e14b66a4"
+      "size": 22140,
+      "sha256": "1fb96ee4dd08cc3787099d708751dcc6bfc8f854de027e50acd6df6f094ec785"
     },
     {
       "path": "ALERT_LIFECYCLE.md",
-      "size": 124,
-      "sha256": "f9d372a09d2523af259b6a4d2ecdc49c0ac56c5a874d23e78642d42baa676a06"
+      "size": 1688,
+      "sha256": "f8b2b349f9a818b620c214f79d37706db2cb6a22f3eb279a84b2125f19a2cc50"
     },
     {
       "path": "CLAUDE.md",
@@ -52,13 +162,13 @@
     },
     {
       "path": "DETECTION_RULE_MANAGEMENT.md",
-      "size": 109,
-      "sha256": "13b844f2d0385839a577fb326806443cd8ce58742b82bf81430dd380ce6d6451"
+      "size": 323,
+      "sha256": "be400ecc243f838d44f02e744a037da7a1f7291775d985a394e312973a984155"
     },
     {
       "path": "DEVELOPMENT.md",
-      "size": 49626,
-      "sha256": "aefaecb83c57ef464883cd357bda000c0c2e048e4be6286a8db308aad69e9013"
+      "size": 57108,
+      "sha256": "dd7e429a4b503b9f14ba96fba157dfa0dde7743b11500b409de6d236046e7db8"
     },
     {
       "path": "DUAL_INSTALL_VALIDATION_2026-09-19.json",
@@ -67,8 +177,8 @@
     },
     {
       "path": "ENTITY_CONTEXT_MODEL.md",
-      "size": 119,
-      "sha256": "bc99ef5f360864f352d30e931764f9800460b6cc5b5f4e51d233d4b27bff706a"
+      "size": 271,
+      "sha256": "a332cc5f8dabebe2836f675a0e806d2c6258859f66828f367fb56007cd95ed31"
     },
     {
       "path": "EVENT_STORAGE_V2.md",
@@ -77,13 +187,13 @@
     },
     {
       "path": "INSTALLATION.md",
-      "size": 20648,
-      "sha256": "03a816ab12926ef36e6adc3cf696fc1b49700cccac0d21beacd56f20a556ebc8"
+      "size": 21812,
+      "sha256": "d3dd5fea64548bf0c198cd6040f99ddc5a58e5f91c05669d49fc93e400f81245"
     },
     {
       "path": "INVESTIGATION_WORKSPACE.md",
-      "size": 117,
-      "sha256": "646c002977472971c996c36eb12485729ffac0563f68edd5f990de913441ba13"
+      "size": 311,
+      "sha256": "9b2487d23127dd85e60d9c36e26a3612263a59616a1a1e338a833f1d65879835"
     },
     {
       "path": "OPENAI_INTEGRATION_QUALIFICATION_2026-09-18.json",
@@ -182,8 +292,8 @@
     },
     {
       "path": "PRODUCT.md",
-      "size": 5856,
-      "sha256": "34e9328e4b47e3b4ddf0899d80b948c02922795504f3fb8798d6c9730c0fddef"
+      "size": 7319,
+      "sha256": "b37c2a1692b21eb25591d849994716e5fe5d32cecd16bdb839236bbf881a296e"
     },
     {
       "path": "PRODUCTION_VALIDATION_STATUS.md",
@@ -192,8 +302,8 @@
     },
     {
       "path": "README.md",
-      "size": 42995,
-      "sha256": "ce9bd6d02684f38497eb0db4641c619fd8da8aa88583a29a42a0099ce21a6c89"
+      "size": 45486,
+      "sha256": "06880388fe4d8e6f61c53eff11aa50812014cd9389f5e29beea53f0a520e44c6"
     },
     {
       "path": "RELEASE_BASELINE_STATUS.md",
@@ -217,8 +327,8 @@
     },
     {
       "path": "ROADMAP.md",
-      "size": 13690,
-      "sha256": "d7d134efd810b9d430c1c5ec52e1d58dd77ceb46e3954460e94f00321a204a18"
+      "size": 20461,
+      "sha256": "5761db39b52bfa812eea9782cf9946ec8128ade4ecb4f21c53b88df694e4eb44"
     },
     {
       "path": "RUNTIME_HEALTH_HANDOFF.md",
@@ -227,18 +337,18 @@
     },
     {
       "path": "SECURITY.md",
-      "size": 10278,
-      "sha256": "0891f03422d3dbe525d27606449e6afe5f6baf61a7181464d5d4229a4787f5da"
+      "size": 11146,
+      "sha256": "2a1dd4534d92b4fe2ba2163a42c2bdafea93e3d25adebba5f8b4405c67b8a070"
     },
     {
       "path": "SOC_CASE_WORKFLOW.md",
-      "size": 136,
-      "sha256": "bb2002785220f60f98e3517eba7cc137389399e7c435a615ac43caf684943950"
+      "size": 327,
+      "sha256": "8eccf85271323e3d39fb25d04daf7e6d4460aac5d1cc1cdd05cc70a015dbed10"
     },
     {
       "path": "SOC_METRICS_DASHBOARD.md",
-      "size": 144,
-      "sha256": "ed34538ec567c947c3b05c1fc742e68b4983008bd07706c7b85e9d51e307897d"
+      "size": 385,
+      "sha256": "5a851ab06cce7e583d67fdffc16a82553120a6750cf41fe0e23db99ef5dacce8"
     },
     {
       "path": "SYSLOG-RELAY.md",
@@ -247,8 +357,8 @@
     },
     {
       "path": "TESTING.md",
-      "size": 20294,
-      "sha256": "9b3d60576d99d01d8aaa0797839e60cdb53395fbf1e253ac516aa9751775a112"
+      "size": 26409,
+      "sha256": "94ffe148e6512c93b5b3bba75dab3c5b8fa45024580630f2274b6b2eec12feee"
     },
     {
       "path": "TEST_STATUS_RECONCILIATION.md",
@@ -267,8 +377,8 @@
     },
     {
       "path": "ai_soc.py",
-      "size": 46359,
-      "sha256": "9733644309e17bf3099174e007bb786ae98a8565007c4d6c4484e9199abdb07d"
+      "size": 58730,
+      "sha256": "02c5c4103dffc9b8b0483ad0f2d6b11ec51392592851b247adcd70c2c4ebbc2d"
     },
     {
       "path": "ai_worker.py",
@@ -294,6 +404,11 @@
       "path": "alert_lifecycle/ALERT_STATE_MACHINE_REFERENCE.md",
       "size": 92,
       "sha256": "164ca8116a4bc584a2be631fa5ee55195e2960b97c62a1a7455f9231a141a27b"
+    },
+    {
+      "path": "alert_workflow.py",
+      "size": 1037,
+      "sha256": "3d8468f64260ce1adfc41bbb05f237a3c728d96e8f818dc0297ab6f5e9b9502a"
     },
     {
       "path": "api_poller.py",
@@ -332,8 +447,8 @@
     },
     {
       "path": "dashboard.py",
-      "size": 119377,
-      "sha256": "0cb82e50d0e77937e003a9f413c7d46cb506c3166b048b1d7bc5e71155ec0c0a"
+      "size": 123926,
+      "sha256": "ff8b678b7d2e3f4865e480f83e10a36468b3868300bf41fc4a2d952bf8bc8089"
     },
     {
       "path": "db-config.example.json",
@@ -347,8 +462,8 @@
     },
     {
       "path": "db.py",
-      "size": 47675,
-      "sha256": "3b0e024b6b0a9a9b2a47691916618c1a739824ec2a900c98b2ead81fcf5c2f3e"
+      "size": 50908,
+      "sha256": "9f911518a8e8c56587045de8edb507393780a9399033beb8e5cba40625d00203"
     },
     {
       "path": "deployment/ACCEPTANCE_CHECKLIST.md",
@@ -617,8 +732,8 @@
     },
     {
       "path": "fresh-install.sh",
-      "size": 5850,
-      "sha256": "7eaa877806584d90017efeb60437eac38b58cc23668caa75f00e81fd1a437521"
+      "size": 8893,
+      "sha256": "9976296f2d9a5a81fa19af9f95be32e978b7dbdab826a28b78907f018a047e06"
     },
     {
       "path": "handover/ADMIN_GUIDE.md",
@@ -662,8 +777,8 @@
     },
     {
       "path": "install-services.sh",
-      "size": 30218,
-      "sha256": "6e9a7a7751d06c47da4143af6dda8dce5a69f252eb89c5976d39e10b4d6d9ae6"
+      "size": 35213,
+      "sha256": "66a1c1d332280f85ca4a676caf8e11b787934364fcb7c53596d989d4bd19e3d5"
     },
     {
       "path": "integrations/__init__.py",
@@ -1257,8 +1372,8 @@
     },
     {
       "path": "templates/correlate.html",
-      "size": 21390,
-      "sha256": "ebda9584eae26eb3c221d5cb0b3e194fd32c1a109d3ff2b31afabcf5c73bb417"
+      "size": 23488,
+      "sha256": "c777909cbeb267e5109943af05d5ecf1f552c06d9a1c8c895b047a1cb0e08914"
     },
     {
       "path": "templates/health.html",
@@ -1267,13 +1382,13 @@
     },
     {
       "path": "templates/help.html",
-      "size": 13599,
-      "sha256": "825328a9d31f3cedf6e8cdf4d067e6555c209a51d8fa69000a60ecaf71f87333"
+      "size": 13825,
+      "sha256": "d04985ab1251d5c12fbb2645db1f45cc4cff6d3c8984d0950aac2210879b59e4"
     },
     {
       "path": "templates/index.html",
-      "size": 47503,
-      "sha256": "6a8bf76a048f122cdea7f36f9827bb64d25387efa7c317435d38c3d8f91e7dfd"
+      "size": 50133,
+      "sha256": "23f44ebf622d9570eaa4570519be9676a9c686c5d09762c40bcba5b74901b86a"
     },
     {
       "path": "templates/login.html",
@@ -1331,6 +1446,11 @@
       "sha256": "4f687ec13c48929d9ce6292dca6861c8fb1fad1946fc4d598af6893e677a0a0e"
     },
     {
+      "path": "tests/test_alert_lifecycle.py",
+      "size": 2409,
+      "sha256": "3c0d24ca8ae154f74ce5b037e6e02075e3afd202b257a24f9b5d846ca5e6cc3e"
+    },
+    {
       "path": "tests/test_backup_restore_readiness.py",
       "size": 248,
       "sha256": "2d1f4d081101cd2b2b83335cdf15f7cc15fb1cb778b26cdc52442920c765ade7"
@@ -1352,18 +1472,23 @@
     },
     {
       "path": "tests/test_db.py",
-      "size": 3980,
-      "sha256": "c6adb847fbff6e8d1b9282c4c9ec3f905dea8bb0b0a1df9bf1213601d094b584"
+      "size": 4059,
+      "sha256": "63bbbbe83aa2f5323821d5e32ff421ae439d8c35fad2251b9db45b32ef816daa"
     },
     {
       "path": "tests/test_event_storage_v2.py",
       "size": 6500,
-      "sha256": "d061e66684a8f3831657ad64ca484b07534d27c667abac7775d8e86472d1e2bf"
+      "sha256": "4ed0b959e90974800c269d25267bacb677636ee62434eb3dae1c152c6b34fb04"
     },
     {
       "path": "tests/test_evidence_archive_phase6.py",
       "size": 11800,
       "sha256": "c0fcacb0aeb49b137c2bb8dff5bb512ef9b5757bc922bd0871794983eb11f195"
+    },
+    {
+      "path": "tests/test_fresh_install_resume.py",
+      "size": 2572,
+      "sha256": "203c1cf0d6b8a59f3fbd087f3eec47a5cf595a033b28cd436c59bda36f65a7aa"
     },
     {
       "path": "tests/test_imports.py",
@@ -1377,8 +1502,8 @@
     },
     {
       "path": "tests/test_install_entrypoints.py",
-      "size": 9048,
-      "sha256": "c5e8bda293b067163790a584c3c29ff1ae0e335c4a7cd64cc192e730df9e6647"
+      "size": 9005,
+      "sha256": "1f2679f5c6993e17e43a673fe27643da78956cb03aa33a2b10f0d60c3ad8d267"
     },
     {
       "path": "tests/test_investigation_profiles.py",
@@ -1389,6 +1514,11 @@
       "path": "tests/test_log_search_logic.py",
       "size": 5046,
       "sha256": "a20502846feba4ec0f98c89e113ae87d6e5ae52e44efe755c281f868bfa768d0"
+    },
+    {
+      "path": "tests/test_manual_ip_investigate.py",
+      "size": 5292,
+      "sha256": "e09743d1bcea9e841d616c45b37f4d9408e1c6425917ada89e6a89f703e167a3"
     },
     {
       "path": "tests/test_openai_live_optional.py",
@@ -1426,6 +1556,11 @@
       "sha256": "649f2ac997fe9ae412b4381427ea7b06aa4f1174bf4f3578192d34357142de28"
     },
     {
+      "path": "tests/test_postgres_bootstrap_preflight.py",
+      "size": 4650,
+      "sha256": "550df816f5283939c9b8b44d95b4f6defe0deba1979c87f787b7ef71592f3110"
+    },
+    {
       "path": "tests/test_postgres_installer_contract.py",
       "size": 1385,
       "sha256": "057ae9d369f112db1b8868b1caf2bc7c601f32c83275ff12fcb457d47efb3852"
@@ -1441,6 +1576,11 @@
       "sha256": "2481ef71705c27a951a14ca8a916f07840cd29ead48c211fc100f70e212319f2"
     },
     {
+      "path": "tests/test_scheduled_playbook_alerts.py",
+      "size": 4270,
+      "sha256": "092dc296afddd4f2a3c222440764b06b50a6342b3a3b55eb5b04ec119cb02988"
+    },
+    {
       "path": "tests/test_sql_helpers.py",
       "size": 822,
       "sha256": "25c05e1d8da65059bc01a508b85ffea1c908f02b67041e920c1a62105d43f8e3"
@@ -1449,6 +1589,11 @@
       "path": "tests/test_syslog_troubleshoot.py",
       "size": 3208,
       "sha256": "15dcb016a964d2539cb4a66a881ed423848817641b3d9da7a7d9349f330d74f7"
+    },
+    {
+      "path": "tests/test_systemd_least_privilege.py",
+      "size": 1792,
+      "sha256": "fb5be9f73654f4e04691115a89f7117bd3ae52e5c1c6fcbdef3de581f48c01a3"
     },
     {
       "path": "tests/test_text_search_backend.py",
@@ -1462,8 +1607,8 @@
     },
     {
       "path": "tests/test_warning_ai_context.py",
-      "size": 20776,
-      "sha256": "077b3213cee1f741969fa9b2ba75047ba113a12417f20edf1c45035be3f55a1b"
+      "size": 26398,
+      "sha256": "c354de745866ecaf49f73d71606c80d5af25477f0509de72e7bbaf62fd9dc927"
     },
     {
       "path": "tests/test_webconsole_observability_slice.py",
@@ -1492,13 +1637,18 @@
     },
     {
       "path": "tools/build_source_artifact.py",
-      "size": 13177,
-      "sha256": "578ee49e25afc96a165fce0105e23edd94080919a151bdfe2050e5761c31ac85"
+      "size": 13309,
+      "sha256": "e110e3c9f5ae2ced80aa4dad601ecf1fe7be401e30f4f2977dcd222a3260d6fb"
     },
     {
       "path": "tools/check_placeholder_truth.py",
       "size": 4088,
       "sha256": "0d359c4903dcc4883a046b27a77f1dd7e8ee4bc16080c8578ee0a08242a81557"
+    },
+    {
+      "path": "tools/fresh_install_state.py",
+      "size": 7373,
+      "sha256": "07edfb08be304e949d56b23a1185f49069c25f7d078d4b2a48dc7bc230166bbc"
     },
     {
       "path": "tools/inspect-migration-mapping.py",
@@ -1512,8 +1662,8 @@
     },
     {
       "path": "tools/postgres_bootstrap.py",
-      "size": 20531,
-      "sha256": "f1bbd7cf7c5aa82ef1addfd101c39d6cf2561539e75a77c76235cd2a4c403d05"
+      "size": 27635,
+      "sha256": "762ee74d2d9754a9ce49682238045217e85fa5c988f7107176e43e17cae51ef6"
     },
     {
       "path": "tools/postgres_event_partition_maintenance.py",
@@ -1537,8 +1687,8 @@
     },
     {
       "path": "tools/postgres_privilege_boundary.py",
-      "size": 31493,
-      "sha256": "22985bb4b9b3baea050f78f92892ccd2888de3962b204400191b234d1d71fc3c"
+      "size": 31926,
+      "sha256": "836dcf5225f666b26c9c905de6bf2548c243b13aeff5f2b0f3bdfe481a3629d1"
     },
     {
       "path": "tools/postgres_privilege_check.py",
@@ -1547,8 +1697,8 @@
     },
     {
       "path": "tools/postgres_upgrade_existing.py",
-      "size": 10996,
-      "sha256": "047ffd33abf37303aaac1ababfa5016ddd8881a2106b830a4678a69a2e5ae1b0"
+      "size": 11584,
+      "sha256": "7f190cd59d49200f696cacbb28d454d198596ea10a306249afbd0432ddf4605e"
     },
     {
       "path": "tools/syslog_capture_helper.py",
@@ -1662,8 +1812,8 @@
     },
     {
       "path": "workers.py",
-      "size": 18530,
-      "sha256": "025a1b27f25865b27af0d6b5e3da321a888d6167371d11a291d76efbee3fbc02"
+      "size": 21772,
+      "sha256": "22d46aad0463a67191db8dcc597d56575810ef30be93b2db322ecfad8735a9a4"
     }
   ]
 }

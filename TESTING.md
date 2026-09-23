@@ -283,7 +283,7 @@ Local validation for this patch:
 - `bash -n upgrade-existing.sh`: PASS.
 - `fresh-install.sh` SHA-256 before/after patch: unchanged.
 
-Live gates still `NOT_RUN/DEFERRED`: actual owner discovery against the NAS, PostgreSQL 18 container pg_dump fallback, verified custom-format archive on the NAS, schema migration 26→33, Event Storage v2 backfill, post-migration privilege checks, service cutover and rollback acceptance.
+Live gates still `NOT_RUN/DEFERRED`: actual owner discovery against a production-like target, PostgreSQL 18 container pg_dump fallback where applicable, verified custom-format archive on that target, schema migration 26→33, Event Storage v2 backfill, post-migration privilege checks, service cutover and rollback acceptance.
 
 ## 2026-09-19 — Existing PostgreSQL ledger-driven migration regression
 
@@ -292,7 +292,7 @@ Live gates still `NOT_RUN/DEFERRED`: actual owner discovery against the NAS, Pos
 - PostgreSQL/install/Event Storage focused suite: **27 passed / 0 failed**.
 - Broad dependency-available comparison excluding the same three environment-blocked modules: parent **112 passed / 37 failed / 1 skipped**; current **116 passed / 37 failed / 1 skipped**; **0 new failing node IDs**.
 - `fresh-install.sh` SHA-256 remains `36b9d21836d979e8216a60c8e7a80613b764f97e4c2e74578b5a7d7315b42421` before/after this upgrade-only patch.
-- Live PostgreSQL 26→33 migration/backfill, privilege refresh, service cutover and rollback acceptance on the NAS remain `NOT_RUN/DEFERRED`.
+- Live PostgreSQL 26→33 migration/backfill, privilege refresh, service cutover and rollback acceptance on the production-like test target remain `NOT_RUN/DEFERRED`.
 
 
 ## 2026-09-19 — Executable-mode packaging regression
@@ -323,7 +323,7 @@ prove:
 Required live gates remain: clean-host SQLite install, clean-database PostgreSQL
 fresh install, role/database creation, owner schema migration, split runtime
 credential login, service startup/reboot, and failure injection before systemd
-cutover. These remain `NOT_RUN/DEFERRED` until executed on the target NAS/lab.
+cutover. These remain `NOT_RUN/DEFERRED` until executed on a production-like Linux/PostgreSQL lab target.
 
 
 ### 2026-09-20 local validation evidence
@@ -335,7 +335,7 @@ cutover. These remain `NOT_RUN/DEFERRED` until executed on the target NAS/lab.
 - shell `bash -n`: PASS.
 - placeholder truth gate: PASS.
 - static security scan: **0 findings / 30 root Python files**.
-- live NAS PostgreSQL role/database/schema/systemd/reboot acceptance: **NOT_RUN/DEFERRED**.
+- live production-like PostgreSQL role/database/schema/systemd/reboot acceptance: **NOT_RUN/DEFERRED**.
 
 ### Fresh PostgreSQL owner-initialization regression — 2026-09-21
 
@@ -343,4 +343,126 @@ cutover. These remain `NOT_RUN/DEFERRED` until executed on the target NAS/lab.
 - Parameterized runtime SQL remains on the normal psycopg2 parameterized path.
 - Regression test: `tests/test_db.py::test_postgres_initialize_executes_percent_ddl_as_raw_sql`.
 - Focused verification: 25 passed in `test_db.py`, `test_event_storage_v2.py`, `test_postgres_bootstrap.py`, and `test_install_entrypoints.py`.
-- Live NAS PostgreSQL schema bootstrap remains required for final qualification.
+- Live PostgreSQL schema bootstrap on a production-like Linux deployment target remains required for final qualification.
+
+## 2026-09-23 bounded entity-expansion regression
+
+The AI investigation context regression must preserve these contracts:
+
+- existing same-IP cross-source evidence works when the entity appears as source, destination, peer, or indexed endpoint field;
+- Short does not multi-hop;
+- Medium may admit one-hop peer IPs only after they subsequently appear as a source;
+- Long may admit a second hop under the same rule;
+- passive destinations are not promoted merely because the trigger host contacted them;
+- unrelated traffic is excluded;
+- entity depth/count and evidence/candidate bounds remain application-controlled;
+- the LLM never gets query/database authority.
+
+Focused test module: `tests/test_warning_ai_context.py`.
+
+
+### 2026-09-23 local regression evidence
+
+Status remains `IMPLEMENTED_TESTING_DEFERRED`.
+
+- AI/progressive-investigation/OpenAI integration: **45 PASS / 0 FAIL** (`test_warning_ai_context.py`, `test_investigation_profiles.py`, `test_ai_openai_integration.py`).
+- DB/Event Storage/PostgreSQL/install/source-builder focused group: **40 PASS / 0 FAIL**.
+- Archive/backup focused group on this delivery: **32 PASS / 2 FAIL**. The same two node IDs fail unchanged on the parent `mini_siem_fresh_postgres_percent_init_fix_baseline_2026-09-21.zip`: `test_archive_move_evicts_only_verified_hot_copy_and_preserves_evidence_rollups` (parent lacks `hourly_log_stats`) and `test_phase6_removes_age_delete_configuration_and_freezes_ioc_architecture` (parent dashboard lacks `_record_query_telemetry_safe`). They are pre-existing baseline inconsistencies, not regressions introduced by bounded entity expansion.
+- Dashboard-dependent tests were not collected in this packaging environment because Flask is not installed globally; this is an environment limitation, not counted as PASS.
+
+
+## 2026-09-23 manual `/correlate` Investigate regression
+
+Status: `IMPLEMENTED_TESTING_DEFERRED`.
+
+New focused coverage in `tests/test_manual_ip_investigate.py` verifies:
+
+- Short/Medium/Long manual slider mapping to 30/90/300-minute retrospective
+  windows;
+- hop slider changes actual server-side entity-expansion depth, not only UI
+  labels;
+- passive destinations are not promoted;
+- 0-4 hops are accepted and >4 fails closed;
+- invalid IP/stage input fails closed;
+- `/api/investigate/ip` route contract is present and audit-wired;
+- `/correlate` contains the Investigate IP/time/hop controls and no longer
+  exposes the old ad-hoc form;
+- the existing correlation engine remains callable after the UI upgrade.
+
+Focused local regression in the packaging environment:
+
+- manual Investigate + progressive AI context/profile/OpenAI integration:
+  **54 PASS / 0 FAIL**;
+- `ai_soc.py`, `dashboard.py`, `correlations.py`, and
+  `investigation_profiles.py` compile: **PASS**;
+- `/correlate` inline JavaScript `node --check`: **PASS**.
+
+Flask-dependent live route/browser pytest remains environment-limited because
+Flask is not installed in this packaging container and network package install
+is unavailable. This is not counted as PASS. Production-like browser,
+PostgreSQL and sustained scale qualification remain `NOT_RUN/DEFERRED`.
+
+### 2026-09-23 final local evidence for manual Investigate delivery
+
+- Manual Investigate + progressive AI context/profile/OpenAI focused group:
+  **54 PASS / 0 FAIL**.
+- DB/Event Storage/PostgreSQL/installer/source-builder focused group:
+  **40 PASS / 0 FAIL**.
+- Archive/backup focused check executed here: **6 PASS / 2 FAIL**. The two
+  failures are the same inherited baseline nodes already documented above:
+  missing `hourly_log_stats` and missing `_record_query_telemetry_safe`; this
+  delivery does not modify either subsystem and does not count them as passed.
+- Placeholder truth gate: **2 PASS / 0 FAIL**.
+- Repository `compileall`: PASS.
+- All 6 shell scripts `bash -n`: PASS.
+- `/correlate` inline JavaScript `node --check`: PASS.
+- Flask-dependent live route/browser tests remain `NOT_RUN/DEFERRED` in this
+  packaging environment because Flask is unavailable and package installation
+  has no network access.
+- Static security scan after manual Investigate SQL assembly review: **0 findings / 30 root Python files**.
+
+## 2026-09-23 Priority hardening + Alert Lifecycle validation
+
+Status: `IMPLEMENTED_TESTING_DEFERRED`.
+
+Focused source tests:
+
+```text
+tests/test_postgres_bootstrap_preflight.py
+tests/test_fresh_install_resume.py
+tests/test_systemd_least_privilege.py
+tests/test_alert_lifecycle.py
+tests/test_scheduled_playbook_alerts.py
+
+25 PASS / 0 FAIL
+```
+
+Coverage includes bootstrap identity/privilege denial before DDL, clean
+connect/auth diagnostics, admin-connection cleanup, stable root-only resume
+secrets, same-source/config resume validation, phase-regression protection with
+idempotent earlier-phase revalidation, non-root listener bind capability,
+capability drops for dashboard/maintenance, Alert Lifecycle state machine and
+schema, PostgreSQL dialect-aware workflow-event ID DDL, scheduled finding alert
+creation, manual-report non-alert behavior, idempotency, and healing after a
+report-commit/alert-emission interruption.
+
+Broad same-environment comparison (excluding the same three modules that cannot
+collect without Flask/Werkzeug):
+
+```text
+parent:  137 PASS / 37 FAIL / 1 SKIP
+current: 162 PASS / 37 FAIL / 1 SKIP
+new failing node IDs: 0
+```
+
+Full collection remains environment-blocked at
+`test_admin_bootstrap.py`, `test_dashboard_routes.py`, and
+`test_log_search_logic.py` because Flask/Werkzeug are not installed. An attempt
+to install `requirements.txt`/`requirements-dev.txt` failed because the runner
+has no DNS/network access; this is an environment limitation, not a product
+PASS or FAIL.
+
+Still `NOT_RUN/DEFERRED`: live PostgreSQL bootstrap/preflight, interruption at
+each fresh-install phase and resume on a real host, generated systemd unit
+execution/SELinux labels/capabilities, browser exercise of Alert Lifecycle, and
+scheduled report -> alert -> external ticket end-to-end delivery.

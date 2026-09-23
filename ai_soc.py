@@ -567,6 +567,260 @@ def _related_ip_predicate(entity: str):
     return sql, params
 
 
+_ENTITY_EXPANSION_POLICY = {
+    # Short answers the immediate question around the trigger entity only.
+    "short": {"max_depth": 0, "max_entities": 1},
+    # Medium may follow a directly contacted destination after that IP is
+    # subsequently observed originating traffic of its own.
+    "medium": {"max_depth": 1, "max_entities": 6},
+    # Long permits one additional confirmed destination->source hop.
+    "long": {"max_depth": 2, "max_entities": 12},
+}
+_ENTITY_DISCOVERY_ROW_CAP = 500
+
+
+def _related_entities_predicate(entities):
+    """Return one evidence predicate matching any admitted investigation IP.
+
+    Each individual predicate retains the existing source/destination/peer/
+    indexed-field matching contract. The entity list is small and explicitly
+    bounded by ``_ENTITY_EXPANSION_POLICY``.
+    """
+    clauses, params = [], []
+    for entity in entities:
+        pred, pred_params = _related_ip_predicate(entity)
+        clauses.append(pred)
+        params.extend(pred_params)
+    if not clauses:
+        return "(1=0)", []
+    return "(" + " OR ".join(clauses) + ")", params
+
+
+def _discover_pivot_entities(conn, root_entity, window_start, window_end, stage, candidate_limit,
+                             *, max_depth_override=None, max_entities_override=None):
+    """Discover a bounded IP chain for progressive investigation.
+
+    Evidence matching itself remains broad: once an IP is admitted, events may
+    match it as source, destination, peer, or an indexed endpoint field. Pivot
+    *discovery* is intentionally stricter to avoid graph explosion and collector
+    contamination: a destination reached by an already-admitted source is
+    promoted only when that destination later appears as ``logs.source_ip``
+    inside the same stage window. ``peer_ip`` is evidence only and is never a
+    pivot source. The LLM is not involved in discovery and receives no query
+    authority.
+    """
+    base_policy = _ENTITY_EXPANSION_POLICY.get(stage, _ENTITY_EXPANSION_POLICY["short"])
+    max_depth = int(base_policy["max_depth"] if max_depth_override is None else max_depth_override)
+    max_entities = int(base_policy["max_entities"] if max_entities_override is None else max_entities_override)
+    max_depth = max(0, min(max_depth, 4))
+    max_entities = max(1, min(max_entities, 24))
+    policy = {"max_depth": max_depth, "max_entities": max_entities}
+    root = _valid_ip(root_entity)
+    if not root:
+        return [], [], policy
+
+    entities = [root]
+    admitted = {root}
+    frontier = [root]
+    hops = []
+    window_start_text = window_start.isoformat()
+    window_end_text = window_end.isoformat()
+    relation_limit = max(1, min(int(candidate_limit or 1), _ENTITY_DISCOVERY_ROW_CAP))
+
+    for depth in range(max_depth):
+        next_frontier = []
+        for parent in frontier:
+            if len(entities) >= max_entities:
+                break
+            relation_rows = conn.execute(
+                """SELECT id, received_at, destination
+                   FROM logs
+                  WHERE source_ip=?
+                    AND received_at >= ? AND received_at <= ?
+                    AND destination IS NOT NULL AND destination <> ''
+                  ORDER BY received_at ASC, id ASC
+                  LIMIT ?""",
+                (parent, window_start_text, window_end_text, relation_limit),
+            ).fetchall()
+
+            first_seen = {}
+            for row in relation_rows:
+                child = _valid_ip(_row_get(row, "destination"))
+                if not child or child == parent or child in admitted:
+                    continue
+                first_seen.setdefault(
+                    child,
+                    (str(_row_get(row, "received_at") or ""), int(_row_get(row, "id", 0) or 0)),
+                )
+
+            for child, (seen_at, seen_id) in first_seen.items():
+                if len(entities) >= max_entities:
+                    break
+                proof = conn.execute(
+                    """SELECT id, received_at
+                       FROM logs
+                      WHERE source_ip=?
+                        AND received_at >= ? AND received_at <= ?
+                        AND (received_at > ? OR (received_at = ? AND id > ?))
+                      ORDER BY received_at ASC, id ASC
+                      LIMIT 1""",
+                    (child, window_start_text, window_end_text, seen_at, seen_at, seen_id),
+                ).fetchone()
+                if not proof:
+                    continue
+                admitted.add(child)
+                entities.append(child)
+                next_frontier.append(child)
+                hops.append({
+                    "depth": depth + 1,
+                    "parent": parent,
+                    "entity": child,
+                    "relationship_event_id": seen_id,
+                    "relationship_seen_at": seen_at,
+                    "source_proof_event_id": int(_row_get(proof, "id", 0) or 0),
+                    "source_proof_seen_at": str(_row_get(proof, "received_at") or ""),
+                })
+        if not next_frontier or len(entities) >= max_entities:
+            break
+        frontier = next_frontier
+
+    return entities, hops, policy
+
+
+# Manual IP investigation has no alert timestamp, so the generic profile's
+# full before+after span becomes a retrospective window ending "now".  Derive
+# the concrete slider values from the profile definition so UI/API tests catch
+# any future profile change instead of silently drifting.
+_MANUAL_INVESTIGATION_LOOKBACK_MINUTES = {
+    stage: (window.before_seconds + window.after_seconds) // 60
+    for stage, window in inv_profiles.PROFILES["generic"].stages.items()
+}
+_MANUAL_INVESTIGATION_MAX_HOPS = 4
+_MANUAL_INVESTIGATION_MAX_ENTITIES = 24
+
+
+def gather_ip_investigation(conn, entity_ip: str, stage: str = "medium", max_depth: int = 1,
+                            *, anchor=None):
+    """Run a bounded, deterministic manual investigation starting from one IP.
+
+    This is the server-side engine behind /correlate -> Investigate.  Unlike
+    alert triage there is no alert-specific profile or future after-window, so
+    Short/Medium/Long are concrete retrospective lookbacks ending at ``anchor``
+    (normally now): 30m / 90m / 5h.  Hop depth is independently operator
+    controlled (0..4).  Pivot admission keeps the same safety rule used by AI
+    triage: A->B alone does not admit B; B must later appear as ``source_ip``
+    inside the selected window.
+    """
+    root = _valid_ip(entity_ip)
+    if not root:
+        raise ValueError("ip must be a valid IPv4 or IPv6 address")
+
+    stage = str(stage or "medium").strip().lower()
+    if stage not in _MANUAL_INVESTIGATION_LOOKBACK_MINUTES:
+        raise ValueError("stage must be short, medium, or long")
+    try:
+        max_depth = int(max_depth)
+    except (TypeError, ValueError):
+        raise ValueError("hops must be an integer from 0 to 4")
+    if not 0 <= max_depth <= _MANUAL_INVESTIGATION_MAX_HOPS:
+        raise ValueError("hops must be between 0 and 4")
+
+    if anchor is None:
+        anchor_dt = datetime.now(timezone.utc)
+    elif isinstance(anchor, datetime):
+        anchor_dt = anchor
+        if anchor_dt.tzinfo is None:
+            anchor_dt = anchor_dt.replace(tzinfo=timezone.utc)
+        anchor_dt = anchor_dt.astimezone(timezone.utc)
+    else:
+        anchor_dt = _parse_utc(anchor)
+        if not anchor_dt:
+            raise ValueError("anchor must be an ISO-8601 timestamp")
+
+    lookback_minutes = _MANUAL_INVESTIGATION_LOOKBACK_MINUTES[stage]
+    window_start = anchor_dt - timedelta(minutes=lookback_minutes)
+    window_end = anchor_dt
+    stage_window = inv_profiles.PROFILES["generic"].stages[stage]
+    max_entities = min(_MANUAL_INVESTIGATION_MAX_ENTITIES, max(1, 1 + max_depth * 5))
+
+    investigation_entities, entity_hops, expansion_policy = _discover_pivot_entities(
+        conn, root, window_start, window_end, stage, stage_window.candidate_limit,
+        max_depth_override=max_depth, max_entities_override=max_entities,
+    )
+
+    pred_sql, pred_params = _related_entities_predicate(investigation_entities)
+    time_sql = " AND l.received_at >= ? AND l.received_at <= ?"
+    time_params = [window_start.isoformat(), window_end.isoformat()]
+    # SQL structure comes only from fixed application fragments; entity/time
+    # values remain bound parameters. Build the trusted statement before
+    # execute() so static scanners do not confuse placeholder assembly with
+    # direct user-value interpolation.
+    count_query = "SELECT COUNT(*) c FROM logs l WHERE " + pred_sql + time_sql
+    candidate_count = int(conn.execute(
+        count_query,
+        pred_params + time_params,
+    ).fetchone()["c"] or 0)
+
+    columns = (
+        "l.id, l.received_at, l.source_ip, l.peer_ip, l.destination, "
+        "l.hostname, l.app_name, l.severity, l.message"
+    )
+    events_query = (
+        "SELECT " + columns + " FROM logs l WHERE " + pred_sql + time_sql
+        + " ORDER BY l.received_at DESC, l.id DESC LIMIT ?"
+    )
+    rows = conn.execute(
+        events_query,
+        pred_params + time_params + [stage_window.evidence_limit],
+    ).fetchall()
+
+    severity_query = (
+        "SELECT l.severity, COUNT(*) c FROM logs l WHERE " + pred_sql + time_sql
+        + " GROUP BY l.severity"
+    )
+    severity_rows = conn.execute(
+        severity_query,
+        pred_params + time_params,
+    ).fetchall()
+    severity_summary = {}
+    for row in severity_rows:
+        key = severity_mod.normalize(row["severity"]) or "unknown"
+        severity_summary[key] = severity_summary.get(key, 0) + int(row["c"] or 0)
+
+    events = []
+    for row in rows:
+        events.append({
+            "id": int(_row_get(row, "id", 0) or 0),
+            "received_at": str(_row_get(row, "received_at", "") or ""),
+            "source_ip": str(_row_get(row, "source_ip", "") or ""),
+            "peer_ip": str(_row_get(row, "peer_ip", "") or ""),
+            "destination": str(_row_get(row, "destination", "") or ""),
+            "hostname": str(_row_get(row, "hostname", "") or ""),
+            "app_name": str(_row_get(row, "app_name", "") or ""),
+            "severity": str(_row_get(row, "severity", "") or ""),
+            "message": str(_row_get(row, "message", "") or "")[:1000],
+        })
+
+    return {
+        "type": "ip_investigation",
+        "root_entity": root,
+        "stage": stage,
+        "stage_label": stage.title(),
+        "lookback_minutes": lookback_minutes,
+        "window_start": window_start.isoformat(),
+        "window_end": window_end.isoformat(),
+        "requested_hops": max_depth,
+        "entity_expansion_max_depth": expansion_policy["max_depth"],
+        "entity_expansion_max_entities": expansion_policy["max_entities"],
+        "investigation_entities": investigation_entities,
+        "entity_hops": entity_hops,
+        "candidate_count": candidate_count,
+        "evidence_count": len(events),
+        "severity_summary": severity_summary,
+        "events": events,
+    }
+
+
 def _parse_utc(value):
     text = str(value or "").strip()
     if not text:
@@ -726,10 +980,12 @@ def gather_alert_context(conn, alert_id: int, stage: str = "short"):
     window_start, window_end = _window_bounds(anchor, stage_window)
 
     entity_ip = _trigger_entity_ip(conn, alert, related, log_ids)
+    investigation_entities, entity_hops, expansion_policy = _discover_pivot_entities(
+        conn, entity_ip, window_start, window_end, stage, stage_window.candidate_limit)
     candidates, related_sevs = [], []
     candidate_count = 0
-    if entity_ip:
-        pred_sql, pred_params = _related_ip_predicate(entity_ip)
+    if investigation_entities:
+        pred_sql, pred_params = _related_entities_predicate(investigation_entities)
         time_sql = " AND l.received_at >= ? AND l.received_at <= ?"
         time_params = [window_start.isoformat(), window_end.isoformat()]
         count_sql = "SELECT COUNT(*) c FROM logs l WHERE " + pred_sql + time_sql
@@ -786,6 +1042,10 @@ def gather_alert_context(conn, alert_id: int, stage: str = "short"):
         "alert": alert,
         "related": related,
         "entity_ip": entity_ip,
+        "investigation_entities": investigation_entities,
+        "entity_hops": entity_hops,
+        "entity_expansion_max_depth": expansion_policy["max_depth"],
+        "entity_expansion_max_entities": expansion_policy["max_entities"],
         "related_history": related_history,
         "related_sev_summary": dict(sev_counter),
         "src_history": related_history,
@@ -879,6 +1139,8 @@ def build_triage_messages(ctx: dict, system_prompt: str = None, user_template: s
         f"Window: {ctx.get('window_start', '-')} to {ctx.get('window_end', '-')}",
         f"Candidate events in window: {ctx.get('candidate_count', 0)}",
         f"Evidence events submitted: {ctx.get('evidence_count', 0)}",
+        f"Investigation entities: {', '.join(ctx.get('investigation_entities') or []) or '-'}",
+        f"Entity expansion bound: depth<={ctx.get('entity_expansion_max_depth', 0)} entities<={ctx.get('entity_expansion_max_entities', 1)}",
         f"Escalation reason: {ctx.get('escalation_reason') or 'initial stage'}",
         "",
         "=== ALERT ===",
@@ -893,13 +1155,24 @@ def build_triage_messages(ctx: dict, system_prompt: str = None, user_template: s
     lines += [_fmt_event(r) for r in ctx["related"]] or ["(none linked)"]
 
     entity_ip = ctx.get("entity_ip") or a["source_ip"] or "-"
+    investigation_entities = ctx.get("investigation_entities") or ([entity_ip] if entity_ip != "-" else [])
+    entity_label = ", ".join(investigation_entities) or entity_ip
+    if ctx.get("entity_hops"):
+        lines += ["", "=== CONFIRMED ENTITY PIVOTS ==="]
+        for hop in ctx["entity_hops"]:
+            lines.append(
+                f"depth={hop['depth']} {hop['parent']} -> {hop['entity']} "
+                f"relationship_event=#{hop['relationship_event_id']} "
+                f"source_proof_event=#{hop['source_proof_event_id']}"
+            )
+
     if ctx.get("related_sev_summary"):
-        lines += ["", f"=== {stage} WINDOW RELATED EVENT COUNT FOR IP {entity_ip}, BY SEVERITY ==="]
+        lines += ["", f"=== {stage} WINDOW RELATED EVENT COUNT FOR ENTITY SET {entity_label}, BY SEVERITY ==="]
         lines += [f"{k}: {v}" for k, v in sorted(ctx["related_sev_summary"].items())]
 
     if ctx.get("related_history"):
-        lines += ["", f"=== {stage} RELATED EVENTS FOR IP {entity_ip} ===",
-                  "Matches may come from any log source where this IP is source, destination, peer, or an indexed endpoint field. Evidence is ranked toward trigger-time proximity."]
+        lines += ["", f"=== {stage} RELATED EVENTS FOR ENTITY SET {entity_label} ===",
+                  "Matches may come from any log source where an admitted IP is source, destination, peer, or an indexed endpoint field. Additional pivot IPs are admitted only by bounded server-side destination->later-source confirmation. Evidence is ranked toward trigger-time proximity."]
         lines += [_fmt_event(r) for r in ctx["related_history"]]
 
     if ctx.get("pattern_summaries"):

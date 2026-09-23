@@ -451,3 +451,28 @@ The upgrade also verifies PostgreSQL dump compatibility. If the host `pg_dump` i
 
 `upgrade-existing.sh` uses the dedicated existing-deployment migration helper. It does not use the generic fresh/bootstrap `db.initialize()` path. A populated `schema_migrations` ledger is required; the helper advances only missing legacy versions through 30, repairs normalized log-field support, applies Event Storage v2 owner DDL statement-by-statement, and records markers 31-33 only after the DDL succeeds. Any failing DDL is printed directly to the terminal with the PostgreSQL error and statement context before rollback. This behavior applies only to existing upgrades; fresh installation is unchanged.
 
+
+## Fresh-install PostgreSQL preflight and interrupted resume — 2026-09-23
+
+Fresh PostgreSQL installation now fails before any bootstrap DDL unless the
+customer bootstrap identity can authenticate and PostgreSQL reports either
+`rolsuper=true` or both `rolcreatedb=true` and `rolcreaterole=true`. The
+preflight also verifies the authenticated `current_user` is exactly the
+requested bootstrap identity. Connectivity/authentication failures identify the
+target host/port and point the operator to TCP/password/`pg_hba.conf` checks.
+
+For an interrupted **fresh** install only:
+
+```bash
+sudo ./fresh-install.sh --resume
+```
+
+Resume requires the existing `.fresh-install-state.json`, the same target,
+backend, `db-config.json` SHA-256 and source fingerprint. It reuses the same
+root-only generated owner/runtime secrets and revalidates completed work. It
+never adopts an operational install and is not an upgrade mechanism. If the
+services are operational, use `upgrade-existing.sh`.
+
+The temporary customer PostgreSQL bootstrap password is never written to the
+checkpoint or runtime config; it must be supplied again when a resumed phase
+needs administrator access.

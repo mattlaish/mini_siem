@@ -93,6 +93,7 @@ def test_postgres_initialize_executes_percent_ddl_as_raw_sql(monkeypatch):
     monkeypatch.setattr(db, "_schema_statements", lambda backend: ["SELECT '100%'"])
     monkeypatch.setattr(db, "_migrations", lambda: ["SELECT '50%'"])
     monkeypatch.setattr(db, "ensure_log_fields_normalized_schema", lambda conn: None)
+    monkeypatch.setattr(db, "ensure_alert_workflow_schema", lambda conn: None)
     monkeypatch.setattr(db, "ensure_schema_baseline", lambda conn, config: None)
     monkeypatch.setattr(db, "insert_returning_id", lambda *args, **kwargs: None, raising=False)
 

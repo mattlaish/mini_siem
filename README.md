@@ -294,29 +294,41 @@ separate from AI triage: scheduled playbook finding -> alert -> ticket pipeline
 itself should skip LLM analysis unless that behavior is explicitly redesigned.
 
 
-The dashboard has a second page at `http://127.0.0.1:8080/correlate`
-for retrospective correlation over stored events — unlike `rules.py`,
-which evaluates live as events arrive, these run whenever you ask.
+The dashboard has a second page at `http://127.0.0.1:8080/correlate`.
+It now combines playbooks/reports with a manual **Investigate** workspace rather
+than exposing the old ad-hoc correlation form as the primary analyst workflow.
 
-**Four correlation types** (usable ad-hoc from the form):
-- `threshold` — N+ events matching a regex from the same key in a window
-- `sequence` — N+ "pattern A" events followed by a "pattern B" event
-  from the same key within a max gap (brute force → success)
-- `fanout` — one key touching many distinct values of another field
-  (one IP hitting many hosts = scan/lateral movement)
-- `first_seen` — keys in the recent window never seen in the baseline
-  period before it (brand-new source IPs)
+**Investigate an IP:** enter an IPv4/IPv6 address, then set two independent
+sliders:
 
-Keys can be `source_ip`, `hostname`, `app_name`, or `user` (extracted
-from sshd/Windows message text with best-effort regexes).
+- **Investigation window:** `Short` = last 30 minutes, `Medium` = last 90 minutes,
+  `Long` = last 5 hours. Manual investigation is retrospective and ends at the
+  current time; alert-driven AI triage keeps its existing alert/profile-specific
+  before/after windows.
+- **Entity expansion:** `0..4` confirmed hops. `A -> B` alone does not promote
+  `B`; `B` must later appear as `source_ip` inside the selected window. A second
+  hop requires `B -> C` followed by later source activity from `C`, and so on.
 
-**Eight built-in playbooks** (`correlations.py`), each with a
+Results show the effective time scope, admitted entities, confirmed pivot
+transitions with relationship/proof event IDs, and the bounded evidence set.
+Once an IP is admitted, evidence still matches it in source, destination,
+`peer_ip`, or indexed endpoint/source/destination fields. Pivot discovery itself
+remains stricter and server-controlled; the LLM gets no query authority.
+
+The underlying `threshold`, `sequence`, `fanout`, and `first_seen` correlation
+engine and `/api/correlate` endpoint remain available for playbooks and API
+compatibility. The UI change does not remove the correlation engine.
+
+**14 built-in playbooks** (`correlations.py`), each with a
 description and suggested response steps shown alongside results:
 brute force then success, Windows event log cleared, new
 account/privileged group addition, scan fan-out, one account from many
-IPs, off-hours privileged activity, never-before-seen source IPs, and
-error bursts. Add your own by appending to `PLAYBOOKS` — a playbook is
-just engine parameters plus documentation.
+IPs, off-hours privileged activity, never-before-seen source IPs, error
+bursts, privilege-escalation attempts then success, account-lockout
+storms, malware/AV detections, service-failure bursts, log-tampering
+indicators, and blocked-then-allowed firewall probe patterns. Add your own
+by appending to `PLAYBOOKS` — a playbook is engine parameters plus
+documentation/response guidance.
 
 Every result row links its evidence: sample messages inline, plus a
 link that opens the exact matched events in the main log view.
@@ -339,6 +351,12 @@ LLM result. Therefore, once scheduled playbook findings are wired to create
 alerts, those alerts can create tickets without first entering LLM triage. That
 scheduled-playbook -> alert wiring is **not implemented yet** in the current
 runtime, so scheduled reports alone do not currently create tickets.
+
+**Progressive AI investigation scope:** context collection is application-controlled. Short
+stays on the trigger IP; Medium may pivot one hop and Long may pivot two hops,
+but a related IP is promoted to a new pivot only after it subsequently appears
+as a source in the same investigation window. Entity count and submitted event
+count remain bounded. The LLM never receives database/query authority.
 
 ## 6b. Message normalization (log search)
 
@@ -719,30 +737,22 @@ sudo ss -lntup | grep -E ':514|:8080'
 
 ### Legacy combined service
 
-`siem.py` and `install-service.sh` remain for compatibility. They run the
-combined listener/dashboard model, which historically meant running the web
-surface as root when binding port 514. For new deployments prefer
-`install-services.sh` above.
+`siem.py` and `install-service.sh` remain for compatibility. They are not the
+preferred production deployment path. New deployments should use
+`fresh-install.sh` / `install-services.sh`, which generate split non-login
+service identities.
 
-## 11. Manual/legacy: separate processes (optional)
+## 11. Service identity model
 
-Example systemd unit for the listener (`/etc/systemd/system/mini-siem-listener.service`):
-```ini
-[Unit]
-Description=mini-SIEM syslog listener
-After=network.target
+The supported split-service installer generates the listener unit as
+`siem-listener` with only `CAP_NET_BIND_SERVICE`; it does **not** require a
+root listener merely to bind port 514. The dashboard uses `siem`, and
+PostgreSQL partition maintenance uses `siem-maintenance`. The generated units
+apply systemd sandboxing and component-specific database credential access.
 
-[Service]
-ExecStart=/usr/bin/python3 /opt/mini_siem/listener.py --db /opt/mini_siem/siem.db
-Restart=on-failure
-User=root
-WorkingDirectory=/opt/mini_siem
-
-[Install]
-WantedBy=multi-user.target
-```
-(Use `User=root` only if binding port 514 directly; otherwise apply
-Option B/C/D above and drop to an unprivileged user.)
+Do not copy an old `User=root` listener example into a new deployment; use the
+installer-generated units so capability and credential checks remain
+deterministic.
 
 ## Notes and limitations
 
@@ -822,8 +832,31 @@ exact IP/CIDR, prefix host/destination and explicit-contains semantics instead
 of default `%...%` matching.  Monthly partitions are pre-created by a bounded
 maintenance function/timer using the maintenance DB identity, never the schema
 owner.  See `EVENT_STORAGE_V2.md` for the schema, index, privilege, archive and
-qualification boundaries.  Phase 13 Entity Context remains `PLANNED`.
+qualification boundaries.  IP-centered entity context and bounded multi-hop investigation are implemented; broader non-IP entity graph work remains a revisit item.
 
 ## Install vs upgrade entry points
 
 Use `fresh-install.sh` for a new deployment and `upgrade-existing.sh` for an existing deployment. They are deliberately fail-closed and mutually exclusive. PostgreSQL fresh bootstrap is not an operator upgrade mechanism; the low-level `install-services.sh --bootstrap-postgres` switch is accepted only when invoked through the fresh-install entry point. Existing split-role PostgreSQL upgrades preserve listener/dashboard/maintenance credentials and use temporary owner authority only for backup, migration/backfill, and grants repair.
+
+
+## Priority hardening and Alert Lifecycle — 2026-09-23
+
+Status: `IMPLEMENTED_TESTING_DEFERRED`
+
+Fresh PostgreSQL installs now preflight TCP/authenticated access, verify the
+PostgreSQL `current_user`, and require superuser or both `CREATEDB` and
+`CREATEROLE` before any bootstrap DDL. Interrupted fresh installs may use
+`sudo ./fresh-install.sh --resume` only when a matching checkpoint proves the
+same target/config/source; resume is not a force-install or upgrade path.
+
+The split systemd deployment runs the listener as `siem-listener` with only
+`CAP_NET_BIND_SERVICE`, dashboard as `siem`, and PostgreSQL maintenance as
+`siem-maintenance`, with component credential separation and additional
+`NoNewPrivileges`/capability bounding.
+
+Alerts now have a lightweight durable lifecycle (`new`, `acknowledged`,
+`investigating`, `resolved`, `closed`) with assignment, history and audit.
+Scheduled weekly/monthly playbook findings enter this same alert path and are
+idempotently recovered if report creation committed before alert emission.
+Existing TicketWorker integrations remain the external case/SOAR handoff.
+mini-SIEM is **not** being expanded into a full case-management/SOAR product.

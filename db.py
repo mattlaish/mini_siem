@@ -248,6 +248,7 @@ class Connection:
 
 def _schema_statements(backend: str):
     pk = "BIGSERIAL PRIMARY KEY" if backend == "postgres" else "INTEGER PRIMARY KEY AUTOINCREMENT"
+    id_ref = "BIGINT" if backend == "postgres" else "INTEGER"
     stmts = [
         f"""CREATE TABLE IF NOT EXISTS logs (
             id            {pk},
@@ -287,9 +288,26 @@ def _schema_statements(backend: str):
             ai_attempts   INTEGER DEFAULT 0,
             ticket_status TEXT DEFAULT '',
             ticket_ref    TEXT,
-            ticket_attempts INTEGER DEFAULT 0
+            ticket_attempts INTEGER DEFAULT 0,
+            workflow_status TEXT DEFAULT 'new',
+            workflow_assignee TEXT DEFAULT '',
+            workflow_updated_at TEXT,
+            workflow_updated_by TEXT,
+            workflow_resolution_note TEXT DEFAULT ''
         )""",
         "CREATE INDEX IF NOT EXISTS idx_alerts_created_at ON alerts(created_at)",
+        "CREATE INDEX IF NOT EXISTS idx_alerts_workflow_status ON alerts(workflow_status)",
+        f"""CREATE TABLE IF NOT EXISTS alert_workflow_events (
+            id          {pk},
+            alert_id    {id_ref} NOT NULL,
+            at          TEXT NOT NULL,
+            actor       TEXT,
+            from_status TEXT,
+            to_status   TEXT,
+            assignee    TEXT,
+            note        TEXT
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_alert_workflow_events_alert ON alert_workflow_events(alert_id, id)",
         f"""CREATE TABLE IF NOT EXISTS forwarders (
             id              {pk},
             name            TEXT NOT NULL,
@@ -673,8 +691,66 @@ def _migrations():
         "SELECT 1",
         "SELECT 1",
         "SELECT 1",
+        # Alert lifecycle / analyst workflow.  The actual dialect-aware schema
+        # repair is performed by ensure_alert_workflow_schema(); these stable
+        # ledger markers keep migration numbering compatible across SQLite and
+        # PostgreSQL without embedding SQLite-only auto-increment DDL here.
+        "SELECT 1",
+        "SELECT 1",
+        "SELECT 1",
+        "SELECT 1",
+        "SELECT 1",
+        "SELECT 1",
+        "SELECT 1",
+        "SELECT 1",
     ]
 
+
+
+def ensure_alert_workflow_schema(conn: Connection):
+    """Owner/setup-only, dialect-aware Alert Lifecycle schema repair.
+
+    Existing databases predate the workflow columns/table.  This helper is
+    intentionally called only from ``initialize`` (owner/setup path); runtime
+    services remain DDL-free on PostgreSQL.
+    """
+    columns = (
+        ("workflow_status", "TEXT DEFAULT 'new'"),
+        ("workflow_assignee", "TEXT DEFAULT ''"),
+        ("workflow_updated_at", "TEXT"),
+        ("workflow_updated_by", "TEXT"),
+        ("workflow_resolution_note", "TEXT DEFAULT ''"),
+    )
+    if conn.backend == "postgres":
+        for name, ddl in columns:
+            if not postgres_schema_has_column(conn.raw, "alerts", name):
+                _execute_schema_sql(conn, f"ALTER TABLE alerts ADD COLUMN {name} {ddl}")
+        pk = "BIGSERIAL PRIMARY KEY"
+        alert_id_type = "BIGINT"
+    else:
+        existing = {row[1] for row in conn.execute("PRAGMA table_info(alerts)").fetchall()}
+        for name, ddl in columns:
+            if name not in existing:
+                _execute_schema_sql(conn, f"ALTER TABLE alerts ADD COLUMN {name} {ddl}")
+        pk = "INTEGER PRIMARY KEY AUTOINCREMENT"
+        alert_id_type = "INTEGER"
+
+    _execute_schema_sql(conn, "CREATE INDEX IF NOT EXISTS idx_alerts_workflow_status ON alerts(workflow_status)")
+    _execute_schema_sql(
+        conn,
+        f"""CREATE TABLE IF NOT EXISTS alert_workflow_events (
+            id          {pk},
+            alert_id    {alert_id_type} NOT NULL,
+            at          TEXT NOT NULL,
+            actor       TEXT,
+            from_status TEXT,
+            to_status   TEXT,
+            assignee    TEXT,
+            note        TEXT
+        )""",
+    )
+    _execute_schema_sql(conn, "CREATE INDEX IF NOT EXISTS idx_alert_workflow_events_alert ON alert_workflow_events(alert_id, id)")
+    conn.commit()
 
 
 def ensure_log_fields_normalized_schema(conn: Connection):
@@ -938,6 +1014,7 @@ def initialize(config: dict):
             _execute_schema_sql(conn, stmt)
 
         ensure_log_fields_normalized_schema(conn)
+        ensure_alert_workflow_schema(conn)
 
         # Durable migration tracking. This prevents repeated PostgreSQL
         # ALTER TABLE execution on every service restart.

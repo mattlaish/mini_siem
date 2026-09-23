@@ -177,7 +177,7 @@ def harden_owner_default_privileges(raw, *, runtime_role=DEFAULT_RUNTIME_ROLE):
         cur.close()
 
 
-def _provision_runtime_roles(raw, *, runtime_role, ingest_role, dashboard_role, maintenance_role):
+def _provision_runtime_roles(raw, *, runtime_role, ingest_role, dashboard_role, maintenance_role, passwords=None):
     """Create/rotate runtime identities using a PostgreSQL role administrator.
 
     This connection needs CREATEROLE (or equivalent DBA authority) but does not
@@ -189,11 +189,17 @@ def _provision_runtime_roles(raw, *, runtime_role, ingest_role, dashboard_role, 
     cur = raw.cursor()
     try:
         _ensure_group_role(cur, sql, runtime_role)
-        passwords = {
-            ingest_role: secrets.token_urlsafe(32),
-            dashboard_role: secrets.token_urlsafe(32),
-            maintenance_role: secrets.token_urlsafe(32),
-        }
+        if passwords is None:
+            passwords = {
+                ingest_role: secrets.token_urlsafe(32),
+                dashboard_role: secrets.token_urlsafe(32),
+                maintenance_role: secrets.token_urlsafe(32),
+            }
+        else:
+            passwords = dict(passwords)
+            expected = {ingest_role, dashboard_role, maintenance_role}
+            if set(passwords) != expected or not all(passwords.values()):
+                raise RuntimeError("runtime password set does not match the split runtime identities")
         for role, password in passwords.items():
             _ensure_login_role(cur, sql, role, password)
 
@@ -225,7 +231,7 @@ def _provision_runtime_roles(raw, *, runtime_role, ingest_role, dashboard_role, 
 
 
 def _apply_grants(raw, *, runtime_role, ingest_role, dashboard_role, maintenance_role,
-                  role_admin_raw=None, preserve_existing_roles=False):
+                  role_admin_raw=None, preserve_existing_roles=False, runtime_passwords=None):
     """Apply the split-role boundary to owner-created application objects.
 
     ``raw`` is the schema-owner connection.  ``role_admin_raw`` may be a
@@ -251,6 +257,7 @@ def _apply_grants(raw, *, runtime_role, ingest_role, dashboard_role, maintenance
             ingest_role=ingest_role,
             dashboard_role=dashboard_role,
             maintenance_role=maintenance_role,
+            passwords=runtime_passwords,
         )
 
     cur = raw.cursor()

@@ -179,20 +179,20 @@ def test_existing_upgrade_uses_ledger_pipeline_not_generic_initialize(monkeypatc
             pass
 
     monkeypatch.setattr(pgue.db, "connect", lambda cfg: FakeConn())
-    monkeypatch.setattr(pgue.db, "_migrations", lambda: ["SELECT 1"] * 30 + ["SELECT 1"] * 3)
+    monkeypatch.setattr(pgue.db, "_migrations", lambda: ["SELECT 1"] * 41)
     monkeypatch.setattr(pgue.db, "ensure_log_fields_normalized_schema", lambda conn: executed.append(("NORMALIZE", ())))
     monkeypatch.setattr(pgue, "postgres_schema_statements", lambda: ["SELECT 'EV1'", "SELECT 'EV2'"])
 
     versions = pgue._upgrade_existing_owner_schema({"backend": "postgres"})
 
     # Existing DB starts at 26 and is advanced explicitly, not implicitly baselined.
-    for version in (27, 28, 29, 30, 31, 32, 33):
+    for version in range(27, 42):
         assert version in versions
     assert ("NORMALIZE", ()) in executed
     assert any(sql == "SELECT 'EV1'" for sql, _ in executed)
     assert any(sql == "SELECT 'EV2'" for sql, _ in executed)
     inserted_versions = [params[0] for sql, params in executed if sql.startswith("INSERT INTO schema_migrations")]
-    assert inserted_versions == [27, 28, 29, 30, 31, 32, 33]
+    assert inserted_versions == list(range(27, 42))
     assert commits
 
     helper = (ROOT / "tools" / "postgres_upgrade_existing.py").read_text()

@@ -1,16 +1,20 @@
 # mini-SIEM Development Roadmap
 
-## Canonical baseline — 2026-09-18
+## Canonical working baseline — 2026-09-23
 
-Current working parent artifact:
+Current delivery artifact:
 
-`mini_siem_openai_egress_hardened_2026-09-18.zip`
+`mini_siem_priority_hardening_alert_lifecycle_2026-09-23.zip`
 
-SHA-256:
+Parent complete-source artifact:
 
-`899b0ab317f565229c10a5a6c0bb2e0dc44893f6fe6660fc2d190501580ae3ec`
+`mini_siem_manual_investigate_slider_2026-09-23.zip`
 
-That artifact descends from `mini_siem_installer_pg_owner_fix.zip`. The current
+Parent SHA-256:
+
+`70ba3097d2495b04cf17dc10dcd11c9fcbf0292d1ffb8b8a6338ba96c028049b`
+
+This 2026-09-23 delivery descends from that complete-source baseline. The current
 working tree is a development baseline, not a release. No overall `TESTED` or
 `RELEASED` claim is made.
 
@@ -45,7 +49,7 @@ P0 qualification evidence:
 - ZIP CRC, traversal, symlink, required-file/size/shebang, extracted Python/shell/JavaScript syntax, and complete source-to-extracted SHA-256 parity gates passed;
 - focused artifact-level P0/P1/PostgreSQL smoke suite passed 21 tests from the extracted ZIP.
 
-This `TESTED` state applies only to the P0 source-truth/packaging-repair scope. The product and P1 PostgreSQL bootstrap remain `IMPLEMENTED_TESTING_DEFERRED`, and no `RELEASED` claim is made. Phase 13 remains `PLANNED`; moving placeholders to documentation is not feature implementation.
+This `TESTED` state applies only to the P0 source-truth/packaging-repair scope. The product and P1 PostgreSQL bootstrap remain `IMPLEMENTED_TESTING_DEFERRED`, and no `RELEASED` claim is made. At that P0 checkpoint Phase 13 remained `PLANNED`; later sections below supersede that historical status where real runtime implementation now exists.
 
 ## P1 — PostgreSQL installer / bootstrap owner flow
 
@@ -61,7 +65,9 @@ Implemented:
 - fresh bootstrap refuses a database owned by an unexpected role and refuses to adopt a database containing application/public objects;
 - `fresh-install.sh` is the fail-closed operator entry point for a new install and is the only path allowed to invoke the internal PostgreSQL fresh-bootstrap mode;
 - PostgreSQL service installation now fails closed when the split runtime privilege boundary is absent;
-- listener/dashboard runtime schema readiness is checked before systemd unit installation/start.
+- listener/dashboard runtime schema readiness is checked before systemd unit installation/start;
+- bootstrap preflight proves TCP/authenticated connectivity, verifies PostgreSQL `current_user`, and requires either superuser or both `CREATEDB` and `CREATEROLE` before any bootstrap DDL; expected failures return operator-safe diagnostics rather than raw psycopg2 tracebacks;
+- interrupted fresh PostgreSQL bootstrap reuses root-only generated owner/runtime secrets and never persists the customer bootstrap password.
 
 Deferred:
 
@@ -110,13 +116,22 @@ failed / 1 skipped to 109 passed / 37 failed / 1 skipped with zero new failing
 node IDs.  Live PostgreSQL migration/backfill, partition pruning/EXPLAIN,
 split-role privileges, archive eviction, service restart/readiness and sustained
 performance remain `NOT_RUN/DEFERRED`.  The `assets`/`identities` foundation
-does not implement Phase 13.4; all Phase 13 scopes remain `PLANNED`.
+does not by itself complete a broad Phase 13 entity graph; current IP-centered investigation/entity expansion status is documented below.
 
 ## P3 — Linux / systemd host hardening
 
-Status: `PLANNED`
+Status: `IMPLEMENTED_TESTING_DEFERRED`
 
-Target: replace full-root syslog listener operation where feasible with a dedicated service identity plus narrowly scoped bind capability; add deterministic systemd sandboxing, filesystem allow-listing, capability minimization, credential isolation, restart limits, and startup dependency checks.
+Implemented in the current source:
+
+- syslog listener runs as dedicated non-login `siem-listener`, not root; privileged port 514 binding is limited to `CAP_NET_BIND_SERVICE`;
+- dashboard stays on dedicated non-login `siem`; PostgreSQL partition maintenance runs as dedicated `siem-maintenance`;
+- PostgreSQL component credentials are group-separated and cross-component readability is verified before service activation;
+- listener uses `NoNewPrivileges`, bind-only capability bounding, `ProtectSystem=strict`, kernel/control-group protections and restricted address families;
+- dashboard and maintenance explicitly use `NoNewPrivileges` and an empty capability bounding set in addition to existing sandbox controls;
+- generated service units and service-account database credential resolution are verified before the installer reports success.
+
+Live distro/systemd/SELinux qualification remains deferred. The current SQLite layout still needs controlled write access beside `siem.db` for WAL/SHM; moving SQLite mutable state fully outside the source tree is a later hardening option, not part of this slice.
 
 ## P4 — Installation / upgrade reliability
 
@@ -125,11 +140,13 @@ Status: `IMPLEMENTED_TESTING_DEFERRED`
 The fresh-vs-existing operator boundary is now implemented but not live-qualified:
 
 - no installation -> `fresh-install.sh`;
+- checkpointed interrupted **fresh** installation -> `fresh-install.sh --resume`;
 - operational installation -> `upgrade-existing.sh`;
-- the two entry points are mutually exclusive and fail closed;
-- `install-services.sh` is a low-level reconciliation helper, not the operator upgrade interface.
+- `--resume` requires the same target, backend, deployment config and source fingerprint, refuses an operational install, preserves generated owner/runtime credentials, and re-runs idempotent validation without regressing a later checkpoint;
+- the entry points remain mutually exclusive and fail closed; `--resume` is not a force-install or upgrade switch;
+- `install-services.sh` remains a low-level reconciliation helper, not the operator upgrade interface.
 
-`upgrade-existing.sh` stages the new source, preserves runtime state/credentials, creates backup evidence, performs owner-only PostgreSQL upgrade where applicable, retains the prior tree for rollback, then cuts over at the stable target path. Interrupted-upgrade/reboot/rollback and legacy shared-role migration remain live/deferred qualification items.
+`upgrade-existing.sh` stages the new source, preserves runtime state/credentials, creates backup evidence, performs owner-only PostgreSQL upgrade where applicable, retains the prior tree for rollback, then cuts over at the stable target path. Live interrupted-fresh-install, interrupted-upgrade/reboot/rollback and legacy shared-role migration remain deferred qualification items.
 
 ## P5 — Backup / restore / PostgreSQL reliability
 
@@ -143,18 +160,21 @@ Status: `IMPLEMENTED_TESTING_DEFERRED`
 
 Real performance runtime tests/collectors and disposable PostgreSQL validation harnesses exist, but the former ingest/query/archive benchmark `.py` files were placeholder contracts and have been reclassified as Markdown. Production claims still require measured syslog EPS, parser/DB throughput, dashboard/correlation latency, AI/archive impact, PostgreSQL connections, memory/storage growth, and sustained 24h/72h runs. Planning estimates must remain distinct from measured evidence.
 
-## Phase 13 — SOC workflow
+## Phase 13 — Alert and investigation workflow
 
-All Phase 13 scopes remain `PLANNED`:
+### 13.1 Alert Lifecycle
 
-- 13.1 Alert Lifecycle
-- 13.2 SOC Case Management
-- 13.3 Investigation Workspace
-- 13.4 Entity Context & Intelligence
-- 13.5 Detection Rule Management
-- 13.6 SOC Metrics Dashboard
+Status: `IMPLEMENTED_TESTING_DEFERRED`
 
-The former pseudo-code `.py` files are now explicit Markdown references. Real DB schema, runtime logic, APIs, Web UI, audit paths, and tests are still required.
+Implemented: durable `new -> acknowledged -> investigating -> resolved -> closed` workflow with controlled reopen, assignee, actor/timestamp/resolution-note fields, append-only workflow history, analyst API/UI controls and audit events. PostgreSQL schema repair is dialect-aware and owner-only.
+
+### 13.2 External case-management / SOAR boundary
+
+mini-SIEM **will not become a full case-management or SOAR product**. Existing TicketWorker integrations (Jira, ServiceNow, Zammad, osTicket, generic REST) are the handoff boundary. Raw/normalized SIEM events remain the evidence authority; external systems may carry event IDs, alert state and AI analysis. `SOC_CASE_WORKFLOW.md` is revisit/reference material only, not a core implementation commitment.
+
+### 13.3-13.6 Revisit backlog
+
+The current AI Analyst, `/correlate` Investigate workspace, bounded IP entity expansion, correlation playbooks and operational metrics are real implemented capabilities. A separate consolidated investigation workspace, broader non-IP entity graph, dedicated rule-management UX and additional SOC metrics remain revisit items rather than current blockers.
 
 ## P7 — AI SOC / OpenAI integration
 
@@ -180,11 +200,29 @@ Status: `IMPLEMENTED_TESTING_DEFERRED`
 
 Review/qualification remains required for local auth, admin bootstrap, password change, OAuth, SAML, CSRF, session lifecycle, RBAC, API ingest keys, secret storage, and audit. The existing generated/persisted session-secret path must not be replaced with a manual-secret requirement without evidence that it fails.
 
-## P11 — NAS-specific deployment issue
+## P11 — Environment-specific deployment qualification
 
 Status: `PLANNED`
 
-The NAS Paperless PostgreSQL localhost mapping/recreation issue is infrastructure-specific. Do not encode Paperless, Docker, localhost, or fixed port assumptions into mini-SIEM.
+Qualification targets may include NAS/appliance-like Linux hosts, but those systems are test environments rather than product architecture assumptions. Do not encode NAS vendors, Paperless, Docker, localhost, fixed-port, or other site-specific behavior into mini-SIEM. Reproduce environment findings as generic Linux/PostgreSQL/systemd installer requirements before promoting them into product logic.
+
+## P11A — Product-boundary alignment: archive, ticketing, playbooks, and AI investigation
+
+Status: `IMPLEMENTED_TESTING_DEFERRED` for the existing runtime capabilities; later scale/governance additions remain demand-driven.
+
+Source-truth corrections for future planning:
+
+- **Hot/cold evidence lifecycle already exists.** `archive.py` provides evidence-preserving, checksummed archive segments with configurable `hot_days`, `copy`/`move` modes, exact-payload deduplication, catalog verification, hot-copy eviction only after verification, and archive-aware search. Event Storage v2 also evicts the typed hot projection before raw hot evidence. Do not reopen "build hot/cold storage" as a greenfield roadmap item. Remaining work is measured PostgreSQL-scale qualification: prove whether hot eviction materially improves query/cache/vacuum behavior at production volumes. Object storage/Parquet or additional tiers are optional future work only when retention, cost, or measured scale justifies them.
+- **Ticket integration already exists.** `workers.TicketWorker` can dispatch qualifying alerts to Jira, ServiceNow, Zammad, osTicket, or a generic REST endpoint, carries `log_ids` and `ai_analysis`, records the returned ticket reference, and retries failures. Do not list generic SIEM->ticket integration as missing. Scheduled weekly/monthly playbook findings now enter the normal alert table and inherit AI triage, Alert Lifecycle and TicketWorker handling. Conversion is idempotent and the scheduler heals a committed scheduled report whose alert conversion was interrupted. Richer vendor-specific SOAR integrations are optional external integrations, not a core case engine.
+- **Do not duplicate event evidence into a second investigation log store.** Raw/normalized events remain in SIEM storage/archive. Investigation/ticket systems should reference event IDs and existing alert/AI analysis rather than clone full logs. Any future reproducibility metadata (for example playbook/profile/model/prompt identifiers) is a lower-priority debug/audit aid, not a requirement to persist duplicate evidence.
+- **Playbooks are detection/investigation content, not privileged response automation.** The runtime currently contains 14 named correlation playbooks. Full SOAR-style version/approval/simulation governance is not a current product priority. If governance is added, keep it proportional: stable playbook identity and explicit enable/disable/configuration are sufficient unless playbooks later gain destructive operational actions.
+- **Progressive entity expansion is deterministic and bounded, and manual scope is now visible in `/correlate`.** Alert-driven Short investigation stays on the trigger entity; Medium may follow one destination relationship after the related IP subsequently appears as a source; Long may follow two hops. The `/correlate` manual Investigate workspace exposes the same pivot rule with independent sliders for retrospective Short/Medium/Long time scope (30m/90m/5h) and 0-4 hop depth, and renders admitted entities plus relationship/proof event IDs. `peer_ip` remains evidence but is deliberately excluded from pivot discovery because it commonly identifies a collector or firewall sender. Expansion is server-controlled, not LLM-query-controlled, and is bounded by entity/event limits. The original cross-source rule remains: an admitted IP matches whether it appears as source, destination, peer, or an indexed endpoint field.
+
+Product positioning for roadmap decisions:
+
+`SIEM + AI-assisted investigation engine + lightweight orchestration`
+
+Do not use a full SOAR product checklist as the default gap list for this project. Full case-management/SOAR is explicitly outside the core product boundary.
 
 ## P12 — Full qualification
 
@@ -204,11 +242,11 @@ Release remains blocked until P12 and artifact packaging integrity gates pass. E
 P0 source truth + package cleanup
   -> P1 complete PostgreSQL bootstrap/legacy-upgrade flow
   -> P2 live PostgreSQL privilege qualification
-  -> P3 Linux/systemd hardening
-  -> P4 install/update/resume reliability
+  -> P3 Linux/systemd live qualification
+  -> P4 install/update/resume live qualification
   -> P5 backup/restore reliability
   -> P6 measured performance qualification
-  -> Phase 13.1-13.6 SOC workflow
+  -> 13.1 Alert Lifecycle live/browser qualification
   -> P7 AI production qualification
   -> P8 ingest/detection qualification
   -> P9/P10 operations + security qualification
@@ -230,5 +268,5 @@ Implemented:
 
 Deferred live gates: real target PostgreSQL 30->33 upgrade, interrupted upgrade/resume/recovery, systemd cutover/rollback, reboot, pg_dump restore drill, and legacy shared-role -> split-role migration.
 
-- Existing PostgreSQL upgrade migration hardening: `IMPLEMENTED_TESTING_DEFERRED` — dedicated ledger-driven 26→33-compatible path implemented; live NAS migration/backfill/cutover still deferred. Fresh-install behavior unchanged.
+- Existing PostgreSQL upgrade migration hardening: `IMPLEMENTED_TESTING_DEFERRED` — dedicated ledger-driven 26→33-compatible path implemented; live production-like PostgreSQL migration/backfill/cutover still deferred. Fresh-install behavior unchanged.
 

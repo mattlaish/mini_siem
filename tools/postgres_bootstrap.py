@@ -30,11 +30,118 @@ if str(ROOT) not in sys.path:
 
 import db as dbmod
 from tools import postgres_privilege_boundary as boundary
+from tools import fresh_install_state as install_state
 
 DEFAULT_OWNER = "minisiem_owner"
 DEFAULT_BOOTSTRAP_DB = "postgres"
 BOOTSTRAP_PASSWORD_ENV = "MINISIEM_PG_BOOTSTRAP_PASSWORD"
 OWNER_PASSWORD_ENV = "MINISIEM_PG_OWNER_PASSWORD"
+
+
+class BootstrapPreflightError(RuntimeError):
+    """Expected bootstrap connectivity/privilege failure with operator-safe text."""
+
+
+def _first_line(exc: Exception) -> str:
+    text = str(exc).strip().splitlines()
+    return text[0] if text else type(exc).__name__
+
+
+def _bootstrap_preflight(admin_conn, *, host: str, port: int, bootstrap_db: str, requested_user: str) -> dict:
+    """Verify identity and create-role/create-db authority before any DDL."""
+    cur = admin_conn.cursor()
+    try:
+        cur.execute(
+            "SELECT current_user, rolcreatedb, rolcreaterole, rolsuper "
+            "FROM pg_roles WHERE rolname=current_user"
+        )
+        row = cur.fetchone()
+    finally:
+        cur.close()
+    if not row:
+        raise BootstrapPreflightError(
+            f"bootstrap user {requested_user!r} authenticated but PostgreSQL returned no role metadata"
+        )
+    if isinstance(row, dict):
+        current = row.get("current_user") or row.get("rolname")
+        createdb = bool(row.get("rolcreatedb"))
+        createrole = bool(row.get("rolcreaterole"))
+        superuser = bool(row.get("rolsuper"))
+    else:
+        current, createdb, createrole, superuser = row[:4]
+        createdb, createrole, superuser = bool(createdb), bool(createrole), bool(superuser)
+    if current != requested_user:
+        raise BootstrapPreflightError(
+            f"requested bootstrap user {requested_user!r} authenticated as PostgreSQL current_user {current!r}; "
+            "refusing ambiguous bootstrap identity"
+        )
+    if not superuser and not (createdb and createrole):
+        missing = []
+        if not createdb:
+            missing.append("CREATEDB")
+        if not createrole:
+            missing.append("CREATEROLE")
+        raise BootstrapPreflightError(
+            f"PostgreSQL bootstrap user {current!r} lacks required privileges: {', '.join(missing)}. "
+            "Grant the missing privilege(s) or use a PostgreSQL superuser. No database changes were made."
+        )
+    return {
+        "current_user": current,
+        "rolcreatedb": createdb,
+        "rolcreaterole": createrole,
+        "rolsuper": superuser,
+        "host": host,
+        "port": int(port),
+        "database": bootstrap_db,
+    }
+
+
+def _phase(state_path: Path | None, phase: str) -> None:
+    """Advance a fresh-install checkpoint without regressing completed phases.
+
+    Resume deliberately re-runs lightweight/idempotent validation for earlier
+    phases.  If the checkpoint is already ahead of ``phase`` that validation
+    is allowed to complete, while the durable checkpoint remains at the later
+    phase.  Explicit state-tool regressions are still rejected by
+    ``fresh_install_state.set_phase``.
+    """
+    if state_path is None:
+        return
+    state = install_state.load(state_path)
+    current_i = install_state.PHASES.index(state["phase"])
+    requested_i = install_state.PHASES.index(phase)
+    if requested_i < current_i:
+        return
+    install_state.set_phase(state_path, phase)
+
+
+def _resume_secret_payload(path: Path, *, resume: bool) -> dict:
+    """Create/read root-only transient secrets used solely for interrupted fresh-install recovery."""
+    if path.exists():
+        data = json.loads(path.read_text(encoding="utf-8"))
+    else:
+        if resume:
+            raise RuntimeError(
+                f"resume secret state is missing: {path}; refusing to rotate or invent credentials during --resume"
+            )
+        data = {
+            "owner_password": secrets.token_urlsafe(36),
+            "runtime_passwords": {
+                boundary.DEFAULT_INGEST_ROLE: secrets.token_urlsafe(32),
+                boundary.DEFAULT_DASHBOARD_ROLE: secrets.token_urlsafe(32),
+                boundary.DEFAULT_MAINTENANCE_ROLE: secrets.token_urlsafe(32),
+            },
+        }
+        boundary._write_json(path, data, mode=0o600)
+    expected = {
+        boundary.DEFAULT_INGEST_ROLE,
+        boundary.DEFAULT_DASHBOARD_ROLE,
+        boundary.DEFAULT_MAINTENANCE_ROLE,
+    }
+    runtime = data.get("runtime_passwords") or {}
+    if not data.get("owner_password") or set(runtime) != expected or not all(runtime.values()):
+        raise RuntimeError("fresh-install resume secret state is incomplete or invalid")
+    return data
 
 
 def _deepcopy_json(value: Any) -> Any:
@@ -59,11 +166,17 @@ def _write_config(path: Path, data: dict, mode: int = 0o640) -> None:
 
 def _secret_from_env_or_prompt(env_name: str, prompt: str, *, required: bool = True) -> str:
     value = os.environ.get(env_name, "")
-    if not value and sys.stdin.isatty():
-        value = getpass.getpass(prompt)
+    if not value:
+        # getpass itself knows how to use /dev/tty.  Do not reject an
+        # interactive sudo session merely because stdin was redirected by a
+        # wrapper script.
+        try:
+            value = getpass.getpass(prompt)
+        except (EOFError, OSError):
+            value = ""
     if required and not value:
         raise RuntimeError(
-            f"credential not supplied; set {env_name} or run interactively"
+            f"credential not supplied; set {env_name} or run from an interactive terminal"
         )
     return value
 
@@ -303,16 +416,32 @@ def _verify_object_ownership(owner_conn, owner: str) -> list[dict]:
 def fresh_bootstrap(*, psycopg2, config_path: Path, host: str, port: int,
                     bootstrap_db: str, bootstrap_user: str, bootstrap_password: str,
                     target_db: str, owner_user: str, owner_password: str,
-                    timeout: int, allow_existing_owner_role: bool = False) -> dict:
-    admin = _connect(
-        psycopg2,
-        host=host,
-        port=port,
-        dbname=bootstrap_db,
-        user=bootstrap_user,
-        password=bootstrap_password,
-        timeout=timeout,
-    )
+                    timeout: int, allow_existing_owner_role: bool = False,
+                    resume: bool = False, state_path: Path | None = None,
+                    runtime_passwords: dict | None = None) -> dict:
+    try:
+        admin = _connect(
+            psycopg2,
+            host=host,
+            port=port,
+            dbname=bootstrap_db,
+            user=bootstrap_user,
+            password=bootstrap_password,
+            timeout=timeout,
+        )
+    except Exception as exc:
+        raise BootstrapPreflightError(
+            f"cannot connect/authenticate to PostgreSQL at {host}:{int(port)} as bootstrap user "
+            f"{bootstrap_user!r}: {_first_line(exc)}. Check TCP reachability, password, and pg_hba.conf. "
+            "No database changes were made."
+        ) from exc
+    try:
+        preflight = _bootstrap_preflight(
+            admin, host=host, port=port, bootstrap_db=bootstrap_db, requested_user=bootstrap_user
+        )
+    except Exception:
+        admin.close()
+        raise
     created_owner = False
     created_db = False
     try:
@@ -345,14 +474,14 @@ def fresh_bootstrap(*, psycopg2, config_path: Path, host: str, port: int,
                 state = _inspect_target(probe)
             finally:
                 probe.close()
-            if state.get("public_objects"):
+            if state.get("public_objects") and not resume:
                 raise RuntimeError(
                     "target database already contains application/public objects; "
                     "fresh bootstrap refuses to recreate or adopt an operational database. "
                     "Use --mode inspect-existing."
                 )
 
-        if owner_preexists and not allow_existing_owner_role:
+        if owner_preexists and not (allow_existing_owner_role or resume):
             raise RuntimeError(
                 f"owner role {owner_user!r} already exists; use --allow-existing-owner-role "
                 "only after confirming it is the intended mini-SIEM migration owner"
@@ -361,9 +490,11 @@ def fresh_bootstrap(*, psycopg2, config_path: Path, host: str, port: int,
             admin,
             owner_user,
             owner_password,
-            permit_existing=allow_existing_owner_role,
+            permit_existing=(allow_existing_owner_role or resume),
         )
+        _phase(state_path, "OWNER_READY")
         created_db = _ensure_database(admin, target_db, owner_user)
+        _phase(state_path, "DATABASE_READY")
     finally:
         admin.close()
 
@@ -382,6 +513,7 @@ def fresh_bootstrap(*, psycopg2, config_path: Path, host: str, port: int,
 
     # DDL/migrations are performed only through the owner identity.
     dbmod.initialize(owner_cfg)
+    _phase(state_path, "SCHEMA_MIGRATED")
 
     owner_raw = _connect(
         psycopg2,
@@ -408,6 +540,7 @@ def fresh_bootstrap(*, psycopg2, config_path: Path, host: str, port: int,
                 "fresh bootstrap found application objects not owned by the migration owner: "
                 + json.dumps(wrong_owners, sort_keys=True)
             )
+        _phase(state_path, "SCHEMA_VERIFIED")
         passwords = boundary._apply_grants(
             owner_raw,
             role_admin_raw=role_admin_raw,
@@ -415,6 +548,7 @@ def fresh_bootstrap(*, psycopg2, config_path: Path, host: str, port: int,
             ingest_role=boundary.DEFAULT_INGEST_ROLE,
             dashboard_role=boundary.DEFAULT_DASHBOARD_ROLE,
             maintenance_role=boundary.DEFAULT_MAINTENANCE_ROLE,
+            runtime_passwords=runtime_passwords,
         )
     finally:
         owner_raw.close()
@@ -485,6 +619,7 @@ def fresh_bootstrap(*, psycopg2, config_path: Path, host: str, port: int,
         name: boundary._verify_login(verify_base, path, name)
         for name, path in cred_paths.items()
     }
+    _phase(state_path, "RUNTIME_CREDENTIALS_READY")
 
     return {
         "created_owner": created_owner,
@@ -494,8 +629,10 @@ def fresh_bootstrap(*, psycopg2, config_path: Path, host: str, port: int,
         "runtime_boundary": True,
         "component_credentials": {k: str(v) for k, v in cred_paths.items()},
         "runtime_verification": verify,
+        "bootstrap_preflight": preflight,
+        "resumed": bool(resume),
         "bootstrap_credential_persisted": False,
-        "owner_credential_persisted": False,
+        "owner_credential_persisted_in_runtime_config": False,
     }
 
 
@@ -510,6 +647,9 @@ def _parser() -> argparse.ArgumentParser:
     ap.add_argument("--bootstrap-user", required=True)
     ap.add_argument("--owner-user", default=DEFAULT_OWNER)
     ap.add_argument("--allow-existing-owner-role", action="store_true")
+    ap.add_argument("--resume", action="store_true", help="resume only a checkpointed interrupted fresh install")
+    ap.add_argument("--state-file", default="")
+    ap.add_argument("--resume-secrets", default="")
     ap.add_argument("--connect-timeout", type=int, default=5)
     return ap
 
@@ -528,11 +668,11 @@ def main() -> int:
     except ImportError as exc:
         raise SystemExit("psycopg2-binary is required for PostgreSQL bootstrap") from exc
 
-    bootstrap_password = _secret_from_env_or_prompt(
-        BOOTSTRAP_PASSWORD_ENV,
-        f"PostgreSQL bootstrap password for {args.bootstrap_user!r}: ",
-    )
     try:
+        bootstrap_password = _secret_from_env_or_prompt(
+            BOOTSTRAP_PASSWORD_ENV,
+            f"PostgreSQL bootstrap password for {args.bootstrap_user!r}: ",
+        )
         if args.mode == "inspect-existing":
             report = inspect_existing(
                 psycopg2=psycopg2,
@@ -551,17 +691,30 @@ def main() -> int:
                 "backup_required_before_privilege_or_owner_migration": True,
             }
         else:
-            owner_password = os.environ.get(OWNER_PASSWORD_ENV, "")
-            if not owner_password:
-                # New owner credentials are generated in memory by default. If
-                # the role already exists, require an explicit known password;
-                # do not silently rotate it.
-                owner_password = secrets.token_urlsafe(36)
-                if args.allow_existing_owner_role:
-                    owner_password = _secret_from_env_or_prompt(
-                        OWNER_PASSWORD_ENV,
-                        f"Existing owner password for {args.owner_user!r}: ",
-                    )
+            state_path = Path(args.state_file).resolve() if args.state_file else None
+            resume_secret_path = Path(args.resume_secrets).resolve() if args.resume_secrets else None
+            resume_payload = None
+            if args.resume:
+                if state_path is None or resume_secret_path is None:
+                    raise RuntimeError("--resume requires --state-file and --resume-secrets")
+                checkpoint = install_state.load(state_path)
+                if checkpoint.get("phase") == "OPERATIONAL":
+                    raise RuntimeError("fresh-install checkpoint is already operational; use upgrade-existing.sh")
+            if resume_secret_path is not None:
+                resume_payload = _resume_secret_payload(resume_secret_path, resume=args.resume)
+                owner_password = resume_payload["owner_password"]
+                runtime_passwords = resume_payload["runtime_passwords"]
+            else:
+                runtime_passwords = None
+                owner_password = os.environ.get(OWNER_PASSWORD_ENV, "")
+                if not owner_password:
+                    # Non-resumable direct tool use retains the historical in-memory secret behavior.
+                    owner_password = secrets.token_urlsafe(36)
+                    if args.allow_existing_owner_role:
+                        owner_password = _secret_from_env_or_prompt(
+                            OWNER_PASSWORD_ENV,
+                            f"Existing owner password for {args.owner_user!r}: ",
+                        )
             report = fresh_bootstrap(
                 psycopg2=psycopg2,
                 config_path=config_path,
@@ -575,9 +728,15 @@ def main() -> int:
                 owner_password=owner_password,
                 timeout=args.connect_timeout,
                 allow_existing_owner_role=args.allow_existing_owner_role,
+                resume=args.resume,
+                state_path=state_path,
+                runtime_passwords=runtime_passwords,
             )
         print(json.dumps(report, indent=2, sort_keys=True, default=str))
         return 0
+    except (BootstrapPreflightError, RuntimeError) as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
     finally:
         # Reduce accidental reuse inside the process.  Parent-shell values are
         # unaffected, and no credential is written to disk by this tool.

@@ -11,7 +11,7 @@ TARGET="/opt/mini_siem"
 
 usage() {
   cat <<EOF
-Usage: sudo $0 [--target /opt/mini_siem]
+Usage: sudo $0 [--target /opt/mini_siem] [--resume]
 
 Fresh installation only.
 PostgreSQL fresh bootstrap additionally requires:
@@ -19,13 +19,18 @@ PostgreSQL fresh bootstrap additionally requires:
 Optional noninteractive password:
   MINISIEM_PG_BOOTSTRAP_PASSWORD=...
 
-Do not use this script for an existing installation. Use upgrade-existing.sh.
+--resume resumes only the same checkpointed interrupted fresh installation.
+It never adopts an operational installation and never acts as an upgrade path.
+
+Do not use this script for an existing operational installation. Use upgrade-existing.sh.
 EOF
 }
 
+RESUME=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --target) TARGET="${2:?--target requires a path}"; shift 2 ;;
+    --resume) RESUME=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown argument: $1" >&2; usage >&2; exit 2 ;;
   esac
@@ -38,14 +43,35 @@ fi
 
 TARGET="$(readlink -m "$TARGET")"
 SOURCE_REAL="$(readlink -m "$SOURCE_DIR")"
+STATE_PATH="${TARGET}/.fresh-install-state.json"
+RESUME_SECRET_PATH="${TARGET}/.fresh-install-resume-secrets.json"
 
 existing_service=0
 for unit in /etc/systemd/system/mini-siem-listener.service /etc/systemd/system/mini-siem-dashboard.service; do
   [[ -e "$unit" ]] && existing_service=1
 done
-if [[ "$existing_service" == 1 ]]; then
+if [[ "$existing_service" == 1 && "$RESUME" != 1 ]]; then
   echo "Existing mini-SIEM systemd units detected. Fresh install refuses to adopt an operational installation." >&2
   echo "Use upgrade-existing.sh instead." >&2
+  exit 1
+fi
+if [[ "$RESUME" == 1 && "$existing_service" == 1 ]]; then
+  if systemctl is-active --quiet mini-siem-listener.service 2>/dev/null \
+     && systemctl is-active --quiet mini-siem-dashboard.service 2>/dev/null; then
+    echo "mini-SIEM services are already active; this installation appears operational." >&2
+    echo "--resume is only for interrupted fresh installs. Use upgrade-existing.sh." >&2
+    exit 1
+  fi
+fi
+
+if [[ -f "$STATE_PATH" && "$RESUME" != 1 ]]; then
+  echo "Interrupted fresh-install checkpoint detected: $STATE_PATH" >&2
+  echo "Use: sudo $0 --target '$TARGET' --resume" >&2
+  exit 1
+fi
+if [[ "$RESUME" == 1 && ! -f "$STATE_PATH" ]]; then
+  echo "No fresh-install checkpoint exists at $STATE_PATH; refusing --resume." >&2
+  echo "Use normal fresh install for an empty target or upgrade-existing.sh for an operational installation." >&2
   exit 1
 fi
 
@@ -53,7 +79,7 @@ fi
 # operational marker; source files alone are not.
 if [[ -d "$TARGET" ]]; then
   for marker in siem.db db-listener-credentials.json db-dashboard-credentials.json db-maintenance-credentials.json; do
-    if [[ -e "$TARGET/$marker" ]]; then
+    if [[ -e "$TARGET/$marker" && "$RESUME" != 1 ]]; then
       echo "Existing runtime state detected at $TARGET/$marker." >&2
       echo "Fresh install refuses to overwrite it; use upgrade-existing.sh." >&2
       exit 1
@@ -61,7 +87,12 @@ if [[ -d "$TARGET" ]]; then
   done
 fi
 
-if [[ "$SOURCE_REAL" != "$TARGET" ]]; then
+if [[ "$RESUME" == 1 && ! -d "$TARGET" ]]; then
+  echo "Interrupted target directory is missing: $TARGET" >&2
+  exit 1
+fi
+
+if [[ "$SOURCE_REAL" != "$TARGET" && "$RESUME" != 1 ]]; then
   if [[ -e "$TARGET" ]] && [[ -n "$(find "$TARGET" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]]; then
     echo "Target exists and is not empty: $TARGET" >&2
     echo "Fresh install requires an empty/nonexistent target." >&2
@@ -119,8 +150,13 @@ PY
 # When installing from a staging directory, copy the validated non-secret
 # deployment intent after the source tree has been copied. The general source
 # copy intentionally excludes runtime db-config.json so artifacts stay clean.
-if [[ "$SOURCE_REAL" != "$TARGET" ]]; then
+if [[ "$SOURCE_REAL" != "$TARGET" && "$RESUME" != 1 ]]; then
   install -m 0640 "$SOURCE_CONFIG" "$TARGET_CONFIG"
+elif [[ "$SOURCE_REAL" != "$TARGET" && "$RESUME" == 1 ]]; then
+  if ! cmp -s "$SOURCE_CONFIG" "$TARGET_CONFIG"; then
+    echo "Source db-config.json differs from the interrupted target configuration; refusing --resume." >&2
+    exit 1
+  fi
 fi
 
 # Re-read the target copy strictly. A copy/corruption mismatch must stop the
@@ -140,6 +176,38 @@ if [[ "$TARGET_BACKEND" != "$BACKEND" ]]; then
   exit 1
 fi
 
+STATE_TOOL="$TARGET/tools/fresh_install_state.py"
+if [[ ! -f "$STATE_TOOL" ]]; then
+  echo "Fresh-install state helper is missing: $STATE_TOOL" >&2
+  exit 1
+fi
+if [[ "$RESUME" == 1 ]]; then
+  python3 "$STATE_TOOL" validate-resume --state "$STATE_PATH" --target "$TARGET" \
+    --source "$SOURCE_REAL" --backend "$BACKEND" --config "$TARGET_CONFIG" >/dev/null
+else
+  python3 "$STATE_TOOL" init --state "$STATE_PATH" --target "$TARGET" \
+    --source "$SOURCE_REAL" --backend "$BACKEND" --config "$TARGET_CONFIG" >/dev/null
+fi
+export MINISIEM_FRESH_STATE_PATH="$STATE_PATH"
+export MINISIEM_FRESH_RESUME_SECRET_PATH="$RESUME_SECRET_PATH"
+export MINISIEM_INSTALL_RESUME="$RESUME"
+
+# Generate all non-bootstrap PostgreSQL fresh-install secrets before any
+# database mutation. The root-only file is reused unchanged by --resume and
+# removed only after post-install verification reaches OPERATIONAL.
+if [[ "$BACKEND" == "postgres" ]]; then
+  PYTHONPATH="$TARGET" python3 - "$RESUME_SECRET_PATH" "$RESUME" <<'PY'
+from pathlib import Path
+import sys
+from tools.postgres_bootstrap import _resume_secret_payload
+_resume_secret_payload(Path(sys.argv[1]), resume=(sys.argv[2] == "1"))
+PY
+fi
+
+mark_interrupted() {
+  python3 "$STATE_TOOL" interrupt --state "$STATE_PATH" >/dev/null 2>&1 || true
+}
+
 case "$BACKEND" in
   postgres)
     if [[ -z "${MINISIEM_PG_BOOTSTRAP_USER:-}" ]]; then
@@ -149,11 +217,12 @@ case "$BACKEND" in
     fi
     echo "Fresh PostgreSQL install: bootstrap -> owner migration -> split runtime roles -> services"
     export MINISIEM_INSTALL_ENTRYPOINT=fresh
-    exec "$TARGET/install-services.sh" --bootstrap-postgres
+    "$TARGET/install-services.sh" --bootstrap-postgres || { rc=$?; mark_interrupted; exit "$rc"; }
     ;;
   sqlite)
     echo "Fresh SQLite install: initialize local database -> services"
-    exec "$TARGET/install-services.sh"
+    export MINISIEM_INSTALL_ENTRYPOINT=fresh
+    "$TARGET/install-services.sh" || { rc=$?; mark_interrupted; exit "$rc"; }
     ;;
   *)
     echo "Unsupported database backend: $BACKEND" >&2

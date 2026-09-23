@@ -721,3 +721,109 @@ Live NAS PostgreSQL/systemd acceptance remains `NOT_RUN/DEFERRED`.
 Fresh PostgreSQL owner initialization failed when static Event Storage v2 DDL containing PostgreSQL format tokens such as `%I`/`%L` was sent through the parameterized psycopg2 execution path. The trusted schema/migration path now uses the existing raw SQL executor for static PostgreSQL DDL/migration statements, while runtime parameterized queries continue to use `execute()`.
 
 The regression is covered by `tests/test_db.py::test_postgres_initialize_executes_percent_ddl_as_raw_sql`, which verifies both schema and migration static SQL containing literal percent signs bypass parameter parsing.
+
+## 2026-09-23 — Product-boundary and AI entity-expansion alignment
+
+Status: `IMPLEMENTED_TESTING_DEFERRED`.
+
+Source review corrected several roadmap assumptions rather than creating duplicate subsystems:
+
+- Evidence hot/cold handling is already implemented by `archive.py`; future work is measured PostgreSQL-scale qualification, not a greenfield archive feature. Additional object-storage/Parquet tiers are demand-driven only.
+- Generic ticket integration already exists through `workers.TicketWorker` and carries related log IDs plus AI analysis. The specific remaining scheduled-playbook gap is report finding -> alert creation; alert -> ticket dispatch already exists.
+- Full SOAR-style playbook governance is not required for the current 14 correlation/detection playbooks because they are investigation/detection content rather than destructive response automation.
+- AI investigation continues to keep raw evidence in SIEM storage/archive; no duplicate investigation evidence store is introduced.
+- Progressive AI context now supports bounded deterministic multi-hop entity expansion. Short remains on the trigger entity; Medium may follow one confirmed peer that later appears as a source; Long may follow two hops. Expansion is bounded (`short`: depth 0/entity 1; `medium`: depth 1/entity 6; `long`: depth 2/entity 12), excludes `peer_ip` from pivot discovery because it is commonly the collector/firewall sender, and keeps all query authority in the application rather than the LLM.
+- Existing same-entity cross-source matching is preserved: admitted IPs match source, destination, peer, and indexed endpoint/source/destination fields regardless of severity.
+
+Tests added in `tests/test_warning_ai_context.py` prove that a destination which later becomes a source is promoted at Medium, that the next hop appears only at Long, passive destinations are not promoted, unrelated traffic stays out, and expansion metadata/limits are exposed to the prompt for traceability.
+
+
+## 2026-09-23 — `/correlate` Manual Correlate -> Investigate workspace
+
+Status: `IMPLEMENTED_TESTING_DEFERRED`.
+
+The former ad-hoc/manual correlation form on `/correlate` is replaced by a
+manual IP **Investigate** workspace while preserving the correlation engine and
+`/api/correlate` endpoint for playbooks/API compatibility.
+
+Implementation contract:
+
+- analyst supplies one IPv4/IPv6 root entity;
+- a discrete Short/Medium/Long slider maps to concrete retrospective windows
+  ending now: 30 minutes / 90 minutes / 5 hours;
+- a separate 0-4 hop slider controls actual server-side pivot depth;
+- manual scope uses the generic investigation profile span because there is no
+  alert type/timestamp to classify; alert-driven AI triage remains unchanged;
+- pivot admission reuses the existing deterministic destination->later-source
+  rule; `A -> B` does not admit B unless B subsequently appears as `source_ip`;
+- admitted entities continue to match evidence in source, destination, peer, or
+  indexed endpoint/source/destination fields;
+- `peer_ip` remains evidence-only for pivot discovery;
+- results expose the effective window, entity cap/depth, admitted entities,
+  confirmed relationship/proof event IDs, candidate/evidence counts and bounded
+  event rows;
+- manual investigations are written to the existing audit log as
+  `manual_ip_investigation`; no duplicate evidence store is created.
+
+The server implementation is `ai_soc.gather_ip_investigation()` and
+`POST /api/investigate/ip`. `_discover_pivot_entities()` now accepts bounded
+manual overrides while retaining the existing stage defaults for AI triage.
+
+Local verification for this slice: manual Investigate + progressive AI/OpenAI
+54 PASS; DB/Event Storage/PostgreSQL/installer/source-builder 40 PASS;
+placeholder truth 2 PASS; compileall, all shell syntax, and Correlate inline JS
+syntax PASS. Archive focused check remains 6 PASS / 2 inherited known failures
+already present in the parent baseline. Flask/browser live route validation is
+deferred because Flask is unavailable in the packaging environment.
+Static security scan after the manual Investigate query-path change reports 0 findings / 30 root Python files; all entity/time values remain bound parameters and only fixed application SQL fragments are assembled.
+
+## 2026-09-23 Priority hardening + Alert Lifecycle slice
+
+Status: `IMPLEMENTED_TESTING_DEFERRED`.
+
+Implemented on top of `mini_siem_manual_investigate_slider_2026-09-23.zip`:
+
+1. **PostgreSQL bootstrap preflight** — the fresh bootstrap connects/authenticates
+   first, verifies PostgreSQL `current_user`, and requires superuser or both
+   `CREATEDB` and `CREATEROLE` before any bootstrap DDL. Connectivity/auth and
+   privilege failures are returned as operator-safe diagnostics rather than raw
+   psycopg2 tracebacks. The customer bootstrap password is not persisted.
+2. **Interrupted fresh-install resume** — `fresh-install.sh --resume` accepts
+   only the same checkpointed interrupted fresh install. State includes target,
+   backend, config SHA-256, selected source fingerprint, phase and status.
+   PostgreSQL owner/runtime secrets are stored only in a root-only transient
+   resume file, reused unchanged across resume, and removed only after
+   `OPERATIONAL`. Completed earlier phases may be revalidated idempotently
+   without regressing a later checkpoint. Operational installs still require
+   `upgrade-existing.sh`.
+3. **Listener/systemd least privilege** — listener runs as non-login
+   `siem-listener` with only `CAP_NET_BIND_SERVICE`; dashboard remains `siem`;
+   PostgreSQL partition maintenance runs as `siem-maintenance`. Credential-file
+   readability is component-separated. Listener uses a bind-only bounding set;
+   dashboard/maintenance explicitly set `NoNewPrivileges=true` and an empty
+   capability bounding set. Existing systemd sandbox controls remain enabled.
+4. **Alert Lifecycle** — durable states `new`, `acknowledged`, `investigating`,
+   `resolved`, `closed`; controlled reopen; assignee; actor/timestamp/note;
+   append-only workflow history; analyst API/UI; audit event. A review caught
+   and fixed a cross-dialect migration bug so PostgreSQL workflow-event IDs use
+   `BIGSERIAL` rather than SQLite-style `INTEGER PRIMARY KEY`.
+5. **Scheduled playbook finding -> alert** — weekly/monthly report findings are
+   converted into the normal alert table and therefore inherit AI triage,
+   Alert Lifecycle and existing TicketWorker delivery. Conversion is
+   report-scoped/idempotent, and an hourly scheduler pass heals a report that
+   committed before its alerts were emitted.
+
+Product-boundary decision: mini-SIEM will **not** become a full case-management
+or SOAR platform. Existing outbound ticket/SOAR integrations are the handoff
+boundary. `SOC_CASE_WORKFLOW.md`, broader entity graph, consolidated
+investigation workspace, dedicated rule-management UX and additional SOC
+metrics remain revisit/reference topics rather than current implementation
+commitments.
+
+Local evidence before packaging: the five focused feature suites pass 25/25.
+The dependency-available broad comparison has the exact inherited 37 failing
+node IDs: parent 137 PASS / 37 FAIL / 1 SKIP versus current 159 PASS / 37 FAIL /
+1 SKIP. Full collection is still blocked at the same three modules because this
+offline runner lacks Flask/Werkzeug; dependency installation was attempted but
+network/DNS access is unavailable. Live Linux/systemd/PostgreSQL execution
+remains `NOT_RUN/DEFERRED`.

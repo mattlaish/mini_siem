@@ -540,3 +540,127 @@ def test_ip_ioc_investigation_prefers_indicator_ip_as_related_entity():
     assert ctx["investigation_profile"] == "ioc_hit"
     assert ctx["entity_ip"] == indicator
     assert {700, 701}.issubset({r["id"] for r in ctx["related_history"]})
+
+
+def _seed_multi_hop_chain(conn):
+    hop1 = "10.20.30.41"
+    hop2 = "10.20.30.42"
+    hop3 = "10.20.30.43"
+    passive = "10.20.30.50"
+    unrelated = "10.99.99.99"
+    rows = [
+        (800, "2026-09-01T01:02:00+00:00", TRIGGER_IP, "fw", "", "win1", "Security", "warning", "trigger event"),
+        (801, "2026-09-01T01:02:10+00:00", TRIGGER_IP, "fw", hop1, "fw1", "CEF", "notice", "root contacts hop1"),
+        (802, "2026-09-01T01:02:11+00:00", TRIGGER_IP, "fw", passive, "fw1", "CEF", "notice", "root contacts passive destination"),
+        (803, "2026-09-01T01:02:20+00:00", hop1, "fw", hop2, "fw1", "CEF", "warning", "hop1 becomes source"),
+        (804, "2026-09-01T01:02:30+00:00", hop2, "fw", hop3, "fw1", "CEF", "warning", "hop2 becomes source"),
+        (805, "2026-09-01T01:02:40+00:00", hop3, "fw", "198.51.100.9", "fw1", "CEF", "warning", "hop3 becomes source"),
+        (806, "2026-09-01T01:02:50+00:00", unrelated, "fw", "198.51.100.10", "fw2", "CEF", "critical", "unrelated traffic"),
+    ]
+    conn.executemany(
+        "INSERT INTO logs (id,received_at,source_ip,peer_ip,destination,hostname,app_name,severity,message) VALUES (?,?,?,?,?,?,?,?,?)",
+        rows,
+    )
+    conn.execute(
+        "INSERT INTO alerts (id,created_at,rule_name,severity,source_ip,description,log_ids,ai_status,ai_attempts) "
+        "VALUES (8,?,?,?,?,?,?,?,?)",
+        ("2026-09-01T01:02:01+00:00", "high_severity_event", "warning", TRIGGER_IP,
+         "bounded entity pivot test", "800", "pending", 0),
+    )
+    conn.commit()
+    return hop1, hop2, hop3, passive, unrelated
+
+
+def test_short_keeps_trigger_entity_only_for_multi_hop_chain():
+    conn = _context_db()
+    hop1, hop2, hop3, passive, unrelated = _seed_multi_hop_chain(conn)
+
+    ctx = ai_soc.gather_alert_context(conn, 8, stage="short")
+    assert ctx["investigation_entities"] == [TRIGGER_IP]
+    assert ctx["entity_hops"] == []
+    assert ctx["entity_expansion_max_depth"] == 0
+    ids = {r["id"] for r in ctx["related_history"]}
+    assert {800, 801, 802}.issubset(ids)
+    assert 803 not in ids
+    assert 804 not in ids
+    assert 805 not in ids
+    assert 806 not in ids
+
+
+def test_medium_promotes_destination_only_after_it_becomes_source():
+    conn = _context_db()
+    hop1, hop2, hop3, passive, unrelated = _seed_multi_hop_chain(conn)
+
+    ctx = ai_soc.gather_alert_context(conn, 8, stage="medium")
+    assert ctx["investigation_entities"] == [TRIGGER_IP, hop1]
+    assert passive not in ctx["investigation_entities"]
+    assert hop2 not in ctx["investigation_entities"]
+    assert ctx["entity_expansion_max_depth"] == 1
+    assert ctx["entity_hops"] == [{
+        "depth": 1,
+        "parent": TRIGGER_IP,
+        "entity": hop1,
+        "relationship_event_id": 801,
+        "relationship_seen_at": "2026-09-01T01:02:10+00:00",
+        "source_proof_event_id": 803,
+        "source_proof_seen_at": "2026-09-01T01:02:20+00:00",
+    }]
+    ids = {r["id"] for r in ctx["related_history"]}
+    assert {800, 801, 802, 803}.issubset(ids)
+    assert 804 not in ids
+    assert 806 not in ids
+
+
+def test_long_promotes_second_hop_but_not_third_hop():
+    conn = _context_db()
+    hop1, hop2, hop3, passive, unrelated = _seed_multi_hop_chain(conn)
+
+    ctx = ai_soc.gather_alert_context(conn, 8, stage="long")
+    assert ctx["investigation_entities"] == [TRIGGER_IP, hop1, hop2]
+    assert hop3 not in ctx["investigation_entities"]
+    assert passive not in ctx["investigation_entities"]
+    assert ctx["entity_expansion_max_depth"] == 2
+    assert [(h["parent"], h["entity"], h["depth"]) for h in ctx["entity_hops"]] == [
+        (TRIGGER_IP, hop1, 1),
+        (hop1, hop2, 2),
+    ]
+    ids = {r["id"] for r in ctx["related_history"]}
+    assert {800, 801, 802, 803, 804}.issubset(ids)
+    assert 805 not in ids
+    assert 806 not in ids
+
+    rendered = "\n".join(m["content"] for m in ai_soc.build_triage_messages(ctx))
+    assert "CONFIRMED ENTITY PIVOTS" in rendered
+    assert f"depth=1 {TRIGGER_IP} -> {hop1}" in rendered
+    assert f"depth=2 {hop1} -> {hop2}" in rendered
+    assert "Entity expansion bound: depth<=2 entities<=12" in rendered
+
+
+def test_entity_expansion_respects_medium_entity_cap():
+    conn = _context_db()
+    conn.execute(
+        "INSERT INTO logs (id,received_at,source_ip,peer_ip,destination,hostname,app_name,severity,message) VALUES (?,?,?,?,?,?,?,?,?)",
+        (900, "2026-09-01T01:02:00+00:00", TRIGGER_IP, "fw", "", "win1", "Security", "warning", "trigger"),
+    )
+    rows = []
+    for idx in range(10):
+        child = f"10.20.31.{idx + 1}"
+        rows.append((910 + idx * 2, f"2026-09-01T01:03:{idx:02d}+00:00", TRIGGER_IP, "fw", child, "fw1", "CEF", "notice", f"contact {child}"))
+        rows.append((911 + idx * 2, f"2026-09-01T01:04:{idx:02d}+00:00", child, "fw", "198.51.100.1", "fw1", "CEF", "notice", f"{child} becomes source"))
+    conn.executemany(
+        "INSERT INTO logs (id,received_at,source_ip,peer_ip,destination,hostname,app_name,severity,message) VALUES (?,?,?,?,?,?,?,?,?)",
+        rows,
+    )
+    conn.execute(
+        "INSERT INTO alerts (id,created_at,rule_name,severity,source_ip,description,log_ids,ai_status,ai_attempts) "
+        "VALUES (9,?,?,?,?,?,?,?,?)",
+        ("2026-09-01T01:02:01+00:00", "high_severity_event", "warning", TRIGGER_IP,
+         "entity cap test", "900", "pending", 0),
+    )
+    conn.commit()
+
+    ctx = ai_soc.gather_alert_context(conn, 9, stage="medium")
+    assert len(ctx["investigation_entities"]) == 6
+    assert ctx["investigation_entities"][0] == TRIGGER_IP
+    assert ctx["entity_expansion_max_entities"] == 6
+    assert len(ctx["entity_hops"]) == 5

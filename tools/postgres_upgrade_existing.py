@@ -164,12 +164,26 @@ def _upgrade_existing_owner_schema(cfg: dict):
             )
         conn.commit()
 
-        # 31-33 are readiness markers only.  Record them only after all required
+        # 31-33 are readiness markers only. Record them only after all required
         # normalized-field and Event Storage v2 DDL completed successfully.
         for version in (31, 32, 33):
             if version not in applied:
                 _record_migration(conn, version)
                 applied.add(version)
+
+        # Later owner-safe migrations (alert workflow and future additive
+        # schema changes) are ordinary ledger migrations and must not be lost
+        # just because Event Storage v2 uses a special 31-33 upgrade path.
+        for version in range(34, len(migrations) + 1):
+            if version in applied:
+                continue
+            _execute_upgrade_sql(
+                conn,
+                stage=f"migration-v{version}",
+                statement=migrations[version - 1],
+            )
+            _record_migration(conn, version)
+            applied.add(version)
         return sorted(applied)
     finally:
         conn.close()

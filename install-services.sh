@@ -4,13 +4,13 @@
 # =======================================
 # Installs mini-SIEM as TWO systemd services matching the two-process model:
 #
-#   mini-siem-listener   -> runs listener.py as ROOT (binds syslog port 514)
+#   mini-siem-listener   -> runs listener.py as `siem-listener` with only CAP_NET_BIND_SERVICE
 #   mini-siem-dashboard  -> runs dashboard.py as dedicated SERVICE USER `siem` (Waitress + pollers)
 #
-# Both start at boot and restart on failure. The dashboard — the only
-# network-exposed web surface — never runs as root. The installer creates a
-# non-login system account named `siem` for it. The listener stays root only so
-# it can bind the privileged syslog port directly.
+# Both start at boot and restart on failure. No long-running mini-SIEM service
+# runs as root. The listener binds privileged syslog port 514 using the single
+# CAP_NET_BIND_SERVICE capability; PostgreSQL maintenance uses its own non-login
+# `siem-maintenance` account.
 #
 # Python runtime selection / bootstrap:
 #   1) <project>/.venv/bin/python3 or python
@@ -67,7 +67,14 @@ PARTITION_TIMER_UNIT="/etc/systemd/system/${PARTITION_TIMER}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SHARED_GROUP="minisiem"
 SERVICE_USER="siem"
+LISTENER_USER="siem-listener"
+LISTENER_GROUP="minisiem-listener"
+MAINTENANCE_USER="siem-maintenance"
+MAINTENANCE_GROUP="minisiem-maintenance"
 SERVICE_HOME="/var/lib/mini-siem"
+FRESH_STATE_PATH="${MINISIEM_FRESH_STATE_PATH:-}"
+FRESH_RESUME_SECRET_PATH="${MINISIEM_FRESH_RESUME_SECRET_PATH:-}"
+INSTALL_RESUME="${MINISIEM_INSTALL_RESUME:-0}"
 AI_SECRET_MASTER="${SERVICE_HOME}/ai-secret-master.key"
 CAPTURE_HELPER="/usr/local/libexec/mini-siem-syslog-capture"
 CAPTURE_CONFIG_DIR="/etc/mini-siem"
@@ -148,6 +155,13 @@ if [[ ! -x "${PYTHON_BIN}" ]]; then
     echo "Selected Python runtime is not executable: ${PYTHON_BIN}" >&2
     exit 1
 fi
+
+fresh_phase() {
+    local phase="$1"
+    if [[ "${MINISIEM_INSTALL_ENTRYPOINT:-}" == "fresh" && -n "${FRESH_STATE_PATH}" ]]; then
+        "${PYTHON_BIN}" "${SCRIPT_DIR}/tools/fresh_install_state.py" phase             --state "${FRESH_STATE_PATH}" --phase "${phase}" >/dev/null
+    fi
+}
 
 # Detect the configured DB backend strictly. An explicit deployment must never
 # change engines because db-config.json is missing, malformed, or unreadable.
@@ -252,11 +266,22 @@ if [[ "${POSTGRES_BOOTSTRAP_REQUESTED}" == "1" ]]; then
         echo "The password may be supplied via MINISIEM_PG_BOOTSTRAP_PASSWORD or entered interactively." >&2
         exit 1
     fi
+    if [[ -z "${FRESH_STATE_PATH}" || -z "${FRESH_RESUME_SECRET_PATH}" ]]; then
+        echo "Fresh PostgreSQL bootstrap requires checkpoint state from fresh-install.sh." >&2
+        exit 1
+    fi
     echo "Running fresh PostgreSQL bootstrap through dedicated migration owner..."
-    "${PYTHON_BIN}" "${SCRIPT_DIR}/tools/postgres_bootstrap.py" \
-        --mode fresh \
-        --db-config "${SCRIPT_DIR}/db-config.json" \
+    BOOTSTRAP_ARGS=(
+        --mode fresh
+        --db-config "${SCRIPT_DIR}/db-config.json"
         --bootstrap-user "${MINISIEM_PG_BOOTSTRAP_USER}"
+        --state-file "${FRESH_STATE_PATH}"
+        --resume-secrets "${FRESH_RESUME_SECRET_PATH}"
+    )
+    if [[ "${INSTALL_RESUME}" == "1" ]]; then
+        BOOTSTRAP_ARGS+=(--resume)
+    fi
+    "${PYTHON_BIN}" "${SCRIPT_DIR}/tools/postgres_bootstrap.py" "${BOOTSTRAP_ARGS[@]}"
 
     # Refresh privilege-boundary state after bootstrap; owner/admin credentials
     # are intentionally absent from the shared runtime config.
@@ -345,37 +370,44 @@ EOF
     fi
 fi
 
-echo "Setting up shared group '${SHARED_GROUP}' and service account '${SERVICE_USER}'..."
+echo "Setting up mini-SIEM service identities..."
 getent group "${SHARED_GROUP}" >/dev/null 2>&1 || groupadd --system "${SHARED_GROUP}"
+getent group "${LISTENER_GROUP}" >/dev/null 2>&1 || groupadd --system "${LISTENER_GROUP}"
+getent group "${MAINTENANCE_GROUP}" >/dev/null 2>&1 || groupadd --system "${MAINTENANCE_GROUP}"
 
-if ! id "${SERVICE_USER}" >/dev/null 2>&1; then
-    NOLOGIN_SHELL="$(command -v nologin || true)"
-    if [[ -z "${NOLOGIN_SHELL}" ]]; then
-        if [[ -x /usr/sbin/nologin ]]; then
-            NOLOGIN_SHELL=/usr/sbin/nologin
-        elif [[ -x /sbin/nologin ]]; then
-            NOLOGIN_SHELL=/sbin/nologin
-        else
-            NOLOGIN_SHELL=/bin/false
-        fi
+NOLOGIN_SHELL="$(command -v nologin || true)"
+if [[ -z "${NOLOGIN_SHELL}" ]]; then
+    if [[ -x /usr/sbin/nologin ]]; then NOLOGIN_SHELL=/usr/sbin/nologin
+    elif [[ -x /sbin/nologin ]]; then NOLOGIN_SHELL=/sbin/nologin
+    else NOLOGIN_SHELL=/bin/false
     fi
-    useradd --system --gid "${SHARED_GROUP}" --home-dir "${SERVICE_HOME}" --no-create-home --shell "${NOLOGIN_SHELL}" "${SERVICE_USER}"
-else
-    if [[ "$(id -u "${SERVICE_USER}")" == "0" ]]; then
-        echo "Refusing to use UID 0 for service account '${SERVICE_USER}'." >&2
-        exit 1
-    fi
-    EXISTING_SHELL="$(getent passwd "${SERVICE_USER}" | cut -d: -f7)"
-    case "${EXISTING_SHELL}" in
-        */nologin|*/false) ;;
-        *)
-            echo "Existing user '${SERVICE_USER}' has login shell '${EXISTING_SHELL}'." >&2
-            echo "Refusing to repurpose an interactive account as a service account." >&2
-            exit 1
-            ;;
-    esac
-    usermod -g "${SHARED_GROUP}" "${SERVICE_USER}"
 fi
+
+ensure_service_identity() {
+    local user="$1" primary_group="$2" add_shared="$3"
+    if ! id "${user}" >/dev/null 2>&1; then
+        useradd --system --gid "${primary_group}" --home-dir "${SERVICE_HOME}"             --no-create-home --shell "${NOLOGIN_SHELL}" "${user}"
+    else
+        if [[ "$(id -u "${user}")" == "0" ]]; then
+            echo "Refusing to use UID 0 for service account '${user}'." >&2
+            exit 1
+        fi
+        local existing_shell
+        existing_shell="$(getent passwd "${user}" | cut -d: -f7)"
+        case "${existing_shell}" in
+            */nologin|*/false) ;;
+            *) echo "Existing user '${user}' has interactive shell '${existing_shell}'; refusing to repurpose it." >&2; exit 1 ;;
+        esac
+        usermod -g "${primary_group}" "${user}"
+    fi
+    if [[ "${add_shared}" == "1" ]]; then
+        usermod -a -G "${SHARED_GROUP}" "${user}"
+    fi
+}
+
+ensure_service_identity "${SERVICE_USER}" "${SHARED_GROUP}" 0
+ensure_service_identity "${LISTENER_USER}" "${LISTENER_GROUP}" 1
+ensure_service_identity "${MAINTENANCE_USER}" "${MAINTENANCE_GROUP}" 1
 
 # Give the service a non-login writable home for libraries that expect HOME,
 # without putting mutable state in the code tree.
@@ -424,8 +456,10 @@ for f in "${SCRIPT_DIR}/db-config.json" "${SCRIPT_DIR}/auth-config.json"; do
     fi
 done
 if [[ "${PG_PRIVILEGE_BOUNDARY}" == "1" ]]; then
-    chown root:root "${SCRIPT_DIR}/db-listener-credentials.json" "${SCRIPT_DIR}/db-maintenance-credentials.json"
-    chmod 600 "${SCRIPT_DIR}/db-listener-credentials.json" "${SCRIPT_DIR}/db-maintenance-credentials.json"
+    chown root:"${LISTENER_GROUP}" "${SCRIPT_DIR}/db-listener-credentials.json"
+    chmod 640 "${SCRIPT_DIR}/db-listener-credentials.json"
+    chown root:"${MAINTENANCE_GROUP}" "${SCRIPT_DIR}/db-maintenance-credentials.json"
+    chmod 640 "${SCRIPT_DIR}/db-maintenance-credentials.json"
     chown root:"${SHARED_GROUP}" "${SCRIPT_DIR}/db-dashboard-credentials.json"
     chmod 640 "${SCRIPT_DIR}/db-dashboard-credentials.json"
 fi
@@ -462,6 +496,23 @@ if command -v runuser >/dev/null 2>&1; then
                 echo "VERIFY FAIL: dashboard service account can read maintenance PostgreSQL credentials." >&2
                 exit 1
             fi
+            listener_resolved="$(runuser -u "${LISTENER_USER}" -- "${PYTHON_BIN}" -c                 "import db; c=db.load_config('${SCRIPT_DIR}/db-config.json', credentials_path='${SCRIPT_DIR}/db-listener-credentials.json'); print(c.get('backend','sqlite'), c.get('_credentials_identity',''))" 2>/dev/null || echo unknown)"
+            if [[ "${listener_resolved}" != "postgres listener" ]]; then
+                echo "Listener service account cannot resolve its split PostgreSQL credential: ${listener_resolved}." >&2
+                exit 1
+            fi
+            maintenance_resolved="$(runuser -u "${MAINTENANCE_USER}" -- "${PYTHON_BIN}" -c                 "import db; c=db.load_config('${SCRIPT_DIR}/db-config.json', credentials_path='${SCRIPT_DIR}/db-maintenance-credentials.json'); print(c.get('backend','sqlite'), c.get('_credentials_identity',''))" 2>/dev/null || echo unknown)"
+            if [[ "${maintenance_resolved}" != "postgres maintenance" ]]; then
+                echo "Maintenance service account cannot resolve its split PostgreSQL credential: ${maintenance_resolved}." >&2
+                exit 1
+            fi
+            for pair in                 "${LISTENER_USER}:${SCRIPT_DIR}/db-dashboard-credentials.json"                 "${LISTENER_USER}:${SCRIPT_DIR}/db-maintenance-credentials.json"                 "${MAINTENANCE_USER}:${SCRIPT_DIR}/db-listener-credentials.json"                 "${MAINTENANCE_USER}:${SCRIPT_DIR}/db-dashboard-credentials.json"; do
+                u="${pair%%:*}"; f="${pair#*:}"
+                if runuser -u "${u}" -- test -r "${f}"; then
+                    echo "VERIFY FAIL: ${u} can read another component PostgreSQL credential: ${f}." >&2
+                    exit 1
+                fi
+            done
         else
             echo "PostgreSQL privilege boundary unexpectedly disabled after preflight." >&2
             exit 1
@@ -529,13 +580,28 @@ Before=${DASHBOARD_SVC}.service
 
 [Service]
 Type=simple
-User=root
-Group=${SHARED_GROUP}
+User=${LISTENER_USER}
+Group=${LISTENER_GROUP}
+SupplementaryGroups=${SHARED_GROUP}
 UMask=0002
+Environment=HOME=${SERVICE_HOME}
 WorkingDirectory=${SCRIPT_DIR}
 ExecStart=${PYTHON_BIN} ${SCRIPT_DIR}/listener.py --db ${SCRIPT_DIR}/siem.db --db-config ${SCRIPT_DIR}/db-config.json --port ${SYSLOG_PORT} ${LISTENER_DB_EXTRA}
 Restart=on-failure
 RestartSec=3
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=${SCRIPT_DIR} ${SERVICE_HOME}
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 
 [Install]
 WantedBy=multi-user.target
@@ -558,6 +624,17 @@ WorkingDirectory=${SCRIPT_DIR}
 ExecStart=${PYTHON_BIN} ${SCRIPT_DIR}/dashboard.py --db ${SCRIPT_DIR}/siem.db --db-config ${SCRIPT_DIR}/db-config.json --host ${DASH_HOST} --port ${DASH_PORT} ${DASHBOARD_DB_EXTRA}
 Restart=on-failure
 RestartSec=3
+NoNewPrivileges=true
+CapabilityBoundingSet=
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 
 [Install]
 WantedBy=multi-user.target
@@ -575,14 +652,21 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-User=root
-Group=${SHARED_GROUP}
+User=${MAINTENANCE_USER}
+Group=${MAINTENANCE_GROUP}
+SupplementaryGroups=${SHARED_GROUP}
 WorkingDirectory=${SCRIPT_DIR}
 ExecStart=${PYTHON_BIN} ${SCRIPT_DIR}/tools/postgres_event_partition_maintenance.py ${MAINTENANCE_DB_EXTRA} --months 3
 NoNewPrivileges=true
+CapabilityBoundingSet=
 PrivateTmp=true
 ProtectHome=true
 ProtectSystem=strict
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 
 EOF
@@ -604,6 +688,7 @@ else
     rm -f "${PARTITION_UNIT}" "${PARTITION_TIMER_UNIT}"
 fi
 
+fresh_phase SERVICES_INSTALLED
 systemctl daemon-reload
 systemctl enable "${LISTENER_SVC}" "${DASHBOARD_SVC}"
 if [[ "${DB_BACKEND}" == "postgres" && "${PG_PRIVILEGE_BOUNDARY}" == "1" ]]; then
@@ -673,9 +758,25 @@ if command -v ss >/dev/null 2>&1; then
     fi
 fi
 
+if ! grep -Fq "User=${LISTENER_USER}" "${LISTENER_UNIT}" || ! grep -Fq "AmbientCapabilities=CAP_NET_BIND_SERVICE" "${LISTENER_UNIT}"; then
+    echo "VERIFY FAIL: listener is not running as ${LISTENER_USER} with CAP_NET_BIND_SERVICE." >&2
+    VERIFY_FAILED=1
+fi
+if [[ "${DB_BACKEND}" == "postgres" && "${PG_PRIVILEGE_BOUNDARY}" == "1" ]]; then
+    if ! grep -Fq "User=${MAINTENANCE_USER}" "${PARTITION_UNIT}"; then
+        echo "VERIFY FAIL: PostgreSQL partition maintenance is not using ${MAINTENANCE_USER}." >&2
+        VERIFY_FAILED=1
+    fi
+fi
+
 if [[ "${VERIFY_FAILED}" -ne 0 ]]; then
     echo "mini-SIEM installation/repair verification FAILED." >&2
     exit 1
+fi
+
+fresh_phase OPERATIONAL
+if [[ "${MINISIEM_INSTALL_ENTRYPOINT:-}" == "fresh" && -n "${FRESH_RESUME_SECRET_PATH}" ]]; then
+    rm -f "${FRESH_RESUME_SECRET_PATH}"
 fi
 
 echo "Post-install verification: PASS"
@@ -683,7 +784,7 @@ echo "Post-install verification: PASS"
 cat <<EOF
 
 Installed two services:
-  ${LISTENER_SVC}   (root, syslog TCP/UDP port ${SYSLOG_PORT})
+  ${LISTENER_SVC}   (service user ${LISTENER_USER}, CAP_NET_BIND_SERVICE, syslog TCP/UDP ${SYSLOG_PORT})
   ${DASHBOARD_SVC}  (service user ${SERVICE_USER}, Waitress ${DASH_HOST}:${DASH_PORT})
   Event partitions    ${PARTITION_TIMER} (PostgreSQL split-role deployments only)
   Python             ${PYTHON_BIN}
@@ -707,7 +808,7 @@ If systemd reports 203/EXEC Permission denied on CentOS/RHEL:
 The /opt project tree should not remain labeled user_home_t.
 
 Service identity:
-  '${SERVICE_USER}' is a non-login system account with primary group '${SHARED_GROUP}'.
+  '${SERVICE_USER}', '${LISTENER_USER}', and '${MAINTENANCE_USER}' are non-login system accounts.
   No personal login account or numeric UID needs to be supplied to the installer.
 
 Dashboard: http://${DASH_HOST}:${DASH_PORT}

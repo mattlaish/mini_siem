@@ -177,6 +177,11 @@
         engine resolves identity through the same Search field aliases as log search — so a poller source whose
         <span class="mono">source_ip</span> column holds a connector name (e.g. "sophos") still correlates by the
         real per-endpoint IP, not the shared connector name.</p>
+      <h3>Manual Investigate</h3>
+      <p>The Correlate page also provides a manual IP investigation workspace. Enter an IP, choose a concrete
+        Short/Medium/Long retrospective window, and set a 0-4 hop bound. A destination is promoted to the next
+        investigation entity only if it later appears as a source inside the same window. Results show the
+        confirmed pivots and the exact evidence events used for the scope.</p>
     </div>
 
     <div class="panel" id="selfmon">

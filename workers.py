@@ -102,6 +102,65 @@ def run_playbook_report(conn, window_days: int = 7, trigger: str = "manual"):
             "findings": findings, "results": results}
 
 
+def alerts_from_playbook_report(conn, report: dict) -> int:
+    """Turn scheduled playbook finding groups into normal alerts.
+
+    Manual reports stay reports.  Scheduled findings enter the same alert table
+    as live detections, so existing AI triage, workflow, grouping and ticket
+    dispatch apply without a parallel notification path.
+    """
+    import ipaddress
+
+    if (report.get("trigger") or "") not in ("weekly", "monthly"):
+        return 0
+    created = 0
+    report_id = report.get("id")
+    for result in report.get("results") or []:
+        if result.get("error") or not result.get("group_count"):
+            continue
+        pb_id = str(result.get("id") or "playbook")
+        pb_name = str(result.get("name") or pb_id)
+        severity = severity_mod.normalize(result.get("severity") or "warning")
+        if not severity:
+            severity = "warning"
+        for group in result.get("groups") or []:
+            key = str(group.get("key") or "")
+            source_ip = None
+            if key:
+                try:
+                    ipaddress.ip_address(key)
+                    source_ip = key
+                except ValueError:
+                    pass
+            log_ids = ",".join(str(x) for x in (group.get("log_ids") or []) if str(x).isdigit())
+            count = group.get("count") or group.get("a_count") or group.get("distinct_count") or 1
+            description = (
+                f"Scheduled {report.get('trigger')} playbook finding: {pb_name}; "
+                f"key={key or '-'}; count={count}; report_id={report_id}"
+            )
+            rule_name = f"playbook:{pb_id}"
+            # Idempotency is report-scoped through the deterministic
+            # description (which includes report_id/key/count). This lets the
+            # scheduler heal a crash after the report commit but before alert
+            # creation without duplicating already-emitted findings.
+            exists = conn.execute(
+                "SELECT 1 FROM alerts WHERE rule_name=? AND description=? LIMIT 1",
+                (rule_name, description),
+            ).fetchone()
+            if exists:
+                continue
+            conn.execute(
+                """INSERT INTO alerts
+                   (created_at,rule_name,severity,source_ip,description,log_ids,ai_status,workflow_status)
+                   VALUES (?,?,?,?,?,?,'pending','new')""",
+                (_now(), rule_name, severity, source_ip, description, log_ids),
+            )
+            created += 1
+    if created:
+        conn.commit()
+    return created
+
+
 class ReportScheduler:
     """Checks hourly whether a scheduled report is due.
     app_config: report_schedule = off|weekly|monthly."""
@@ -136,15 +195,32 @@ class ReportScheduler:
         conn = self.get_conn()
         try:
             row = conn.execute(
-                "SELECT created_at FROM reports WHERE trigger=? ORDER BY id DESC LIMIT 1",
+                "SELECT * FROM reports WHERE trigger=? ORDER BY id DESC LIMIT 1",
                 (schedule,)).fetchone()
             if row:
                 last = datetime.fromisoformat(row["created_at"])
                 age_days = (datetime.now(timezone.utc) - last).total_seconds() / 86400
                 if age_days < period_days:
+                    # A prior process may have committed the scheduled report
+                    # and exited before converting its findings to alerts.
+                    # Rehydrate that report and idempotently heal the alert
+                    # side instead of waiting until the next weekly/monthly
+                    # report window.
+                    existing_report = dict(row)
+                    try:
+                        existing_report["results"] = json.loads(existing_report.get("results_json") or "[]")
+                    except Exception:
+                        existing_report["results"] = []
+                    healed = alerts_from_playbook_report(conn, existing_report)
+                    if healed:
+                        existing_report["alerts_created"] = healed
+                        print(f"[reports] healed {healed} alert(s) from scheduled {schedule} report #{existing_report['id']}")
+                        return existing_report
                     return None
             report = run_playbook_report(conn, window_days=period_days, trigger=schedule)
-            print(f"[reports] scheduled {schedule} report #{report['id']}: {report['summary']}")
+            report["alerts_created"] = alerts_from_playbook_report(conn, report)
+            print(f"[reports] scheduled {schedule} report #{report['id']}: {report['summary']}; "
+                  f"alerts={report['alerts_created']}")
             if self.on_report:
                 try:
                     self.on_report(report)

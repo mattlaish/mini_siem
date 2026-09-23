@@ -68,7 +68,20 @@
   .status-line.err { color: var(--warn); }
   .empty { padding: 30px; text-align: center; color: var(--ink-soft); font-size: 13px; }
   details summary { cursor: pointer; font-size: 11.5px; color: var(--accent); }
-  @media (max-width: 720px) { .form-grid { grid-template-columns: 1fr; } }
+  .investigate-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .investigate-grid .full { grid-column: 1 / -1; }
+  .scope-slider { width: 100%; accent-color: var(--accent); cursor: pointer; }
+  .slider-labels { display: flex; justify-content: space-between; font-family: var(--mono); font-size: 10px; color: var(--ink-soft); margin-top: 3px; }
+  .slider-labels.five span { min-width: 1ch; text-align: center; }
+  .scope-readout { margin-top: 8px; padding: 9px 10px; background: var(--accent-soft); border-radius: 6px; font-size: 12px; line-height: 1.45; }
+  .pivot-rule { border-left: 3px solid var(--accent); background: #f7f9fc; padding: 10px 12px; font-size: 12.5px; line-height: 1.5; color: var(--ink-soft); }
+  .entity-chain { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin: 10px 0 14px; }
+  .entity-node { font-family: var(--mono); border: 1px solid var(--line); background: #fff; border-radius: 16px; padding: 5px 9px; font-size: 11.5px; }
+  .entity-arrow { color: var(--ink-soft); font-weight: 700; }
+  .scope-summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(145px,1fr)); gap: 8px; margin: 10px 0 14px; }
+  .scope-stat { border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; background: #fafbfc; }
+  .scope-stat strong { display: block; font-family: var(--mono); font-size: 11px; margin-bottom: 2px; }
+  @media (max-width: 720px) { .form-grid, .investigate-grid { grid-template-columns: 1fr; } .investigate-grid .full { grid-column: auto; } }
 </style>
 </head>
 <body>
@@ -118,91 +131,43 @@
     <div class="pb-grid" id="pbGrid"><div class="muted">Loading playbooks…</div></div>
   </div>
 
-  <div class="panel">
-    <h2>Ad-hoc correlation</h2>
-    <p class="sub">Build your own correlation query against stored events. Patterns are regular expressions matched against the message text (case-insensitive).</p>
-    <div class="form-grid">
-      <div class="fld">
-        <label>Correlation type</label>
-        <select id="fType">
-          <option value="threshold">Threshold — N+ matching events from same key</option>
-          <option value="sequence">Sequence — pattern A then pattern B from same key</option>
-          <option value="fanout">Fan-out — one key touching many distinct values</option>
-          <option value="first_seen">First seen — keys new vs. a baseline period</option>
-        </select>
+  <div class="panel" id="investigatePanel">
+    <h2>Investigate</h2>
+    <p class="sub">Start from an IP and make the investigation scope explicit. The time slider controls the retrospective window; the hop slider controls how far confirmed destination→later-source pivots may expand. Evidence still matches admitted IPs whether they appear as source, destination, peer, or indexed endpoint fields.</p>
+    <div class="investigate-grid">
+      <div class="fld full">
+        <label>IP to investigate</label>
+        <input type="text" id="iIp" class="mono" placeholder="e.g. 10.20.30.40" autocomplete="off" spellcheck="false">
       </div>
+
       <div class="fld">
-        <label>Group by <span class="hint">(the correlation key)</span></label>
-        <select id="fGroupBy">
-          <option value="source_ip">source_ip</option>
-          <option value="hostname">hostname</option>
-          <option value="app_name">app_name</option>
-          <option value="user">user (extracted from message)</option>
-        </select>
+        <label>Investigation window <span class="hint">(retrospective, ending now)</span></label>
+        <input type="range" id="iStage" min="0" max="2" step="1" value="1" class="scope-slider">
+        <div class="slider-labels"><span>Short</span><span>Medium</span><span>Long</span></div>
+        <div class="scope-readout" id="iStageReadout"></div>
       </div>
+
       <div class="fld">
-        <label>Lookback window</label>
-        <select id="fWindow">
-          <option value="15">Last 15 minutes</option>
-          <option value="60" selected>Last hour</option>
-          <option value="360">Last 6 hours</option>
-          <option value="1440">Last 24 hours</option>
-          <option value="10080">Last 7 days</option>
-        </select>
+        <label>Entity expansion <span class="hint">(confirmed hops)</span></label>
+        <input type="range" id="iHops" min="0" max="4" step="1" value="1" class="scope-slider">
+        <div class="slider-labels five"><span>0</span><span>1</span><span>2</span><span>3</span><span>4</span></div>
+        <div class="scope-readout" id="iHopReadout"></div>
       </div>
 
       <div class="fld full">
-        <label>Pattern <span class="hint">(regex over message text)</span></label>
-        <input type="text" id="fPattern" class="mono" placeholder="e.g. failed password|4625">
-      </div>
-
-      <div class="fld" id="rowThreshold">
-        <label>Threshold <span class="hint">(min count / distinct values)</span></label>
-        <input type="number" id="fThreshold" value="5" min="1">
-      </div>
-
-      <div class="fld hidden" id="rowPatternB">
-        <label>Pattern B <span class="hint">(the "then" event)</span></label>
-        <input type="text" id="fPatternB" class="mono" placeholder="e.g. accepted password|4624">
-      </div>
-      <div class="fld hidden" id="rowGap">
-        <label>Max gap seconds <span class="hint">(A→B)</span></label>
-        <input type="number" id="fGap" value="600" min="1">
-      </div>
-      <div class="fld hidden" id="rowMinA">
-        <label>Min A count before B</label>
-        <input type="number" id="fMinA" value="5" min="1">
-      </div>
-
-      <div class="fld hidden" id="rowDistinct">
-        <label>Distinct field <span class="hint">(what fans out)</span></label>
-        <select id="fDistinct">
-          <option value="hostname">hostname</option>
-          <option value="source_ip">source_ip</option>
-          <option value="app_name">app_name</option>
-          <option value="user">user</option>
-        </select>
-      </div>
-
-      <div class="fld hidden" id="rowBaseline">
-        <label>Baseline period <span class="hint">(before the window)</span></label>
-        <select id="fBaseline">
-          <option value="1440">1 day</option>
-          <option value="10080" selected>7 days</option>
-          <option value="43200">30 days</option>
-        </select>
+        <div class="pivot-rule"><strong>Pivot rule:</strong> A → B does not automatically promote B. B is promoted only if B later appears as a source inside this investigation window. A second hop requires B → C and then C later becoming a source.</div>
       </div>
 
       <div class="fld full">
-        <button id="runAdhoc">Run correlation</button>
-        <span class="status-line" id="adhocStatus"></span>
+        <button id="runInvestigate">Investigate IP</button>
+        <span class="status-line" id="investigateStatus"></span>
       </div>
     </div>
   </div>
 
   <div class="panel" id="resultsPanel">
     <h2>Results <span id="resultsMeta"></span></h2>
-    <div id="resultsBody"><div class="empty">Run a playbook or an ad-hoc correlation to see results here.</div></div>
+    <div id="resultsBody"><div class="empty">Run a playbook or investigate an IP to see results here.</div></div>
   </div>
 
 </div>
@@ -249,52 +214,100 @@ async function runPlaybook(id) {
   $('resultsPanel').scrollIntoView({ behavior: 'smooth' });
 }
 
-function syncFormVisibility() {
-  const t = $('fType').value;
-  $('rowPatternB').classList.toggle('hidden', t !== 'sequence');
-  $('rowGap').classList.toggle('hidden', t !== 'sequence');
-  $('rowMinA').classList.toggle('hidden', t !== 'sequence');
-  $('rowDistinct').classList.toggle('hidden', t !== 'fanout');
-  $('rowBaseline').classList.toggle('hidden', t !== 'first_seen');
-  $('rowThreshold').classList.toggle('hidden', t === 'sequence' || t === 'first_seen');
+const INVESTIGATION_WINDOWS = [
+  { stage: 'short', label: 'Short', minutes: 30, text: 'Last 30 minutes' },
+  { stage: 'medium', label: 'Medium', minutes: 90, text: 'Last 90 minutes' },
+  { stage: 'long', label: 'Long', minutes: 300, text: 'Last 5 hours' }
+];
+
+function hopExample(hops) {
+  const nodes = ['A', 'B', 'C', 'D', 'E'];
+  return nodes.slice(0, Math.min(hops + 1, nodes.length)).join(' → ');
 }
-$('fType').addEventListener('change', syncFormVisibility);
-syncFormVisibility();
 
-$('runAdhoc').addEventListener('click', async () => {
-  const t = $('fType').value;
-  const params = {
-    type: t,
-    group_by: $('fGroupBy').value,
-    window_minutes: parseInt($('fWindow').value),
-    pattern: $('fPattern').value || '.',
-  };
-  if (t === 'threshold' || t === 'fanout') params.threshold = parseInt($('fThreshold').value) || 1;
-  if (t === 'sequence') {
-    if (!$('fPatternB').value) { $('adhocStatus').textContent = 'Pattern B is required for sequence.'; $('adhocStatus').className = 'status-line err'; return; }
-    params.pattern_b = $('fPatternB').value;
-    params.max_gap_seconds = parseInt($('fGap').value) || 600;
-    params.min_a_count = parseInt($('fMinA').value) || 1;
+function syncInvestigateScope() {
+  const w = INVESTIGATION_WINDOWS[parseInt($('iStage').value, 10) || 0];
+  const hops = parseInt($('iHops').value, 10) || 0;
+  $('iStageReadout').innerHTML = `<strong>${w.label}</strong> · ${w.text} · ends now`;
+  $('iHopReadout').innerHTML = `<strong>${hops} hop${hops === 1 ? '' : 's'}</strong> · ${esc(hopExample(hops))} · destination→later-source confirmation required at every hop`;
+}
+$('iStage').addEventListener('input', syncInvestigateScope);
+$('iHops').addEventListener('input', syncInvestigateScope);
+syncInvestigateScope();
+
+$('runInvestigate').addEventListener('click', async () => {
+  const ip = $('iIp').value.trim();
+  const status = $('investigateStatus');
+  if (!ip) {
+    status.textContent = 'Enter an IP address to investigate.';
+    status.className = 'status-line err';
+    return;
   }
-  if (t === 'fanout') params.distinct_field = $('fDistinct').value;
-  if (t === 'first_seen') params.baseline_minutes = parseInt($('fBaseline').value);
-
-  $('adhocStatus').textContent = 'Running…'; $('adhocStatus').className = 'status-line';
-  $('runAdhoc').disabled = true;
+  const w = INVESTIGATION_WINDOWS[parseInt($('iStage').value, 10) || 0];
+  const hops = parseInt($('iHops').value, 10) || 0;
+  status.textContent = 'Investigating…';
+  status.className = 'status-line';
+  $('runInvestigate').disabled = true;
   try {
-    const r = await fetch('/api/correlate', {
+    const r = await fetch('/api/investigate/ip', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(params)
+      body: JSON.stringify({ ip, stage: w.stage, hops })
     });
     const data = await r.json();
-    if (data.error) { $('adhocStatus').textContent = 'Error: ' + data.error; $('adhocStatus').className = 'status-line err'; return; }
-    $('adhocStatus').textContent = '';
-    renderResults(data, null);
+    if (!r.ok || data.error) {
+      status.textContent = 'Error: ' + (data.error || `HTTP ${r.status}`);
+      status.className = 'status-line err';
+      return;
+    }
+    status.textContent = '';
+    renderInvestigation(data);
     $('resultsPanel').scrollIntoView({ behavior: 'smooth' });
   } finally {
-    $('runAdhoc').disabled = false;
+    $('runInvestigate').disabled = false;
   }
 });
+
+function renderInvestigation(data) {
+  const mins = data.lookback_minutes || 0;
+  const span = mins >= 60 ? `${(mins / 60).toFixed(mins % 60 ? 1 : 0)}h` : `${mins}m`;
+  let html = `<p class="muted"><strong>IP investigation:</strong> ${esc(data.root_entity)}</p>`;
+  html += `<div class="scope-summary">
+    <div class="scope-stat"><strong>WINDOW</strong>${esc(data.stage_label)} · ${span}</div>
+    <div class="scope-stat"><strong>HOP BOUND</strong>${data.entity_expansion_max_depth}</div>
+    <div class="scope-stat"><strong>ENTITIES</strong>${(data.investigation_entities || []).length} / ${data.entity_expansion_max_entities}</div>
+    <div class="scope-stat"><strong>EVIDENCE</strong>${data.evidence_count} shown · ${data.candidate_count} matched</div>
+  </div>`;
+
+  const entities = data.investigation_entities || [];
+  const hops = data.entity_hops || [];
+  html += '<div class="entity-chain"><span class="entity-node"><strong>root</strong> ' + esc(data.root_entity) + '</span>'
+    + hops.map(h => `<span class="entity-node">d${h.depth}: ${esc(h.parent)} → ${esc(h.entity)}</span>`).join('')
+    + '</div>';
+
+  if (hops.length) {
+    html += '<h3 style="font-size:13px;margin:14px 0 6px;">Confirmed pivots</h3>';
+    html += tableWrap(['Depth', 'Transition', 'Relationship event', 'Later-source proof'], hops.map(h => row([
+      h.depth,
+      mono(`${h.parent} → ${h.entity}`),
+      `<a href="/?ids=${h.relationship_event_id}" target="_blank">#${h.relationship_event_id}</a><div class="sample">${esc(short(h.relationship_seen_at))}</div>`,
+      `<a href="/?ids=${h.source_proof_event_id}" target="_blank">#${h.source_proof_event_id}</a><div class="sample">${esc(short(h.source_proof_seen_at))}</div>`
+    ])));
+  } else {
+    html += '<p class="muted">No destination→later-source pivot was confirmed at the selected depth/window.</p>';
+  }
+
+  const events = data.events || [];
+  if (events.length) {
+    html += '<h3 style="font-size:13px;margin:16px 0 6px;">Investigation evidence</h3>';
+    html += tableWrap(['#', 'Time', 'Source', 'Destination', 'Severity', 'App', 'Message'], events.map(e => row([
+      `<a href="/?ids=${e.id}" target="_blank">#${e.id}</a>`, mono(short(e.received_at)), mono(e.source_ip || '—'), mono(e.destination || '—'),
+      esc(e.severity || '—'), esc(e.app_name || '—'), `<div class="sample">${esc(e.message || '')}</div>`
+    ])));
+  } else {
+    html += '<div class="empty">No matching evidence in the selected scope.</div>';
+  }
+  setResults(html, `investigate · ${data.stage_label.toLowerCase()} · ${data.requested_hops} hop(s)`);
+}
 
 function esc(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;'); }
 

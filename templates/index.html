@@ -102,8 +102,8 @@
     </h2>
     <div class="table-scroll">
       <table>
-        <thead><tr><th>Time</th><th>Rule</th><th>Severity</th><th>Source</th><th>Description</th><th>AI</th></tr></thead>
-        <tbody id="alertsBody"><tr><td colspan="6" class="muted">Loading…</td></tr></tbody>
+        <thead><tr><th>Time</th><th>Rule</th><th>Severity</th><th>Source</th><th>Description</th><th>Workflow</th><th>AI</th></tr></thead>
+        <tbody id="alertsBody"><tr><td colspan="7" class="muted">Loading…</td></tr></tbody>
       </table>
     </div>
   </div>
@@ -160,7 +160,7 @@
     <div class="table-scroll">
       <table>
         <thead><tr id="logsHead"><th>Time</th><th>Log source</th><th>Net source</th><th>Severity</th><th>Host</th><th>Destination</th><th>App</th><th>Message</th></tr></thead>
-        <tbody id="logsBody"><tr><td colspan="6" class="muted">Loading…</td></tr></tbody>
+        <tbody id="logsBody"><tr><td colspan="7" class="muted">Loading…</td></tr></tbody>
       </table>
     </div>
     <details style="margin-top:12px;">
@@ -268,6 +268,26 @@ function _groupAiBadge(g) {
   return `${done}<span class="muted" style="font-size:10px;">${bits.join(', ')}</span>`;
 }
 
+function _workflowControl(a) {
+  const states = ['new','acknowledged','investigating','resolved','closed'];
+  const current = (a.workflow_status || 'new').toLowerCase();
+  const options = states.map(st => `<option value="${st}" ${st===current?'selected':''}>${st}</option>`).join('');
+  const owner = a.workflow_assignee || '';
+  return `<div style="display:flex;gap:5px;align-items:center;white-space:nowrap;">
+    <select class="alert-workflow" data-id="${a.id}" data-current="${current}" style="font-size:10px;padding:2px 4px;">${options}</select>
+    <button class="alert-assign" data-id="${a.id}" title="${owner ? 'Assigned to '+owner : 'Assign alert'}" style="font-size:10px;padding:2px 6px;border:1px solid var(--line);background:#fff;border-radius:5px;cursor:pointer;">${owner || 'assign'}</button>
+  </div>`;
+}
+
+async function _updateAlertWorkflow(id, payload) {
+  const r = await fetch(`/api/alerts/${id}/workflow`, {
+    method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)
+  });
+  const d = await r.json();
+  if (!r.ok) throw new Error(d.error || `HTTP ${r.status}`);
+  return d;
+}
+
 async function loadAlerts() {
   const grouped = document.getElementById('groupToggle').checked;
   const r = await fetch('/api/alerts?limit=200' + (grouped ? '&group=1' : ''));
@@ -278,7 +298,7 @@ async function loadAlerts() {
   if (grouped && data.grouped) {
     const groups = data.groups || [];
     groups.forEach(g => g.members.forEach(m => window._alertCache[m.id] = m));
-    if (!groups.length) { body.innerHTML = '<tr><td colspan="6" class="muted">No alerts yet.</td></tr>'; return; }
+    if (!groups.length) { body.innerHTML = '<tr><td colspan="7" class="muted">No alerts yet.</td></tr>'; return; }
     body.innerHTML = groups.map((g, gi) => {
       const rep = g.representative;
       const multi = g.count > 1;
@@ -295,6 +315,7 @@ async function loadAlerts() {
           <td><span class="badge sev-${g.severity}">${g.severity}</span></td>
           <td class="msg-cell">${g.source_ip || '—'}</td>
           <td>${g.description}</td>
+          <td>${_workflowControl(rep)}</td>
           <td>${multi ? _groupAiBadge(g) : _aiBadge(rep.ai_status)}</td>
         </tr>`;
       const children = multi ? g.members.map(m => `
@@ -304,6 +325,7 @@ async function loadAlerts() {
           <td><span class="badge sev-${m.severity}">${m.severity}</span></td>
           <td class="msg-cell">${m.source_ip || '—'}</td>
           <td>${m.description}</td>
+          <td>${_workflowControl(m)}</td>
           <td>${m.ai_status === 'done' ? `<button class="ai-view" data-id="${m.id}" style="cursor:pointer;border:1px solid var(--ok);background:var(--ok-soft);color:var(--ok);border-radius:20px;font-size:10px;font-family:var(--mono);padding:2px 8px;">✓</button>` : _aiBadge(m.ai_status)}</td>
         </tr>`).join('') : '';
       return head + children;
@@ -320,7 +342,7 @@ async function loadAlerts() {
   } else {
     const rows = Array.isArray(data) ? data : [];
     rows.forEach(a => window._alertCache[a.id] = a);
-    if (!rows.length) { body.innerHTML = '<tr><td colspan="6" class="muted">No alerts yet.</td></tr>'; return; }
+    if (!rows.length) { body.innerHTML = '<tr><td colspan="7" class="muted">No alerts yet.</td></tr>'; return; }
     body.innerHTML = rows.map(a => `
       <tr class="alert-row" data-logids="${a.log_ids||''}" title="Double-click to open the related logs in log search">
         <td class="msg-cell">${new Date(a.created_at).toLocaleString()}</td>
@@ -328,9 +350,43 @@ async function loadAlerts() {
         <td><span class="badge sev-${a.severity}">${a.severity}</span></td>
         <td class="msg-cell">${a.source_ip || '—'}</td>
         <td>${a.description}</td>
+        <td>${_workflowControl(a)}</td>
         <td>${a.ai_status === 'done' ? `<button class="ai-view" data-id="${a.id}" style="cursor:pointer;border:1px solid var(--ok);background:var(--ok-soft);color:var(--ok);border-radius:20px;font-size:10px;font-family:var(--mono);padding:2px 8px;">✓ analysis</button>` : _aiBadge(a.ai_status)}</td>
       </tr>`).join('');
   }
+
+  document.querySelectorAll('.alert-workflow').forEach(sel => sel.addEventListener('change', async (e) => {
+    e.stopPropagation();
+    const id = sel.dataset.id;
+    const prior = sel.dataset.current || 'new';
+    const next = sel.value;
+    let note = '';
+    if (next === 'resolved' || next === 'closed') {
+      note = prompt('Resolution/closure note (optional):', '') || '';
+    }
+    try {
+      const updated = await _updateAlertWorkflow(id, {status: next, note});
+      window._alertCache[id] = updated;
+      sel.dataset.current = updated.workflow_status || next;
+      loadStats();
+    } catch (err) {
+      alert(err.message);
+      sel.value = prior;
+    }
+  }));
+  document.querySelectorAll('.alert-assign').forEach(btn => btn.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    const id = btn.dataset.id;
+    const a = (window._alertCache || {})[id] || {};
+    const assignee = prompt('Assign alert to (blank = unassigned):', a.workflow_assignee || '');
+    if (assignee === null) return;
+    try {
+      const updated = await _updateAlertWorkflow(id, {assignee});
+      window._alertCache[id] = updated;
+      btn.textContent = updated.workflow_assignee || 'assign';
+      btn.title = updated.workflow_assignee ? 'Assigned to '+updated.workflow_assignee : 'Assign alert';
+    } catch (err) { alert(err.message); }
+  }));
 
   document.querySelectorAll('.ai-view').forEach(b => b.addEventListener('click', (e) => {
     e.stopPropagation();

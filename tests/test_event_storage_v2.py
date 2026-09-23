@@ -60,7 +60,7 @@ def test_postgres_event_storage_v2_schema_contract():
 
 def test_postgres_runtime_requires_v2_tables_and_migration_ledger_advances():
     assert {"security_events", "assets", "identities"}.issubset(set(db.RUNTIME_REQUIRED_TABLES))
-    assert len(db._migrations()) == 33
+    assert len(db._migrations()) == 41
 
 
 def test_projection_normalization_uses_native_values_and_preserves_raw():

@@ -145,3 +145,18 @@ boundary is applied, remains `NOT_RUN/DEFERRED` in the current environment.
 `fresh-install.sh` and `upgrade-existing.sh` are intentionally mutually exclusive security boundaries. Fresh installation refuses operational state; existing upgrade refuses a fresh target and never calls fresh bootstrap. The low-level `install-services.sh --bootstrap-postgres` path requires an internal fresh-install marker.
 
 Existing split-role PostgreSQL upgrades preserve runtime-role passwords. The schema-owner credential is accepted only transiently from a protected environment variable or TTY prompt, is used for `pg_dump`, owner migration/backfill, and object-grant repair, and is not written to `db-config.json` or component credential files. Default privileges are tightened before Event Storage v2 creates owner-owned tables/partitions so older broad defaults cannot leak mutation rights to future objects.
+
+## systemd service-identity hardening — 2026-09-23
+
+Current split-service deployment does not run long-lived mini-SIEM services as
+root. `siem-listener` is a non-login account with only
+`CAP_NET_BIND_SERVICE` for the privileged syslog port. The dashboard uses
+`siem`; PostgreSQL partition maintenance uses `siem-maintenance`. Component
+PostgreSQL credential files use separate groups and the installer verifies that
+one component cannot read another component's credential file.
+
+Listener uses `NoNewPrivileges=true`, a bind-only capability bounding set,
+`ProtectSystem=strict`, kernel/control-group protections and restricted address
+families. Dashboard and maintenance explicitly use `NoNewPrivileges=true` and
+an empty `CapabilityBoundingSet=` in addition to their existing sandboxing.
+Live distro/systemd/SELinux qualification is still required before release.

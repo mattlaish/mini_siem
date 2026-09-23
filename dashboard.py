@@ -5,7 +5,7 @@ mini-SIEM dashboard
 Read-only web UI over the SQLite database populated by listener.py.
 Pages:
   /            live log search + alert feed
-  /correlate   on-demand correlation queries + playbook library
+  /correlate   playbooks/reports + bounded manual IP investigation
   /setup       syslog forwarding configuration
   /ai          AI SOC analyst (local LLM) — triage + log Q&A
 
@@ -23,6 +23,7 @@ from flask import Flask, jsonify, render_template, request, session, redirect, u
 
 import severity as severity_mod
 import db as dbmod
+import alert_workflow as alert_workflow_mod
 import auth
 from sql_helpers import placeholders, identifier, where_clause
 
@@ -206,6 +207,21 @@ def admin_required(fn):
             audit("permission_denied", target=request.endpoint or request.path,
                   detail=f"role={auth.current_role()}")
             return jsonify({"error": "administrator role required for this action"}), 403
+        return fn(*args, **kwargs)
+    return _wrap
+
+
+def analyst_required(fn):
+    """Guard mutating SOC workflow actions from read-only viewers."""
+    from functools import wraps
+
+    @wraps(fn)
+    def _wrap(*args, **kwargs):
+        role = auth.current_role()
+        if role not in ("admin", "analyst"):
+            audit("permission_denied", target=request.endpoint or request.path,
+                  detail=f"role={role}")
+            return jsonify({"error": "analyst or administrator role required for this action"}), 403
         return fn(*args, **kwargs)
     return _wrap
 
@@ -1319,6 +1335,76 @@ def api_alerts():
     return jsonify({"grouped": True, "groups": [groups[k] for k in order]})
 
 
+ALERT_WORKFLOW_STATES = alert_workflow_mod.STATES
+ALERT_WORKFLOW_TRANSITIONS = alert_workflow_mod.TRANSITIONS
+
+@app.route("/api/alerts/<int:alert_id>/workflow", methods=["GET"])
+def api_alert_workflow_history(alert_id):
+    conn = get_conn()
+    alert = conn.execute("SELECT * FROM alerts WHERE id=?", (alert_id,)).fetchone()
+    if not alert:
+        conn.close()
+        return jsonify({"error": "alert not found"}), 404
+    events = [dict(r) for r in conn.execute(
+        "SELECT * FROM alert_workflow_events WHERE alert_id=? ORDER BY id ASC", (alert_id,)
+    ).fetchall()]
+    conn.close()
+    return jsonify({"alert": dict(alert), "events": events})
+
+
+@app.route("/api/alerts/<int:alert_id>/workflow", methods=["POST"])
+@analyst_required
+def api_alert_workflow_update(alert_id):
+    from datetime import datetime, timezone
+    body = request.get_json(force=True, silent=True) or {}
+    requested = str(body.get("status") or "").strip().lower()
+    assignee_supplied = "assignee" in body
+    assignee = str(body.get("assignee") or "").strip()[:120]
+    note = str(body.get("note") or "").strip()[:2000]
+    if requested and requested not in ALERT_WORKFLOW_STATES:
+        return jsonify({"error": "invalid alert workflow status", "allowed": ALERT_WORKFLOW_STATES}), 400
+
+    conn = get_conn()
+    row = conn.execute("SELECT * FROM alerts WHERE id=?", (alert_id,)).fetchone()
+    if not row:
+        conn.close()
+        return jsonify({"error": "alert not found"}), 404
+    current = alert_workflow_mod.normalize(row["workflow_status"])
+    target = requested or current
+    try:
+        current, target = alert_workflow_mod.validate_transition(current, target)
+    except ValueError as exc:
+        conn.close()
+        return jsonify({
+            "error": str(exc),
+            "allowed_next": sorted(ALERT_WORKFLOW_TRANSITIONS.get(current, set())),
+        }), 409
+    actor = auth.current_user() or "unknown"
+    updated_at = datetime.now(timezone.utc).isoformat()
+    new_assignee = assignee if assignee_supplied else (row["workflow_assignee"] or "")
+    resolution_note = note if note else (row["workflow_resolution_note"] or "")
+    conn.execute(
+        """UPDATE alerts
+           SET workflow_status=?, workflow_assignee=?, workflow_updated_at=?,
+               workflow_updated_by=?, workflow_resolution_note=?
+           WHERE id=?""",
+        (target, new_assignee, updated_at, actor, resolution_note, alert_id),
+    )
+    if target != current or assignee_supplied or note:
+        conn.execute(
+            """INSERT INTO alert_workflow_events
+               (alert_id,at,actor,from_status,to_status,assignee,note)
+               VALUES (?,?,?,?,?,?,?)""",
+            (alert_id, updated_at, actor, current, target, new_assignee, note),
+        )
+    conn.commit()
+    updated = dict(conn.execute("SELECT * FROM alerts WHERE id=?", (alert_id,)).fetchone())
+    conn.close()
+    audit("alert_workflow_updated", target=f"alert:{alert_id}",
+          detail=f"{current}->{target}; assignee={new_assignee or '-'}")
+    return jsonify(updated)
+
+
 @app.route("/api/stats")
 def api_stats():
     """Dashboard stats that answer 'what needs me, what's missing' rather
@@ -1445,6 +1531,29 @@ def api_correlate():
         conn.close()
         return jsonify({"error": str(exc)}), 400
     conn.close()
+    return jsonify(result)
+
+
+@app.route("/api/investigate/ip", methods=["POST"])
+def api_investigate_ip():
+    """Manual bounded IP investigation used by /correlate -> Investigate."""
+    body = request.get_json(force=True, silent=True) or {}
+    entity_ip = str(body.get("ip") or "").strip()
+    stage = str(body.get("stage") or "medium").strip().lower()
+    hops = body.get("hops", 1)
+
+    conn = get_conn()
+    try:
+        result = ai_soc.gather_ip_investigation(conn, entity_ip, stage=stage, max_depth=hops)
+    except ValueError as exc:
+        conn.close()
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        conn.close()
+        return jsonify({"error": f"investigation failed: {exc}"}), 500
+    conn.close()
+    audit("manual_ip_investigation", target=entity_ip,
+          detail=f"stage={stage} hops={result['requested_hops']} evidence={result['evidence_count']}")
     return jsonify(result)
 
 

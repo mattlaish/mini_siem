@@ -113,4 +113,22 @@ The analyst should never have to infer whether Long was used because the system 
 
 The corrected trigger-vs-related behavior and the **Short -> Medium -> Long progressive LLM investigation workflow are implemented in the current runtime**. Short is always the first LLM stage. Medium runs only after `NO_SUSPICIOUS`/`INSUFFICIENT`; Long runs only after the same outcome at Medium. `SUSPICIOUS` stops widening. Missing decision markers are treated as insufficient so the system does not stop early by accident.
 
-Current related investigation is IP-centered and cross-source/cross-severity. Dedicated UI visualization and broader multi-entity one-hop expansion remain future product enhancements.
+Current related investigation is IP-centered and cross-source/cross-severity. Bounded server-side IP pivot expansion is implemented for progressive Medium/Long investigation. `/correlate` now also exposes a manual IP Investigate workspace with concrete time/hop sliders and visible confirmed pivot transitions. A dedicated graph visualization and broader non-IP entity expansion remain optional future product enhancements rather than current functional gaps.
+
+## Product boundary note — 2026-09-23
+
+Current positioning: **SIEM + AI-assisted investigation engine + lightweight orchestration**.
+
+The project should not inherit a full SOAR checklist by default. Existing correlation playbooks are detection/investigation content, while outbound ticket integration is already implemented. Raw/normalized logs remain the evidence authority in hot/archive storage; investigation systems reference that evidence rather than duplicate it. Storage-tier expansion beyond the existing archive lifecycle is justified by measured retention/cost/scale needs, not by feature parity alone.
+
+## Product boundary — 2026-09-23
+
+mini-SIEM is **SIEM + AI-assisted investigation engine + lightweight
+orchestration**. It is not intended to become a full case-management or SOAR
+product.
+
+Core ownership includes event evidence, normalization, correlation/playbooks,
+bounded investigation, AI triage, Alert Lifecycle and outbound handoff.
+External ticket/SOAR systems may own incident/case records, approvals and
+response automation. Keep case-management/SOAR references as revisit material;
+do not make them release blockers or duplicate event evidence internally.
