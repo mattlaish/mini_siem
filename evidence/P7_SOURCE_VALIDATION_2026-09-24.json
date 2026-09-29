@@ -1,0 +1,94 @@
+{
+  "broad_regression": {
+    "current": {
+      "failed": 37,
+      "passed": 219,
+      "skipped": 1
+    },
+    "direct_parent": {
+      "failed": 37,
+      "passed": 215,
+      "skipped": 1
+    },
+    "failed_node_set_identical": true,
+    "new_failed_node_ids": 0,
+    "resolved_failed_node_ids": 0
+  },
+  "domains": {
+    "ai_provider": {
+      "detail": "P7 source/provider-boundary gaps are closed; real OpenAI provider qualification remains deferred.",
+      "status": "NOT_RUN"
+    },
+    "alert_lifecycle_browser": {
+      "detail": "Live/browser alert lifecycle qualification remains deferred.",
+      "status": "NOT_RUN"
+    },
+    "backup_restore": {
+      "detail": "Real PostgreSQL/SQLite backup/restore qualification remains deferred.",
+      "status": "NOT_RUN"
+    },
+    "full_regression": {
+      "detail": "Broad local run retains 37 inherited failures and full provisioned regression is not complete.",
+      "status": "NOT_RUN"
+    },
+    "ingest_detection": {
+      "detail": "Real-network ingest/detection qualification remains deferred.",
+      "status": "NOT_RUN"
+    },
+    "install_upgrade_resume": {
+      "detail": "Live kill/reboot install/upgrade/resume qualification remains deferred.",
+      "status": "NOT_RUN"
+    },
+    "operations_security": {
+      "detail": "Production operations/security qualification remains deferred.",
+      "status": "NOT_RUN"
+    },
+    "performance": {
+      "detail": "Production performance qualification remains deferred.",
+      "status": "NOT_RUN"
+    },
+    "postgresql": {
+      "detail": "Representative live PostgreSQL qualification remains deferred.",
+      "status": "NOT_RUN"
+    },
+    "systemd_selinux": {
+      "detail": "Representative systemd/SELinux host qualification remains deferred.",
+      "status": "BLOCKED_ENVIRONMENT"
+    }
+  },
+  "focused_regression": {
+    "command_scope": [
+      "tests/test_ai_openai_integration.py",
+      "tests/test_openai_live_optional.py",
+      "tests/test_warning_ai_context.py",
+      "tests/test_investigation_profiles.py"
+    ],
+    "failed": 0,
+    "passed": 49,
+    "skip_detail": "Opt-in live OpenAI provider smoke remains disabled without explicit live-test opt-in and project API key.",
+    "skipped": 1
+  },
+  "format": "mini-siem-p7-source-validation-v1",
+  "packaging_release_contract_regression": {
+    "command_scope": [
+      "tests/test_build_source_artifact.py",
+      "tests/test_release_gate.py"
+    ],
+    "failed": 0,
+    "passed": 9
+  },
+  "scope": "P7 AI SOC / OpenAI source-truth audit only",
+  "source_gaps_closed": [
+    "Responses and Chat Completions refusals are extracted as provider output",
+    "completed provider responses without text or refusal fail closed instead of returning raw JSON",
+    "external AI redirects are refused before Authorization headers or SIEM evidence can be replayed"
+  ],
+  "source_gates": {
+    "javascript_syntax": "PASS",
+    "placeholder_truth": "PASS",
+    "python_compileall": "PASS",
+    "shell_syntax": "PASS",
+    "static_security_findings": 0
+  },
+  "status": "IMPLEMENTED_TESTING_DEFERRED"
+}

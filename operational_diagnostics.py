@@ -22,9 +22,22 @@ STATUS_ORDER = {"HEALTHY": 0, "WARNING": 1, "DEGRADED": 2, "FAILED": 3, "UNKNOWN
 _ALLOWED_STATUSES = set(STATUS_ORDER)
 _SECRET_KEY_RE = re.compile(r"(password|passwd|secret|token|api[_-]?key|private[_-]?key|credential)", re.I)
 _SECRET_VALUE_RE = re.compile(
-    r"(?i)(password|passwd|secret|token|api[_-]?key|authorization)\s*[:=]\s*([^\s,;]+)"
+    r"(?i)(password|passwd|secret|token|api[_-]?key)\s*[:=]\s*([^\s,;]+)"
+)
+_AUTHORIZATION_RE = re.compile(
+    r"(?i)\bAuthorization\s*[:=]\s*[^\r\n,;]+"
+)
+_URI_CREDENTIAL_RE = re.compile(
+    r"(?i)\b((?:postgres(?:ql)?|mysql|mariadb|redis|amqp|https?)://)([^/\s:@]+):([^@\s/]+)@"
+)
+_BEARER_RE = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+")
+_OPENAI_KEY_RE = re.compile(r"\bsk-[A-Za-z0-9_-]{8,}\b")
+_PRIVATE_KEY_RE = re.compile(
+    r"-----BEGIN [^-\r\n]*PRIVATE KEY-----.*?-----END [^-\r\n]*PRIVATE KEY-----",
+    re.IGNORECASE | re.DOTALL,
 )
 MAX_COMMAND_OUTPUT = 32 * 1024
+MAX_EXTRA_FILE_BYTES = 128 * 1024
 
 
 def _status(value: Any, default: str = "UNKNOWN") -> str:
@@ -164,11 +177,25 @@ def build_diagnostics(health_snapshot: dict, postgres_status: dict | None = None
         {"name": "archive", "depends_on": ["database"],
          "status": _worst_status([by_name["archive"]["status"], by_name["database"]["status"]])},
     ]
-    overall = _worst_status([c["status"] for c in components])
-    # UNKNOWN must not hide a concrete failure/degradation/warning.
-    concrete = [c["status"] for c in components if c["status"] != "UNKNOWN"]
-    if concrete:
-        overall = _worst_status(concrete)
+    statuses = {c["name"]: c["status"] for c in components}
+    # UNKNOWN must never create a false-green result for the critical runtime
+    # chain, but it also must not hide a concrete warning/degradation/failure.
+    concrete_bad = [
+        status for status in statuses.values()
+        if status in {"WARNING", "DEGRADED", "FAILED"}
+    ]
+    critical_unknown = any(
+        statuses.get(name) == "UNKNOWN"
+        for name in ("database", "listener", "ingest", "storage")
+    )
+    if concrete_bad:
+        overall = _worst_status(concrete_bad)
+    elif critical_unknown:
+        overall = "UNKNOWN"
+    elif any(status == "HEALTHY" for status in statuses.values()):
+        overall = "HEALTHY"
+    else:
+        overall = "UNKNOWN"
     return {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "overall": overall,
@@ -176,6 +203,29 @@ def build_diagnostics(health_snapshot: dict, postgres_status: dict | None = None
         "dependencies": dependencies,
         "read_only": True,
     }
+
+
+def sanitize_text(value: Any) -> str:
+    """Redact common credential forms from operator-facing text.
+
+    This is deliberately defensive because driver/network exceptions can embed
+    connection URIs or authorization values even when callers never log a
+    credential field directly.
+    """
+    text = str(value or "")
+    text = _PRIVATE_KEY_RE.sub("<redacted-private-key>", text)
+    text = _URI_CREDENTIAL_RE.sub(lambda m: f"{m.group(1)}{m.group(2)}:<redacted>@", text)
+    text = _AUTHORIZATION_RE.sub("Authorization=<redacted>", text)
+    text = _BEARER_RE.sub("Bearer <redacted>", text)
+    text = _OPENAI_KEY_RE.sub("<redacted-api-key>", text)
+    text = _SECRET_VALUE_RE.sub(lambda m: f"{m.group(1)}=<redacted>", text)
+    return text
+
+
+def safe_exception(exc: BaseException, max_length: int = 500) -> str:
+    """Return an operator-safe exception summary without raw credentials."""
+    detail = sanitize_text(exc)[:max(0, int(max_length))]
+    return f"{type(exc).__name__}: {detail}" if detail else type(exc).__name__
 
 
 def sanitize_mapping(value: Any) -> Any:
@@ -193,7 +243,7 @@ def sanitize_mapping(value: Any) -> Any:
     if isinstance(value, tuple):
         return [sanitize_mapping(x) for x in value]
     if isinstance(value, str):
-        return _SECRET_VALUE_RE.sub(lambda m: f"{m.group(1)}=<redacted>", value)
+        return sanitize_text(value)
     return value
 
 
@@ -226,7 +276,7 @@ def _run_bounded(args: list[str], timeout: float = 3.0) -> str:
         cp = subprocess.run(args, capture_output=True, text=True, timeout=timeout, check=False,
                             env={"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", "LANG": "C", "LC_ALL": "C"})
         text = (cp.stdout or "") + (("\n" + cp.stderr) if cp.stderr else "")
-        text = _SECRET_VALUE_RE.sub(lambda m: f"{m.group(1)}=<redacted>", text)
+        text = sanitize_text(text)
         if len(text) > MAX_COMMAND_OUTPUT:
             text = text[:MAX_COMMAND_OUTPUT] + "\n[truncated]\n"
         return text.strip() or f"command exited rc={cp.returncode} with no output"
@@ -267,6 +317,21 @@ def _json_bytes(value: Any) -> bytes:
     return (json.dumps(sanitize_mapping(value), indent=2, sort_keys=True, ensure_ascii=False) + "\n").encode("utf-8")
 
 
+def _sanitized_extra_json(name: str, content: str | bytes) -> bytes:
+    """Validate/sanitize the fixed JSON support-bundle extension slots."""
+    raw = content if isinstance(content, bytes) else str(content).encode("utf-8")
+    if len(raw) > MAX_EXTRA_FILE_BYTES:
+        raise ValueError(f"support bundle entry {name} exceeds {MAX_EXTRA_FILE_BYTES} bytes")
+    try:
+        parsed = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"support bundle entry {name} is not valid UTF-8 JSON") from exc
+    data = _json_bytes(parsed)
+    if len(data) > MAX_EXTRA_FILE_BYTES:
+        raise ValueError(f"sanitized support bundle entry {name} exceeds {MAX_EXTRA_FILE_BYTES} bytes")
+    return data
+
+
 def build_support_bundle(health_snapshot: dict, diagnostics: dict, postgres_status: dict,
                          archive_status: dict, cfg: dict, version_info: dict | None = None,
                          extra_files: dict[str, str | bytes] | None = None) -> tuple[bytes, dict]:
@@ -284,8 +349,7 @@ def build_support_bundle(health_snapshot: dict, diagnostics: dict, postgres_stat
     for name, content in (extra_files or {}).items():
         if name not in {"schema_status.json", "runtime_status.json", "security_boundary_status.json"}:
             continue
-        data = content if isinstance(content, bytes) else str(content).encode("utf-8")
-        entries[name] = data[:128 * 1024]
+        entries[name] = _sanitized_extra_json(name, content)
 
     manifest = {
         "created_at": datetime.now(timezone.utc).isoformat(),

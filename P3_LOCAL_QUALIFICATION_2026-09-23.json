@@ -1,0 +1,54 @@
+{
+  "backend": "sqlite",
+  "checks": [
+    {
+      "detail": "pid1=supervisord /run/systemd/system=False",
+      "name": "environment:systemd-runtime",
+      "ok": false,
+      "required": true
+    },
+    {
+      "detail": "missing",
+      "name": "account:siem-listener",
+      "ok": false,
+      "required": true
+    },
+    {
+      "detail": "missing",
+      "name": "account:siem",
+      "ok": false,
+      "required": true
+    },
+    {
+      "detail": "missing",
+      "name": "account:siem-maintenance",
+      "ok": false,
+      "required": true
+    },
+    {
+      "detail": "getenforce unavailable",
+      "name": "selinux:available",
+      "ok": true,
+      "required": false
+    },
+    {
+      "detail": "774b4ded-dae9-43e7-afbe-445971e47b63",
+      "name": "boot-id-readable",
+      "ok": true,
+      "required": true
+    }
+  ],
+  "generated_at": "2026-09-23T10:56:10.050341+00:00",
+  "host": {
+    "boot_id": "774b4ded-dae9-43e7-afbe-445971e47b63"
+  },
+  "phase": "current",
+  "project_root": "/mnt/data/mini_siem_p3_work",
+  "schema": 1,
+  "status": "BLOCKED_ENVIRONMENT",
+  "summary": {
+    "passed": 2,
+    "required_failed": 4,
+    "total": 6
+  }
+}

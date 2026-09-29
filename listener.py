@@ -90,56 +90,224 @@ SEVERITIES = [
     "warning", "notice", "informational", "debug",
 ]
 
+# Keep TCP syslog framing bounded. UDP is already bounded by the datagram
+# receive size; TCP otherwise permits a peer that never terminates a frame to
+# grow the per-connection buffer without limit. One MiB is intentionally well
+# above normal syslog/CEF event sizes while remaining a hard safety ceiling.
+MAX_SYSLOG_FRAME_BYTES = 1024 * 1024
+
+
+
+def _cef_unescape(value: str) -> str:
+    """Decode the common CEF escaping rules without interpreting arbitrary escapes."""
+    out = []
+    i = 0
+    while i < len(value):
+        ch = value[i]
+        if ch == "\\" and i + 1 < len(value):
+            nxt = value[i + 1]
+            mapped = {"n": "\n", "r": "\r", "\\": "\\", "=": "=", "|": "|"}.get(nxt)
+            if mapped is not None:
+                out.append(mapped)
+                i += 2
+                continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+def _split_cef_payload(text: str):
+    """Return the seven CEF header fields plus extension, honoring escaped pipes."""
+    pos = text.find("CEF:")
+    if pos < 0:
+        return None
+    payload = text[pos:]
+    fields = []
+    buf = []
+    escaped = False
+    for ch in payload:
+        if escaped:
+            buf.append("\\")
+            buf.append(ch)
+            escaped = False
+            continue
+        if ch == "\\":
+            escaped = True
+            continue
+        if ch == "|" and len(fields) < 7:
+            fields.append("".join(buf))
+            buf = []
+            continue
+        buf.append(ch)
+    if escaped:
+        buf.append("\\")
+    fields.append("".join(buf))
+    if len(fields) < 7 or not re.fullmatch(r"CEF:\d+", fields[0].strip()):
+        return None
+    header = [_cef_unescape(v) for v in fields[:7]]
+    extension = fields[7] if len(fields) > 7 else ""
+    return header, extension
+
+
+def _parse_cef_extension(extension: str) -> dict:
+    fields = {}
+    # CEF extension values may contain spaces; the next key=value token marks
+    # the boundary. Escaped '=' remains part of the current value.
+    token_re = re.compile(r"(?:^|\s)([A-Za-z0-9_.-]{1,64})=")
+    matches = list(token_re.finditer(extension or ""))
+    for idx, match in enumerate(matches):
+        value_start = match.end()
+        value_end = matches[idx + 1].start() if idx + 1 < len(matches) else len(extension)
+        value = extension[value_start:value_end].rstrip()
+        fields[match.group(1)] = _cef_unescape(value)
+    return fields
+
+
+def _normalize_cef_severity(value: str) -> str:
+    text = str(value or "").strip()
+    try:
+        score = int(text)
+    except ValueError:
+        lowered = text.lower()
+        if lowered in {"very-high", "very high", "critical", "fatal"}:
+            return "critical"
+        if lowered in {"high", "error"}:
+            return "error"
+        if lowered in {"medium", "moderate", "warning", "warn"}:
+            return "warning"
+        return "informational"
+    if score >= 9:
+        return "critical"
+    if score >= 7:
+        return "error"
+    if score >= 4:
+        return "warning"
+    return "informational"
+
+
+def _cef_payload_at_start(text: str):
+    """Return a CEF payload only when it starts the actual syslog message.
+
+    CEF may be sent bare, with a PRI-only prefix, or as the MSG portion of an
+    RFC3164/RFC5424 envelope.  An arbitrary ``CEF:`` substring inside normal
+    log text is *not* sufficient: quoted examples and parser-error messages
+    must not be reclassified as CEF events.
+    """
+    text = str(text or "")
+    candidate = text.lstrip("\ufeff \t")
+    if candidate.startswith("CEF:"):
+        return candidate
+
+    pri_only = re.match(r"^<(?P<pri>\d{1,3})>(?P<payload>.*)$", candidate, re.DOTALL)
+    if pri_only:
+        payload = pri_only.group("payload").lstrip("\ufeff \t")
+        if payload.startswith("CEF:"):
+            return payload
+    return None
 
 
 def _try_parse_cef_event(raw: str, source_ip: str):
-    """Parse a CEF event while preserving raw fallback behavior."""
-    if "CEF:" not in raw:
+    """Parse bare or RFC-wrapped CEF into a complete normalised event.
+
+    Malformed CEF returns ``None`` so the ordinary RFC/non-conformant fallback
+    still preserves the raw evidence instead of dropping the event.
+    """
+    envelope = {
+        "priority": None,
+        "facility": "",
+        "device_timestamp": "",
+        "hostname": "",
+        "app_name": "",
+        "proc_id": "",
+        "msg_id": "",
+    }
+    cef_text = _cef_payload_at_start(raw)
+    m = RFC5424_RE.match(raw)
+    rfc_message = None
+    if m:
+        rfc_message = _cef_payload_at_start(m.group("message"))
+    if m and rfc_message is not None:
+        pri = int(m.group("pri"))
+        facility, _sev = divmod(pri, 8)
+        envelope.update({
+            "priority": pri,
+            "facility": FACILITIES[facility] if facility < len(FACILITIES) else str(facility),
+            "device_timestamp": m.group("timestamp"),
+            "hostname": m.group("hostname"),
+            "app_name": m.group("appname"),
+            "proc_id": m.group("procid"),
+            "msg_id": m.group("msgid"),
+        })
+        cef_text = rfc_message
+    else:
+        m = RFC3164_RE.match(raw)
+        rfc_message = _cef_payload_at_start(m.group("message")) if m else None
+        if m and rfc_message is not None:
+            pri = int(m.group("pri"))
+            facility, _sev = divmod(pri, 8)
+            envelope.update({
+                "priority": pri,
+                "facility": FACILITIES[facility] if facility < len(FACILITIES) else str(facility),
+                "device_timestamp": m.group("timestamp"),
+                "hostname": m.group("hostname"),
+                "app_name": m.group("tag"),
+                "proc_id": m.group("pid") or "",
+            })
+            cef_text = rfc_message
+
+    if cef_text is None:
         return None
 
-    try:
-        prefix, extension = raw.split("|", 7)[0:7], ""
-        parts = raw.split("|", 7)
-        if len(parts) < 7 or not parts[0].endswith("CEF:0"):
-            return None
+    parsed = _split_cef_payload(cef_text)
+    if parsed is None:
+        return None
+    header, extension = parsed
+    version = header[0].split(":", 1)[1]
+    vendor, product, device_version, signature_id, event_name, cef_severity = header[1:]
+    cef_fields = _parse_cef_extension(extension)
 
-        extension = parts[7] if len(parts) > 7 else ""
-
-        event = {
-            "source_ip": source_ip,
-            "format": "cef",
-            "cef_version": parts[0].split(":", 1)[1],
-            "device_vendor": parts[1],
-            "device_product": parts[2],
-            "device_version": parts[3],
-            "signature_id": parts[4],
-            "event_name": parts[5],
-            "severity": parts[6],
-            "message": raw,
-            "raw": raw,
-        }
-
-        cef_fields = {}
-        for item in re.finditer(r'(\S+?)=(.*?)(?=\s+\S+=|$)', extension):
-            cef_fields[item.group(1)] = item.group(2)
-
-        event["_cef"] = cef_fields
-
-        event["source_ip"] = cef_fields.get("src", event["source_ip"])
-        event["destination_ip"] = cef_fields.get("dst", "")
-        event["username"] = cef_fields.get("suser", "")
-        event["action"] = cef_fields.get("act", "")
-        event["destination_port"] = cef_fields.get("dpt", "")
-
-        return event
-    except Exception:
-        return {
-            "source_ip": source_ip,
-            "format": "cef",
-            "parse_status": "failed",
-            "message": raw,
-            "raw": raw,
-        }
+    # Make CEF header semantics searchable through the same structured-field
+    # indexing path used by JSON, while preserving every vendor extension.
+    structured = dict(cef_fields)
+    structured.update({
+        "vendor": vendor,
+        "product": product,
+        "device_version": device_version,
+        "event_code": signature_id,
+        "event_type": event_name,
+        "cef_severity": cef_severity,
+    })
+    transport_source = source_ip
+    event = {
+        "received_at": datetime.now(timezone.utc).isoformat(),
+        "source_ip": str(cef_fields.get("src") or transport_source),
+        "peer_ip": transport_source,
+        "format": "cef",
+        "priority": envelope["priority"],
+        "facility": envelope["facility"],
+        "severity": _normalize_cef_severity(cef_severity),
+        "device_timestamp": envelope["device_timestamp"],
+        "hostname": str(cef_fields.get("shost") or envelope["hostname"] or ""),
+        "destination": str(cef_fields.get("dst") or cef_fields.get("dhost") or ""),
+        "app_name": envelope["app_name"] or product,
+        "proc_id": envelope["proc_id"],
+        "msg_id": envelope["msg_id"],
+        "message": cef_text,
+        "raw": raw,
+        "cef_version": version,
+        "device_vendor": vendor,
+        "device_product": product,
+        "device_version": device_version,
+        "signature_id": signature_id,
+        "event_name": event_name,
+        "cef_severity": cef_severity,
+        "destination_ip": str(cef_fields.get("dst") or ""),
+        "username": str(cef_fields.get("suser") or cef_fields.get("duser") or ""),
+        "action": str(cef_fields.get("act") or ""),
+        "destination_port": str(cef_fields.get("dpt") or ""),
+        "_cef": structured,
+    }
+    return event
 
 def _try_parse_json_event(raw: str, source_ip: str):
     """If `raw` is a bare JSON object (as sent by NXLog's to_json(), or
@@ -319,6 +487,10 @@ def parse_syslog(raw: str, source_ip: str) -> dict:
     jparsed = _try_parse_json_event(raw, source_ip)
     if jparsed is not None:
         return jparsed
+
+    cparsed = _try_parse_cef_event(raw, source_ip)
+    if cparsed is not None:
+        return cparsed
 
     m = RFC5424_RE.match(raw)
     if m:
@@ -715,12 +887,99 @@ def udp_listener(host: str, port: int, on_message):
             print(f"[udp] error: {exc}", file=sys.stderr)
 
 
+class _TCPFramingError(ValueError):
+    pass
+
+
+class _SyslogTCPFramer:
+    """Incremental RFC6587/newline syslog stream framer.
+
+    The framing mode is selected from the first frame and then remains fixed
+    for the connection.  Octet-counted frames are never emitted partially;
+    newline-framed connections may emit one final unterminated frame at EOF,
+    matching common one-message-per-connection senders.
+    """
+
+    def __init__(self, max_frame_bytes=MAX_SYSLOG_FRAME_BYTES):
+        self.max_frame_bytes = int(max_frame_bytes)
+        if self.max_frame_bytes < 1:
+            raise ValueError("max_frame_bytes must be positive")
+        self.buffer = b""
+        self.mode = None
+
+    def _select_mode(self, eof=False):
+        if self.mode is not None or not self.buffer:
+            return
+        # RFC6587 octet counting: MSG-LEN SP SYSLOG-MSG.  Wait briefly for a
+        # partial decimal prefix, but do not let an arbitrary digit-starting
+        # line stall forever once it is clearly not an octet-count prefix.
+        m = re.match(rb"^([1-9][0-9]{0,9}) ", self.buffer)
+        if m:
+            self.mode = "octet"
+            return
+        if self.buffer[:1].isdigit() and b"\n" not in self.buffer:
+            prefix = self.buffer.split(b" ", 1)[0]
+            if prefix.isdigit() and len(prefix) <= 10 and not eof:
+                return
+        self.mode = "newline"
+
+    def feed(self, chunk=b"", eof=False):
+        if chunk:
+            self.buffer += bytes(chunk)
+        frames = []
+        self._select_mode(eof=eof)
+
+        if self.mode == "octet":
+            while self.buffer:
+                m = re.match(rb"^([1-9][0-9]{0,9}) ", self.buffer)
+                if not m:
+                    # A connection that selected octet counting cannot switch
+                    # framing mid-stream without risking message-boundary
+                    # confusion.
+                    if eof or len(self.buffer) > 11:
+                        raise _TCPFramingError("invalid RFC6587 octet-count prefix")
+                    break
+                size = int(m.group(1))
+                if size > self.max_frame_bytes:
+                    raise _TCPFramingError("RFC6587 frame exceeds maximum size")
+                start = m.end()
+                end = start + size
+                if len(self.buffer) < end:
+                    if eof:
+                        raise _TCPFramingError("truncated RFC6587 octet-counted frame")
+                    break
+                frame = self.buffer[start:end]
+                self.buffer = self.buffer[end:]
+                if frame.strip():
+                    frames.append(frame)
+            return frames
+
+        if self.mode == "newline":
+            while b"\n" in self.buffer:
+                frame, self.buffer = self.buffer.split(b"\n", 1)
+                if len(frame) > self.max_frame_bytes:
+                    raise _TCPFramingError("newline-framed syslog message exceeds maximum size")
+                if frame.strip():
+                    frames.append(frame)
+            if len(self.buffer) > self.max_frame_bytes:
+                raise _TCPFramingError("unterminated syslog message exceeds maximum size")
+            if eof and self.buffer.strip():
+                frames.append(self.buffer)
+                self.buffer = b""
+            return frames
+
+        # A short, incomplete numeric prefix can remain undecided until more
+        # data arrives.  It is bounded here even before framing is selected.
+        if len(self.buffer) > self.max_frame_bytes + 11:
+            raise _TCPFramingError("undecided syslog frame exceeds maximum size")
+        if eof and self.buffer:
+            self._select_mode(eof=True)
+            return self.feed(b"", eof=True)
+        return frames
+
+
 def _handle_tcp_client(conn: socket.socket, addr, on_message):
-    # Syslog over TCP frames messages either with a trailing newline
-    # (non-transparent framing, RFC6587) or a leading octet-count
-    # (transparent framing). We handle newline framing here, which is
-    # what the overwhelming majority of devices send.
-    buf = b""
+    framer = _SyslogTCPFramer()
     with conn:
         while True:
             try:
@@ -728,12 +987,18 @@ def _handle_tcp_client(conn: socket.socket, addr, on_message):
             except Exception:
                 break
             if not chunk:
+                try:
+                    for frame in framer.feed(eof=True):
+                        on_message(frame.decode("utf-8", errors="replace"), addr[0])
+                except _TCPFramingError as exc:
+                    print(f"[tcp] framing error from {addr[0]}: {exc}", file=sys.stderr)
                 break
-            buf += chunk
-            while b"\n" in buf:
-                line, buf = buf.split(b"\n", 1)
-                if line.strip():
-                    on_message(line.decode("utf-8", errors="replace"), addr[0])
+            try:
+                for frame in framer.feed(chunk):
+                    on_message(frame.decode("utf-8", errors="replace"), addr[0])
+            except _TCPFramingError as exc:
+                print(f"[tcp] framing error from {addr[0]}: {exc}", file=sys.stderr)
+                break
 
 
 def tcp_listener(host: str, port: int, on_message):

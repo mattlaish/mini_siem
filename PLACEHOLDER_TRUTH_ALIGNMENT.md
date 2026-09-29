@@ -28,7 +28,6 @@ These six executable-shaped placeholders were replaced by Markdown contracts and
 These six tests contained only `assert True`. They were removed from pytest collection and replaced with required-coverage documents. Their former passes must not be included in test evidence:
 
 - `tests/test_admin_bootstrap_preservation.py`
-- `tests/test_cef_parser.py`
 - `tests/test_postgres_idempotent_migration.py`
 - `tests/test_postgres_migration_state.py`
 - `tests/test_postgres_schema_safety.py`
@@ -94,3 +93,7 @@ Their presence still does not promote unrun live gates to `TESTED`.
 ## Required future implementation
 
 All reclassified contracts remain work items. Real replacements require observed-state logic, fail-closed behavior where security-sensitive, non-trivial tests, and qualification evidence. In particular, CEF dedicated parser coverage, PostgreSQL migration/idempotency/schema-safety coverage, resilience qualification, measured benchmark harnesses, and controlled legacy-to-split PostgreSQL migration remain incomplete.
+
+## 2026-09-23 CEF coverage restoration
+
+`tests/test_cef_parser.py` has been restored as real executable regression coverage after the CEF runtime parser was wired into `parse_syslog()`. It is no longer a reclassified placeholder path. Coverage now includes bare and RFC-wrapped CEF, normalized src/dst/user/action/port fields, custom extensions/escaping, malformed raw fallback, empty extensions, and listener -> DB -> indexed-field -> correlation E2E.

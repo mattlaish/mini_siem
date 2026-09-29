@@ -4,15 +4,15 @@
 
 Current delivery artifact:
 
-`mini_siem_priority_hardening_alert_lifecycle_2026-09-23.zip`
+`mini_siem_sqlite_fts5_optional_capability_2026-09-23.zip`
 
 Parent complete-source artifact:
 
-`mini_siem_manual_investigate_slider_2026-09-23.zip`
+`mini_siem_priority_hardening_alert_lifecycle_2026-09-23.zip`
 
 Parent SHA-256:
 
-`70ba3097d2495b04cf17dc10dcd11c9fcbf0292d1ffb8b8a6338ba96c028049b`
+`2bb230f6697469a1c4ff8f225b651e48853a1b6e7fb46db79578c296c7ef64ba`
 
 This 2026-09-23 delivery descends from that complete-source baseline. The current
 working tree is a development baseline, not a release. No overall `TESTED` or
@@ -75,20 +75,24 @@ Deferred:
 - live role/ownership/grant verification on supported PostgreSQL versions;
 - live systemd startup using the generated credentials.
 
-### P1B — Existing PostgreSQL upgrade
+### P1B — Existing PostgreSQL upgrade and controlled legacy split-role conversion
 
-Status: `IMPLEMENTED_TESTING_DEFERRED` for **already split-role** deployments; legacy shared-role conversion remains `PLANNED`.
+Status: `IMPLEMENTED_TESTING_DEFERRED`
 
-Implemented for the split-role path:
+Implemented:
 
 - `upgrade-existing.sh` is the fail-closed operator entry point and refuses a fresh/empty target;
 - external `pg_dump` backup is mandatory before PostgreSQL mutation;
 - owner default privileges are tightened before new owner-created Event Storage objects;
 - `tools/postgres_upgrade_existing.py` performs additive owner migrations, idempotent backfill, grants-only refresh and runtime verification;
-- existing listener/dashboard/maintenance passwords and credential files are preserved; no role creation/rotation occurs during upgrade;
-- previous application tree is retained for source rollback.
+- existing split-role listener/dashboard/maintenance passwords and credential files are preserved during normal split-role upgrade;
+- previous application tree is retained for source rollback;
+- `tools/postgres_legacy_split_migration.py` implements the controlled legacy shared-owner/runtime conversion after verified pre-upgrade backup evidence exists;
+- the existing database owner is retained as the dedicated migration/schema owner rather than being forcibly renamed, while listener/dashboard/maintenance receive separate runtime roles;
+- owner default privileges are hardened before Event Storage v2 owner DDL, then the existing ledger-driven owner upgrade/backfill runs and split grants are applied;
+- candidate split credentials are verified before atomic runtime-config cutover, and the legacy owner/bootstrap password is removed from runtime configuration rather than persisted.
 
-Still `PLANNED`: controlled legacy single-owner/runtime -> `minisiem_owner` + split-role ownership migration. Live split-role PostgreSQL upgrade/rollback/reboot qualification remains deferred.
+Live legacy conversion, split-role PostgreSQL upgrade/rollback/reboot, and interrupted-migration recovery qualification remain deferred. P1B is no longer a source implementation gap.
 
 ## P2 — PostgreSQL privilege boundary qualification
 
@@ -131,34 +135,47 @@ Implemented in the current source:
 - dashboard and maintenance explicitly use `NoNewPrivileges` and an empty capability bounding set in addition to existing sandbox controls;
 - generated service units and service-account database credential resolution are verified before the installer reports success.
 
-Live distro/systemd/SELinux qualification remains deferred. The current SQLite layout still needs controlled write access beside `siem.db` for WAL/SHM; moving SQLite mutable state fully outside the source tree is a later hardening option, not part of this slice.
+P3 hardening was tightened again after source audit. The dashboard now has a dedicated `minisiem-dashboard` credential group; `minisiem` is only the shared code/read-state group, so listener/dashboard/maintenance PostgreSQL credential files no longer conflict with the installer's cross-component readability denial. PostgreSQL deployments also remove group-write from the source tree, refuse enabled archive paths inside the application tree, and do not punch the listener sandbox write path through source code. `tools/systemd_host_qualification.py` now records live unit properties, process capabilities, account state, credential isolation, sockets, `systemd-analyze verify`, SELinux evidence, and pre/post reboot boot-ID recovery.
+
+Live distro/systemd/SELinux/reboot qualification remains deferred. The current SQLite layout still needs controlled write access beside `siem.db` for WAL/SHM; moving SQLite mutable state fully outside the source tree is a later hardening option, not part of this slice.
 
 ## P4 — Installation / upgrade reliability
 
 Status: `IMPLEMENTED_TESTING_DEFERRED`
 
-The fresh-vs-existing operator boundary is now implemented but not live-qualified:
+The fresh-vs-existing operator boundary is implemented and source-audited, but live host qualification remains deferred:
 
 - no installation -> `fresh-install.sh`;
 - checkpointed interrupted **fresh** installation -> `fresh-install.sh --resume`;
 - operational installation -> `upgrade-existing.sh`;
-- `--resume` requires the same target, backend, deployment config and source fingerprint, refuses an operational install, preserves generated owner/runtime credentials, and re-runs idempotent validation without regressing a later checkpoint;
-- the entry points remain mutually exclusive and fail closed; `--resume` is not a force-install or upgrade switch;
+- `--resume` remains fresh-install-only and is never a force-install or production-upgrade switch;
+- packaged fresh-install resume now verifies the complete immutable artifact manifest, not only a short installer-file subset, in addition to target/backend/config identity and monotonic phase state;
+- PostgreSQL fresh resume preserves generated owner/runtime secrets in the root-only transient resume file and removes it only after `OPERATIONAL`;
 - `install-services.sh` remains a low-level reconciliation helper, not the operator upgrade interface.
 
-`upgrade-existing.sh` stages the new source, preserves runtime state/credentials, creates backup evidence, performs owner-only PostgreSQL upgrade where applicable, retains the prior tree for rollback, then cuts over at the stable target path. Live interrupted-fresh-install, interrupted-upgrade/reboot/rollback and legacy shared-role migration remain deferred qualification items.
+Existing upgrade now has a separate durable journal outside the application target and an explicit `upgrade-existing.sh --recover-interrupted` path. The journal is created before services are stopped and tracks staged source identity, target, backend, prior active services, evidence paths and cutover phase. Before database mutation, failure can safely restore the original runtime state. If interruption occurs during database mutation, services remain stopped and a controlled rerun is required so ledger/idempotent migration logic can converge. Once database migration has completed, recovery prefers completion of the verified new-source cutover; it does **not** silently start old code against a newer PostgreSQL schema. If forward recovery cannot validate the staged source, the verified P5 backup/restore path is required. This recovery mechanism is intentionally separate from fresh-install `--resume`.
+
+Live kill/reboot injection at each upgrade phase, real systemd service recovery, PostgreSQL/SQLite data-integrity verification across interruption, and operator recovery drills remain deferred qualification items.
 
 ## P5 — Backup / restore / PostgreSQL reliability
 
 Status: `IMPLEMENTED_TESTING_DEFERRED`
 
-Foundations exist. Live PostgreSQL backup/restore, migration-after-restore, secret exclusion, archive consistency, startup, RPO/RTO, corruption recovery, replication/failover, and reconnect/transaction integrity remain deferred.
+Implemented source includes both the pre-upgrade dump path and the dedicated `tools/postgres_backup_restore.py` workflow. PostgreSQL backup uses custom-format `pg_dump`, validates the archive with `pg_restore -l`, records SHA-256/byte-count plus server/migration metadata, refuses archive/manifest alias or overwrite, removes an archive that fails validation, and never stores owner/bootstrap passwords in its manifest. Restore strictly validates the v1 manifest before database side effects, refuses in-place overwrite, creates a new recovery database under the **current deployment** schema owner (the source owner remains evidence only), restores with owner/ACL replay disabled, verifies the exact migration ledger, accepts older supported ledgers as `migration_required` rather than falsely requiring current-only tables, rejects backups newer than the current source understands, and removes an incomplete newly-created recovery database on failed verification when cleanup is enabled.
+
+The SQLite online backup path now uses a shared verified primitive: unique non-overwriting names, mode `0600`, full `PRAGMA integrity_check`, SHA-256 result, and rotation only after verification. The Web API no longer reports `ok: true` when the copied database fails integrity verification. `db-maintenance.sh` now uses private creation defaults, unique same-second names and positive retention validation.
+
+Live PostgreSQL backup/restore, migration-after-restore on representative historical backups, service startup from a restored target, RPO/RTO, corruption recovery, SQLite/ PostgreSQL crash-interruption drills, reconnect/transaction integrity, and any replication/failover behavior remain deferred. P5 source gaps identified by the 2026-09-23 audit are closed; this does not promote P5 beyond `IMPLEMENTED_TESTING_DEFERRED`.
 
 ## P6 — Performance & capacity qualification
 
 Status: `IMPLEMENTED_TESTING_DEFERRED`
 
-Real performance runtime tests/collectors and disposable PostgreSQL validation harnesses exist, but the former ingest/query/archive benchmark `.py` files were placeholder contracts and have been reclassified as Markdown. Production claims still require measured syslog EPS, parser/DB throughput, dashboard/correlation latency, AI/archive impact, PostgreSQL connections, memory/storage growth, and sustained 24h/72h runs. Planning estimates must remain distinct from measured evidence.
+`performance_runtime_v2/qualification_runner.py` is an executable measurement harness over real parser -> batch ingest -> query -> correlation paths. It records parser/ingest EPS, batch/query/correlation latency percentiles, process RSS growth, database storage growth, and PostgreSQL connection counts where applicable; supports fixed-duration and `--sustained-hours 24` / `72` execution; and evaluates only explicitly supplied thresholds. A run without thresholds is reported as `MEASURED_NO_THRESHOLDS`, not PASS. Existing PostgreSQL `EXPLAIN (ANALYZE, BUFFERS)` validation remains complementary planner evidence.
+
+The 2026-09-24 P6 source-truth audit closed measurement-integrity gaps without expanding scope: qualification-looking database names now require a token boundary rather than an arbitrary substring; SQLite storage growth includes the WAL file; sustained batch-latency percentiles use bounded reservoir sampling while preserving exact count/min/max/mean; the runner verifies that the inserted marker rows are visible to query and correlation paths; and requested cleanup failure makes evidence `INVALID` and the CLI non-zero. Benchmark exceptions attempt best-effort cleanup before propagation.
+
+Production claims still require representative deployed-host measurements, dashboard/API and AI/archive impact where relevant, agreed acceptance thresholds, capacity curves, queue/drop and concurrency evidence where applicable, and actual 24h/72h sustained runs. Planning estimates and short local runner measurements must remain distinct from production qualification evidence.
 
 ## Phase 13 — Alert and investigation workflow
 
@@ -180,19 +197,27 @@ The current AI Analyst, `/correlate` Investigate workspace, bounded IP entity ex
 
 Status: `IMPLEMENTED_TESTING_DEFERRED`
 
-Current source includes OpenAI Responses API support with compatible Chat Completions fallback, external encrypted API-key storage with an off-database master, HTTPS fail-closed external egress, configurable outbound evidence redaction (`strict` default / `identifiers` / `none`), explicit Responses `failed`/`incomplete` handling, bounded HTTP/network retry with total timeout, provider/client request IDs, usage telemetry, metadata-only AI call audit, and opt-in live `gpt-5.6-luna` Responses qualification coverage. Mocked/provider regression passes; live provider qualification remains `NOT_RUN/DEFERRED` until `OPENAI_API_KEY` is supplied in an opted-in environment. Cost accounting, provider-specific model-capability catalog validation, and migration away from the current custom authenticated secretbox primitive remain later hardening work.
+Current source includes OpenAI Responses API support with compatible Chat Completions fallback, external encrypted API-key storage with an off-database master, HTTPS fail-closed external egress, configurable outbound evidence redaction (`strict` default / `identifiers` / `none`), explicit Responses `failed`/`incomplete` handling, refusal-aware output extraction, fail-closed completed-but-empty output handling, external-provider redirect refusal before credentials/evidence can be reused at another endpoint, bounded HTTP/network retry with total timeout, provider/client request IDs, usage telemetry, metadata-only AI call audit, and opt-in live `gpt-5.6-luna` Responses qualification coverage. Mocked/provider regression passes; live provider qualification remains `NOT_RUN/DEFERRED` until `OPENAI_API_KEY` is supplied in an opted-in environment. Cost accounting, provider-specific model-capability catalog validation, and migration away from the current custom authenticated secretbox primitive remain later hardening work.
 
 ## P8 — Ingest / parsing / detection quality
 
 Status: `IMPLEMENTED_TESTING_DEFERRED`
 
-CEF/runtime parsing exists, but the former dedicated `tests/test_cef_parser.py` was only `assert True` and has been reclassified as required coverage documentation. Full network -> listener -> parser -> normalization -> DB -> search -> alert/correlation -> UI qualification remains required. Raw input remains evidence when normalization fails.
+CEF is now wired into the actual listener parse path rather than existing only as an unused helper. Bare CEF and RFC3164/RFC5424-wrapped CEF are recognized before generic syslog parsing; escaped header/extension content, normalized CEF severity, standard source/destination/user/action/port fields and custom extension fields are preserved in the normal event schema and `_cef` structured index. Malformed CEF falls back to raw/generic evidence rather than being dropped. `tests/test_cef_parser.py` has been restored as executable regression coverage including listener -> DB -> indexed-field -> correlation behavior.
+
+The 2026-09-24 P8 source-truth audit closed three ingest correctness gaps without changing the detection architecture: CEF is accepted only when it begins the actual bare/PRI/RFC syslog payload rather than appearing as an arbitrary quoted substring; TCP newline framing now emits a final unterminated frame at EOF; and inbound TCP now supports bounded RFC6587 octet-counted framing with a 1 MiB per-frame ceiling and fail-closed handling for truncated/oversized frames. The TCP stream buffer is therefore no longer unbounded for peers that never send a delimiter.
+
+Full real-network -> listener -> parser -> normalization -> DB -> search -> alert/correlation -> UI qualification, source-device variants, sustained ingest and production parser/error-rate measurements remain required. Raw input remains evidence when normalization fails.
 
 ## P9 — Operational diagnostics
 
 Status: `IMPLEMENTED_TESTING_DEFERRED`
 
 Diagnostics remain observation-only. They must not become a migration, privilege-repair, arbitrary-shell, credential exposure, service-control, or silent archive-repair plane.
+
+The 2026-09-28 P9 source-truth audit closed three verified operational-diagnostics gaps without adding repair authority: critical runtime `UNKNOWN` state can no longer collapse into a false `HEALTHY` overall result; operator-facing diagnostic exception text now redacts credential-bearing connection URIs, Authorization/Bearer values, API-key patterns and private-key blocks; and allow-listed support-bundle extension JSON is now validated and sanitized through the same bounded path before the bundle can claim `contains_credentials=false`. Malformed/oversized extension JSON fails closed.
+
+Live systemd/PostgreSQL/archive/network incident drills, browser acceptance, support-bundle inspection under the deployed dashboard identity, and external operational monitoring integration remain deferred.
 
 ## P10 — Authentication / security review
 
@@ -232,9 +257,11 @@ Required before release: clean source gates, fully provisioned full pytest colle
 
 ## P13 — Release engineering
 
-Status: `PLANNED`
+Status: `IMPLEMENTED_TESTING_DEFERRED`
 
-Release remains blocked until P12 and artifact packaging integrity gates pass. Every implementation handoff must contain the complete modifiable source baseline. Source tests alone do not make a ZIP releasable.
+The source now contains a fail-closed final release gate (`release_engineering/release_gate.py`) and provenance generator (`release_engineering/artifact_provenance.py`) in addition to the complete-source artifact builder. The gate verifies source syntax/required files, clean-extracted artifact parity and embedded per-file manifest hashes, canonical documentation status, explicit qualification-domain evidence, provenance hashes and an explicit human release-approval record. Packaging success cannot override a non-PASS qualification domain, and missing approval cannot produce release eligibility.
+
+Release itself remains blocked until P12/live qualification domains are PASS and the final artifact packaging integrity gate succeeds. Every implementation handoff must contain the complete modifiable source baseline. P13 implementation does not make the product `RELEASED`.
 
 ## Execution order
 
@@ -270,3 +297,27 @@ Deferred live gates: real target PostgreSQL 30->33 upgrade, interrupted upgrade/
 
 - Existing PostgreSQL upgrade migration hardening: `IMPLEMENTED_TESTING_DEFERRED` — dedicated ledger-driven 26→33-compatible path implemented; live production-like PostgreSQL migration/backfill/cutover still deferred. Fresh-install behavior unchanged.
 
+
+## SQLite FTS5 optional capability hardening — 2026-09-23
+
+Status: `IMPLEMENTED_TESTING_DEFERRED`
+
+Implemented: SQLite core startup/ingest/search no longer requires FTS5. The
+`logs_fts` virtual table, its maintenance triggers and rebuild/backfill are
+gated by an actual runtime FTS5 module probe. When FTS5 is unavailable the
+dashboard uses case-insensitive escaped `LIKE` search. If a database was
+created previously with FTS5 and is later opened by a SQLite runtime without
+FTS5, initialization removes the FTS maintenance triggers so ordinary log
+writes do not depend on the unavailable module; the virtual-table metadata is
+left intact for recovery if FTS5 returns.
+
+Focused source regression: 6 PASS / 0 FAIL for FTS/no-FTS capability and
+search behavior. Priority hardening plus FTS focused regression: 31 PASS / 0
+FAIL. Canonical DB/Event Storage/PostgreSQL/installer/artifact-builder suite:
+51 PASS / 0 FAIL. Broad dependency-available comparison: 166 PASS / 37
+inherited FAIL / 1 SKIP, with 0 new failing node IDs. Flask/Werkzeug-dependent
+collection remains environment-blocked for the same three modules, including
+`tests/test_log_search_logic.py`; live execution using a genuinely FTS5-less
+SQLite build remains deferred.
+
+P3 source regression after this hardening: 35 focused tests PASS / 0 FAIL; broad direct-parent comparison improved from 187 PASS / 37 FAIL / 1 SKIP to 193 PASS / 37 FAIL / 1 SKIP, with the same 37 inherited failing node IDs and 0 new failures. Local host qualification is correctly `BLOCKED_ENVIRONMENT` on the non-systemd build container; representative deployed-host evidence remains the promotion gate.

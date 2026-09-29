@@ -358,6 +358,16 @@ but a related IP is promoted to a new pivot only after it subsequently appears
 as a source in the same investigation window. Entity count and submitted event
 count remain bounded. The LLM never receives database/query authority.
 
+## 6a. SQLite message-search capability
+
+SQLite FTS5 is treated as an optional search accelerator. At startup mini-SIEM
+probes whether the active SQLite runtime can actually create an FTS5 virtual
+table. When available, message search uses the maintained `logs_fts` index and
+`MATCH`; when unavailable, startup and ingest continue normally and dashboard
+message search uses escaped case-insensitive `LIKE`. Existing databases created
+with FTS5 also remain writable if later opened by a SQLite runtime without
+FTS5: FTS maintenance triggers are detached until capability returns.
+
 ## 6b. Message normalization (log search)
 
 Click any log row to extract fields from its message: `key=value` and
@@ -580,7 +590,7 @@ Security model (why it's built this way):
   every answer ends with a verify-before-acting reminder.
 - The LLM API key is never echoed back to the browser and is not stored plaintext in the DB. The DB stores only ciphertext; the encryption master is an owner-only file outside the DB (`/var/lib/mini-siem/ai-secret-master.key` for systemd installs). Existing plaintext `ai_api_key` rows are migrated in place on first successful read.
 - Provider usage is recorded in `ai_usage_audit` as metadata only: provider/protocol/model, request IDs, HTTP status, token counts, retry count, latency and error code. Prompt/evidence text, model output and API keys are not stored in that audit table.
-- HTTP 429/transient 5xx and transient connection/timeout failures use bounded retry/backoff with a total request-time budget; `Retry-After`/`retry-after-ms` is honored when present. Responses API `failed` and `incomplete` states fail closed rather than being accepted as analyst output.
+- HTTP 429/transient 5xx and transient connection/timeout failures use bounded retry/backoff with a total request-time budget; `Retry-After`/`retry-after-ms` is honored when present. Responses API `failed` and `incomplete` states fail closed rather than being accepted as analyst output. Explicit provider refusals are surfaced as the model response, while a completed response with neither text nor refusal is treated as an error. External-provider HTTP redirects are refused so Authorization credentials and SIEM evidence are never automatically replayed to a redirected endpoint.
 
 Config lives in the `app_config` table and is edited entirely from the
 page — no restart needed. AI calls are made by the **dashboard**
@@ -750,6 +760,8 @@ root listener merely to bind port 514. The dashboard uses `siem`, and
 PostgreSQL partition maintenance uses `siem-maintenance`. The generated units
 apply systemd sandboxing and component-specific database credential access.
 
+PostgreSQL installs also keep the application tree runtime-immutable and use separate OS groups for dashboard/listener/maintenance credential files; `minisiem` is a shared code/read-state group only. Use `tools/systemd_host_qualification.py` to capture target-host systemd/SELinux/reboot evidence.
+
 Do not copy an old `User=root` listener example into a new deployment; use the
 installer-generated units so capability and credential checks remain
 deterministic.
@@ -763,9 +775,11 @@ deterministic.
 - The rule engine's state (sliding windows) lives in memory and resets
   if the listener restarts. For durability across restarts, back the
   counters with a small persistent store.
-- TCP framing here assumes newline-delimited messages (the common
-  case). Some devices use RFC6587 octet-counted framing instead; if
-  you hit one, the TCP handler in `listener.py` is the place to add it.
+- TCP ingest accepts newline-delimited messages and RFC6587
+  octet-counted framing. One final newline-framed message is accepted at
+  connection close even without a trailing LF. Per-frame buffering is capped
+  at 1 MiB; oversized or truncated octet-counted frames are rejected rather
+  than partially ingested.
 - This is a lightweight/reference implementation, not a hardened
   Internet-facing service — run it inside your trusted network
   perimeter, not exposed directly to the internet.
@@ -811,6 +825,8 @@ Administrators now have a read-only incident workflow in the Web Console:
 
 These features are observability only; owner migrations, privilege changes, archive maintenance and service restarts remain outside the Web Console.
 
+P9 source-truth hardening (2026-09-28) additionally prevents a critical unknown runtime state from being summarized as healthy, redacts credential-bearing exception text before diagnostic exposure, and validates/sanitizes allow-listed support-bundle JSON before packaging. Live deployed incident/browser/support-bundle qualification remains deferred.
+
 
 ## Phase 12.4 Performance & Capacity Qualification
 Status: IMPLEMENTED_TESTING_DEFERRED
@@ -836,7 +852,8 @@ qualification boundaries.  IP-centered entity context and bounded multi-hop inve
 
 ## Install vs upgrade entry points
 
-Use `fresh-install.sh` for a new deployment and `upgrade-existing.sh` for an existing deployment. They are deliberately fail-closed and mutually exclusive. PostgreSQL fresh bootstrap is not an operator upgrade mechanism; the low-level `install-services.sh --bootstrap-postgres` switch is accepted only when invoked through the fresh-install entry point. Existing split-role PostgreSQL upgrades preserve listener/dashboard/maintenance credentials and use temporary owner authority only for backup, migration/backfill, and grants repair.
+Use `fresh-install.sh` for a new deployment and `upgrade-existing.sh` for an existing deployment. They are deliberately fail-closed and mutually exclusive. PostgreSQL fresh bootstrap is not an operator upgrade mechanism; the low-level `install-services.sh --bootstrap-postgres` switch is accepted only when invoked through the fresh-install entry point. Existing split-role PostgreSQL upgrades preserve listener/dashboard/maintenance credentials and use temporary owner authority only for backup, migration/backfill, and grants repair. Packaged fresh-install `--resume` now validates the complete immutable artifact manifest. Existing upgrades use a separate durable crash/reboot journal; if one is present, run the same package with `upgrade-existing.sh --recover-interrupted` rather than starting a second upgrade. After PostgreSQL schema migration, interrupted recovery completes the verified new-source cutover or fails closed to the P5 restore path; it does not silently start old code against the newer schema.
+
 
 
 ## Priority hardening and Alert Lifecycle — 2026-09-23
@@ -860,3 +877,20 @@ Scheduled weekly/monthly playbook findings enter this same alert path and are
 idempotently recovered if report creation committed before alert emission.
 Existing TicketWorker integrations remain the external case/SOAR handoff.
 mini-SIEM is **not** being expanded into a full case-management/SOAR product.
+
+
+## 2026-09-23 source-gap closure: P1B / P5 / P6 / P8 / P13
+
+The current development source implements the previously identified source gaps:
+controlled legacy PostgreSQL shared-role -> split-role conversion, a dedicated
+PostgreSQL backup/restore workflow, a real performance qualification runner, runtime
+CEF parser wiring with executable E2E regression coverage, and a fail-closed final
+release/provenance gate. These implementations remain
+`IMPLEMENTED_TESTING_DEFERRED`; real PostgreSQL/systemd/browser/provider/network and
+24h/72h production qualification gates are not implied by the local implementation
+results. Full case management, SOAR expansion, HA and a replacement detection
+framework remain outside this slice.
+
+## 2026-09-23 P5 backup / restore source-truth audit
+
+P5 remains `IMPLEMENTED_TESTING_DEFERRED`. PostgreSQL backup/restore now strictly validates immutable backup metadata and uses the current deployment owner for recovery; historical supported ledgers are restored as migration-required rather than runtime-ready. SQLite Web/cron backups now fail closed on integrity problems and use private, non-overwriting backup files. Live recovery/RPO/RTO qualification remains deferred.

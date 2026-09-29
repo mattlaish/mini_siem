@@ -131,8 +131,9 @@ class FieldIndexer:
 
     def extract(self, event: dict) -> dict:
         """Return the current ingest-time normalized field map without I/O."""
+        structured = event.get("_json") if isinstance(event.get("_json"), dict) else event.get("_cef")
         return extract_fields(event.get("message"), self._patterns,
-                              json_obj=event.get("_json"))
+                              json_obj=structured if isinstance(structured, dict) else None)
 
     def process(self, log_id: int, event: dict) -> int:
         """Extract and store fields for one event. Returns field count.

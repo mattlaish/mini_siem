@@ -90,7 +90,7 @@ Provider API keys are encrypted before persistence. `app_config` stores only `ai
 
 External AI remains an explicit data-egress choice. External mode is HTTPS-only by default and refuses insecure remote HTTP endpoints before credentials/evidence are sent. A loopback HTTP exception exists only when `MINISIEM_AI_ALLOW_INSECURE_LOOPBACK_EXTERNAL=1` is explicitly set for development. Local mode is the default.
 
-External evidence redaction is enforced at the final LLM egress boundary, not only in the UI. `strict` is the default and masks IP/hostname/identity-like values plus removes standard raw log-message/alert-description free text; `identifiers` preserves event text while masking identifiers; `none` is an explicit operator choice to send the bounded evidence unchanged. Responses API `failed` and `incomplete` states are treated as errors, not successful analyst output. Transient HTTP and network failures are retried only within bounded retry and total-time budgets.
+External evidence redaction is enforced at the final LLM egress boundary, not only in the UI. `strict` is the default and masks IP/hostname/identity-like values plus removes standard raw log-message/alert-description free text; `identifiers` preserves event text while masking identifiers; `none` is an explicit operator choice to send the bounded evidence unchanged. Responses API `failed` and `incomplete` states are treated as errors, not successful analyst output. Explicit Responses/Chat refusals are parsed as provider output; a completed response with neither text nor refusal fails closed instead of exposing raw provider JSON as analysis. External-mode redirects are refused before urllib can replay Authorization headers or the approved evidence payload to a different URL. Transient HTTP and network failures are retried only within bounded retry and total-time budgets.
 
 
 ### AI secret restore behavior
@@ -144,6 +144,8 @@ boundary is applied, remains `NOT_RUN/DEFERRED` in the current environment.
 
 `fresh-install.sh` and `upgrade-existing.sh` are intentionally mutually exclusive security boundaries. Fresh installation refuses operational state; existing upgrade refuses a fresh target and never calls fresh bootstrap. The low-level `install-services.sh --bootstrap-postgres` path requires an internal fresh-install marker.
 
+`fresh-install.sh --resume` is bound to the same interrupted fresh installation and, for packaged source, verifies the complete immutable artifact manifest. Existing-upgrade crash/reboot recovery uses a distinct root-owned journal plus `upgrade-existing.sh --recover-interrupted`; it never reuses the fresh-install resume switch. After PostgreSQL schema migration, recovery is forward-only unless the operator explicitly invokes the verified P5 database restore path, preventing an automatic old-code/new-schema pairing from being misrepresented as safe rollback.
+
 Existing split-role PostgreSQL upgrades preserve runtime-role passwords. The schema-owner credential is accepted only transiently from a protected environment variable or TTY prompt, is used for `pg_dump`, owner migration/backfill, and object-grant repair, and is not written to `db-config.json` or component credential files. Default privileges are tightened before Event Storage v2 creates owner-owned tables/partitions so older broad defaults cannot leak mutation rights to future objects.
 
 ## systemd service-identity hardening — 2026-09-23
@@ -160,3 +162,16 @@ Listener uses `NoNewPrivileges=true`, a bind-only capability bounding set,
 families. Dashboard and maintenance explicitly use `NoNewPrivileges=true` and
 an empty `CapabilityBoundingSet=` in addition to their existing sandboxing.
 Live distro/systemd/SELinux qualification is still required before release.
+
+## P5 recovery evidence boundary — 2026-09-23
+
+Database backup artifacts contain sensitive operational evidence. PostgreSQL dump and manifest files are created mode 0600 and owner/bootstrap passwords are excluded. Restore treats manifest source-owner metadata as evidence only; it cannot select the target deployment owner. SQLite Web backups are created mode 0600 with unique names and are retained only after full integrity verification; the maintenance script uses `umask 077` and explicitly protects completed copies. The external AI-secret master remains separate recovery material and is not embedded in ordinary database backups.
+
+## P8 inbound syslog framing boundary — 2026-09-24
+
+Inbound TCP syslog is treated as hostile framing input. The listener supports newline and RFC6587 octet-counted framing, fixes framing mode for the lifetime of a connection, caps each frame at 1 MiB, and rejects malformed, truncated, or oversized octet-counted frames without partially ingesting them. CEF classification also requires `CEF:` to begin the actual syslog payload rather than merely appear inside arbitrary text; the original raw event remains preserved on parser fallback.
+
+
+## P9 operational diagnostics boundary — 2026-09-28
+
+Operational diagnostics remain read-only and admin-facing. A diagnostic state must not report `HEALTHY` when a critical database/listener/ingest/storage signal is unknown unless a concrete worse state is already reported. Driver/network exception strings are treated as untrusted diagnostic input and are redacted for credential-bearing URI userinfo, Authorization/Bearer values, API-key patterns and private-key blocks before P9 exposure. Support-bundle extension files remain a fixed allow-list; each must be bounded valid UTF-8 JSON and is recursively sanitized before inclusion. No arbitrary path, shell command, service-control, migration, privilege repair, archive repair, credential file or raw service journal is added by P9.

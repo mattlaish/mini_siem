@@ -412,6 +412,115 @@ def test_responses_failed_is_not_accepted_as_success():
         srv.server_close()
 
 
+def test_responses_refusal_is_returned_as_model_output():
+    body = {
+        "id": "resp_refusal",
+        "status": "completed",
+        "output": [{
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "refusal", "refusal": "I cannot provide that analysis."}],
+        }],
+        "usage": {"input_tokens": 4, "output_tokens": 6, "total_tokens": 10},
+    }
+    srv = _server([(200, {"x-request-id": "req_refusal"}, body)])
+    usage = []
+    try:
+        client = ai_soc.LLMClient(
+            f"http://127.0.0.1:{srv.server_port}/v1",
+            "gpt-test",
+            api_style="responses",
+            usage_callback=usage.append,
+        )
+        assert client.chat([{"role": "user", "content": "hello"}]) == "I cannot provide that analysis."
+    finally:
+        srv.shutdown()
+        srv.server_close()
+    assert usage[-1]["status"] == "success"
+    assert usage[-1]["request_id"] == "req_refusal"
+
+
+def test_chat_completion_refusal_is_returned_as_model_output():
+    body = {
+        "choices": [{"message": {"role": "assistant", "content": None, "refusal": "Request refused."}}],
+        "usage": {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5},
+    }
+    srv = _server([(200, {}, body)])
+    try:
+        client = ai_soc.LLMClient(
+            f"http://127.0.0.1:{srv.server_port}/v1",
+            "local-model",
+            api_style="chat_completions",
+        )
+        assert client.chat([{"role": "user", "content": "hello"}]) == "Request refused."
+    finally:
+        srv.shutdown()
+        srv.server_close()
+
+
+def test_completed_response_without_text_or_refusal_fails_closed_and_is_audited():
+    body = {
+        "id": "resp_empty",
+        "status": "completed",
+        "output": [{"type": "message", "role": "assistant", "content": []}],
+        "usage": {"input_tokens": 5, "output_tokens": 0, "total_tokens": 5},
+    }
+    srv = _server([(200, {"x-request-id": "req_empty"}, body)])
+    usage = []
+    try:
+        client = ai_soc.LLMClient(
+            f"http://127.0.0.1:{srv.server_port}/v1",
+            "gpt-test",
+            api_style="responses",
+            usage_callback=usage.append,
+        )
+        try:
+            client.chat([{"role": "user", "content": "hello"}])
+            assert False, "expected empty-output failure"
+        except ai_soc.LLMResponseError as exc:
+            assert exc.status == "empty_output"
+    finally:
+        srv.shutdown()
+        srv.server_close()
+    assert usage[-1]["status"] == "error"
+    assert usage[-1]["error_code"] == "response_empty_output"
+    assert usage[-1]["request_id"] == "req_empty"
+
+
+def test_external_mode_refuses_redirect_before_reusing_authorization_or_evidence():
+    srv = _server([(
+        302,
+        {"Location": "http://127.0.0.1:9/redirect-target"},
+        {"redirect": True},
+    )])
+    usage = []
+    try:
+        client = ai_soc.LLMClient(
+            f"http://127.0.0.1:{srv.server_port}/v1",
+            "dev-external",
+            "sk-redirect-secret",
+            api_style="responses",
+            external_mode=True,
+            redaction_policy="strict",
+            allow_insecure_loopback_external=True,
+            max_retries=0,
+            usage_callback=usage.append,
+        )
+        try:
+            client.chat([{"role": "user", "content": "Description: sensitive evidence"}])
+            assert False, "expected external redirect rejection"
+        except Exception as exc:
+            assert getattr(exc, "code", None) == 302
+            assert "redirect" in str(exc).lower()
+    finally:
+        srv.shutdown()
+        srv.server_close()
+    assert len(_Handler.requests) == 1
+    assert usage[-1]["status"] == "error"
+    assert usage[-1]["http_status"] == 302
+    assert usage[-1]["error_code"] == "http_302"
+
+
 def test_transient_url_error_is_retried_then_succeeds(monkeypatch):
     success = {"status": "completed", "output_text": "ready"}
     srv = _server([(200, {}, success)])

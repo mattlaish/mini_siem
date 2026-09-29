@@ -827,3 +827,133 @@ node IDs: parent 137 PASS / 37 FAIL / 1 SKIP versus current 159 PASS / 37 FAIL /
 offline runner lacks Flask/Werkzeug; dependency installation was attempted but
 network/DNS access is unavailable. Live Linux/systemd/PostgreSQL execution
 remains `NOT_RUN/DEFERRED`.
+
+
+## 2026-09-23 SQLite FTS5 optional-capability hardening
+
+Status: `IMPLEMENTED_TESTING_DEFERRED`.
+
+Canonical parent: `mini_siem_priority_hardening_alert_lifecycle_2026-09-23.zip` (SHA-256 `2bb230f6697469a1c4ff8f225b651e48853a1b6e7fb46db79578c296c7ef64ba`).
+
+The startup/search defect where SQLite FTS5 was effectively mandatory is fixed
+without expanding scope. `db.py` now keeps the SQLite base schema independent
+from the FTS5 virtual table. `fts5_available()` performs a real ephemeral TEMP
+FTS5 virtual-table probe instead of depending only on compile-option metadata.
+`initialize()` creates `logs_fts` and all three maintenance triggers only when
+that probe succeeds; FTS rebuild/backfill is gated by the same capability.
+When capability is unavailable on a database that previously used FTS5,
+`logs_ai`, `logs_ad`, and `logs_au` are dropped so ingest/update/delete does not
+retain a hidden dependency on a module the current SQLite runtime cannot load.
+The virtual-table metadata itself is preserved so later FTS5-capable startup can
+recreate triggers and rebuild normally.
+
+`dashboard.py` now selects `sqlite_fts5` only when the request connection passes
+the runtime probe. `sqlite_like` emits escaped, case-insensitive `LIKE` / `NOT
+LIKE` predicates and never references `logs_fts`. Exclusion-only FTS queries
+continue to use the LIKE path because FTS5 cannot express a useful standalone
+NOT query.
+
+Regression coverage added in `tests/test_sqlite_fts_optional.py` and
+`tests/test_text_search_backend.py`: fresh initialization with FTS forced
+unavailable; no FTS table/trigger dependency; ingest after no-FTS startup;
+functional dashboard-generated LIKE search; existing FTS-created database
+reopened with capability unavailable; trigger detachment and continued ingest;
+runtime-probe behavior; normal FTS MATCH synchronization; and explicit
+`sqlite_like` query-builder coverage. The existing `test_log_search_logic.py`
+fixture already forces `fts5_available=False`, so once Flask/Werkzeug is present
+it is the end-to-end regression for the previously dead fallback path.
+
+Validation in this environment: FTS-focused 6 PASS / 0 FAIL; prior five-suite
+priority hardening plus FTS coverage 31 PASS / 0 FAIL; canonical DB/Event
+Storage/PostgreSQL/installer/artifact-builder regression 51 PASS / 0 FAIL; broad
+dependency-available suite 166 PASS / 37 inherited FAIL / 1 SKIP, with the same
+37 failing node IDs and 0 newly introduced failures. Full collection remains
+blocked at the same Flask/Werkzeug-dependent modules. Live qualification on a
+SQLite library genuinely built without FTS5 remains deferred, so overall status
+stays `IMPLEMENTED_TESTING_DEFERRED`.
+
+
+## 2026-09-23 sequential source-gap closure — P1B / P5 / P6 / P8 / P13
+
+Status: `IMPLEMENTED_TESTING_DEFERRED`
+
+Processed in the requested order without expanding the mini-SIEM product boundary.
+
+1. **P1B legacy PostgreSQL conversion:** added `tools/postgres_legacy_split_migration.py` and integrated it into `upgrade-existing.sh` after verified pre-upgrade backup evidence. The existing DB owner is retained as the migration/schema owner; split listener/dashboard/maintenance identities are provisioned and verified; owner/bootstrap secrets are not persisted.
+2. **P5 backup/restore:** added `tools/postgres_backup_restore.py` plus manifest helpers. Backup is `pg_dump -Fc` + archive validation + SHA-256 manifest. Restore is fail-closed to a new DB, disables archive owner/ACL replay, verifies required schema/migration ledger and cleans an incomplete new DB on failed verification.
+3. **P6 performance:** added `performance_runtime_v2/qualification_runner.py` over real parser/ingest/query/correlation paths with EPS, percentile latency, RSS/storage growth and PostgreSQL connection evidence. No thresholds means `MEASURED_NO_THRESHOLDS`; 24h/72h modes are supported but not claimed executed.
+4. **P8 CEF:** wired CEF into `parse_syslog()`, completed escaped header/extension handling and normalized CEF severity/event schema, indexed custom CEF fields, and restored executable listener->DB->indexed-field->correlation regression coverage.
+5. **P13 release engineering:** replaced scaffold release/provenance helpers with a fail-closed gate that verifies source/artifact/docs/qualification/provenance and requires explicit human approval only after technical qualification passes.
+
+Local implementation evidence: P1-focused 32 PASS; P5-focused 14 PASS; P8/placeholder 7 PASS; P13/artifact-builder 9 PASS; broad dependency-available comparison current **187 PASS / 37 FAIL / 1 SKIP** versus parent **166 PASS / 37 FAIL / 1 SKIP**, with the exact same 37 failing node IDs and therefore **0 new failing nodes**. P6's new focused tests pass; inherited legacy performance-contract failures remain part of the unchanged parent failure set.
+
+Deferred truth: no live legacy PostgreSQL conversion/restore drill, production PostgreSQL/systemd/SELinux/browser/provider/network qualification, agreed production performance thresholds, or 24h/72h sustained run has been completed in this slice. P12 remains not complete and the product is not `RELEASED`.
+
+
+## 2026-09-23 — P3 systemd host-hardening source audit
+
+Status: `IMPLEMENTED_TESTING_DEFERRED`.
+
+Source audit found two real least-privilege defects behind the previously deferred P3 live gate. First, PostgreSQL installs left the application root group-writable and the listener sandbox explicitly allowed source-tree writes. Second, the listener was a member of the same `minisiem` group that owned the dashboard PostgreSQL credential, contradicting the installer's own cross-component credential-denial check.
+
+Implemented corrections: dedicated `minisiem-dashboard` credential group; `minisiem` reduced to shared code/read-state use; dashboard/listener/maintenance credentials owned by their component groups; PostgreSQL source tree made non-writable to runtime identities; enabled PostgreSQL archive state rejected when it resolves inside source; external archive directory provisioned listener-write/shared-read; listener `ReadWritePaths` no longer includes source for PostgreSQL; `PYTHONDONTWRITEBYTECODE=1` in runtime units. Added the read-only `tools/systemd_host_qualification.py` runner with service/account/systemd/process-capability/credential/socket/SELinux and pre/post reboot evidence. Local non-systemd execution correctly returns `BLOCKED_ENVIRONMENT`.
+
+P3 validation after the fixes: focused P3/installer/PostgreSQL integration suite 35 PASS / 0 FAIL. Broad dependency-available comparison against the direct P1B/P5/P6/P8/P13 parent is parent 187 PASS / 37 FAIL / 1 SKIP versus current 193 PASS / 37 FAIL / 1 SKIP; the 37 failed node IDs are identical, so new failing nodes = 0. Repository-wide collection remains blocked by the same missing Flask/Werkzeug environment dependencies. Local live-host runner evidence is `P3_LOCAL_QUALIFICATION_2026-09-23.json` with `BLOCKED_ENVIRONMENT` because PID 1 is `supervisord`, not systemd.
+
+
+## 2026-09-23 — P4 install / upgrade / resume source-truth audit
+
+Status: `IMPLEMENTED_TESTING_DEFERRED`.
+
+The audit did not redesign the existing installer. Fresh-vs-upgrade separation, PostgreSQL fresh checkpoint phases, transient resume secrets, config/backend/target binding, owner/runtime credential preservation and existing-upgrade staging were already implemented. Two concrete source gaps were found and fixed.
+
+1. Fresh-install `source_fingerprint()` previously covered only seven selected files. Packaged installs now verify every immutable file recorded in `ARTIFACT_MANIFEST.json` plus the manifest bytes themselves. Development/test trees without a release manifest retain the narrow fallback only for local tooling. Runtime `db-config.json`, database files, credentials and venvs remain outside the immutable package manifest by design.
+2. Existing upgrade relied on a process-local Bash `ERR` trap. A kill/reboot around the two-directory cutover could strand the stable target, and the previous rollback message could imply full recovery even after PostgreSQL schema mutation. `tools/upgrade_cutover_state.py` plus `upgrade-existing.sh --recover-interrupted` now provide a root-owned journal outside TARGET. Recovery is phase-aware: pre-database interruptions restore prior active services; interruption during DB mutation leaves services stopped and requires a controlled rerun; after DB migration, recovery completes the verified new-source cutover. If the staged source cannot be validated, P5 restore is required rather than silently starting old code against a newer schema. Fresh `--resume` semantics are unchanged.
+
+Focused P4/installer/PostgreSQL/P3/artifact regression: **64 PASS / 0 FAIL**. Same dependency-available broad command versus the direct P3 parent: parent **191 PASS / 37 FAIL / 1 SKIP**, current **196 PASS / 37 FAIL / 1 SKIP**; all 37 failed node IDs are identical, therefore new failing nodes = **0**. The pass-count delta is the five new P4 regression tests. Live kill/reboot injection, systemd recovery, real PostgreSQL/SQLite interrupted-upgrade drills and operator acceptance remain deferred.
+
+## 2026-09-23 — P5 backup / restore source-truth audit
+
+Status: `IMPLEMENTED_TESTING_DEFERRED`.
+
+The audit retained the existing backup architecture and fixed only verified gaps. PostgreSQL restore now validates the complete v1 manifest contract before any database side effect, including backend, byte count, checksum, source identity and a contiguous supported migration ledger. The manifest's historical source owner no longer controls the recovery database owner; the current deployment owner (or explicit operator override) is authoritative. Older supported ledgers are restored as `migration_required`, while newer-than-source ledgers fail closed. Backup creation refuses archive/manifest alias or overwrite and removes a dump that fails archive validation or cannot receive its manifest.
+
+SQLite Web backup now delegates to the shared online-backup primitive, uses unique private files, verifies the copy before rotation and never returns success for a failed integrity check. The cron path now uses private creation defaults, same-second-safe names and validated positive retention. No new restore UI, HA, replication, case-management or P6 functionality was added.
+Validation: focused P5 + install-entrypoint regression **24 PASS / 0 FAIL**; P5 plus packaging/release-gate contracts **33 PASS / 0 FAIL**. Same-command broad comparison against the direct P4 parent is parent **198 PASS / 37 FAIL / 1 SKIP** versus current **208 PASS / 37 FAIL / 1 SKIP**. The exact 37 failed node IDs are unchanged, so new failures = **0**. Python compileall, shell syntax, JavaScript syntax, placeholder truth and the bounded changed-Python static security scan pass.
+
+
+
+## 2026-09-24 — P6 performance source-truth audit
+
+Status remains `IMPLEMENTED_TESTING_DEFERRED`. Scope was P6 only; no P7+ implementation was added. The existing performance runner remained the architecture and only verified measurement-integrity gaps were fixed. Qualification target safety now uses tokenized name segments instead of substring matching; SQLite storage growth includes WAL; 24h/72h batch-latency sampling is bounded to avoid harness-induced RSS growth while exact count/min/max/mean remain exact; query/correlation measurements record and require observed benchmark rows/groups; requested cleanup failure makes evidence invalid and CLI exit non-zero; and benchmark exceptions attempt best-effort cleanup before propagation. Input and threshold values now fail closed on zero/negative or non-finite values where they would make evidence ambiguous.
+
+Local P6 focused regression: **10 PASS / 0 FAIL**. Short SQLite smoke produced `MEASURED_NO_THRESHOLDS` plus `evidence.status=VALID`; 200/200 marker rows were visible before cleanup and cleanup removed 200 with 0 remaining. Same-command broad comparison against the direct P5 parent is parent **208 PASS / 37 FAIL / 1 SKIP** versus current **215 PASS / 37 FAIL / 1 SKIP**; the exact 37 failed node IDs are unchanged, so new failures = **0**. Production thresholds/capacity curves, queue/drop/concurrency behavior, dashboard/API/AI/archive impact, representative PostgreSQL host measurements and actual 24h/72h runs remain deferred.
+
+## 2026-09-24 — P7 AI SOC / OpenAI source-truth audit
+
+Status remains `IMPLEMENTED_TESTING_DEFERRED`. Scope was P7 only; no P8+ implementation was added. The existing Responses/Chat Completions architecture, encrypted external provider secret storage, redaction policy, usage audit, retry budget and opt-in live-provider harness were retained.
+
+The audit found two provider-boundary correctness gaps and fixed only those gaps. First, a Responses refusal, Chat Completions refusal, or a completed response with no usable text could fall through to serialized raw JSON and be treated as successful analyst output. Refusals are now extracted explicitly, while completed-but-empty output fails closed with `response_empty_output` usage evidence. Second, Python urllib follows common POST redirects and can carry ordinary headers into the redirected request. External AI mode now uses a no-redirect opener so the configured endpoint must answer directly; Authorization credentials and already-approved/redacted SIEM evidence are never automatically replayed to a redirect target. Local/compatible mode keeps its prior redirect behavior for compatibility.
+
+Source validation after the fixes: P7 AI/provider/progressive-investigation focused suite **49 PASS / 1 SKIP**; the skip is the intentionally opt-in live OpenAI call. Same-command broad comparison against the direct P6 parent is parent **215 PASS / 37 FAIL / 1 SKIP** versus current **219 PASS / 37 FAIL / 1 SKIP**; the exact 37 failed node IDs are unchanged, so new failures = **0**. Live OpenAI provider qualification remains `NOT_RUN/DEFERRED`; mocked/loopback tests do not promote P7 or the product to `TESTED`/`RELEASED`.
+
+
+## 2026-09-24 — P8 ingest / parsing / detection source-truth audit
+
+Status remains `IMPLEMENTED_TESTING_DEFERRED`. Scope was P8 only; no P9+ implementation was added. The existing CEF parser, structured field indexing, Event Storage path, correlation engine and detection architecture were retained.
+
+The audit found three concrete ingest correctness gaps and fixed only those gaps. First, CEF detection previously accepted any `CEF:` substring anywhere in a raw/RFC message, so a normal log quoting a CEF sample could be misclassified. CEF is now recognized only when it starts the actual bare payload, a PRI-only payload, or the RFC3164/RFC5424 MSG body. Second, newline-framed TCP ingestion discarded the final complete message when a sender closed the connection without a trailing LF; EOF now flushes that final frame. Third, TCP framing could buffer indefinitely when a peer never sent a newline and did not support RFC6587 octet counting. Inbound TCP now supports RFC6587 octet-counted framing, keeps framing mode fixed per connection, caps each frame at 1 MiB, and rejects truncated/oversized/malformed frames without partially ingesting them.
+
+P8 focused parser/framing regression after the fixes: **18 PASS / 0 FAIL**. Same-command broad comparison against the direct P7 parent is parent **219 PASS / 37 FAIL / 1 SKIP** versus current **226 PASS / 37 FAIL / 1 SKIP**; the exact 37 failed node IDs are unchanged, so new failures = **0**. Full real-network device qualification, sustained ingest/error-rate evidence and browser/UI acceptance remain deferred.
+
+
+## 2026-09-28 — P9 Operational Diagnostics source-truth audit
+
+Status remains `IMPLEMENTED_TESTING_DEFERRED`. Scope was P9 only; no P10+ implementation was added. The existing observation-only diagnostics, support-bundle, runtime heartbeat and archive/PostgreSQL status architecture were retained.
+
+Closed only three verified source gaps:
+- critical runtime unknowns (`database`, `listener`, `ingest`, `storage`) no longer permit an overall false-green `HEALTHY`; concrete WARNING/DEGRADED/FAILED state still takes precedence over unrelated UNKNOWN evidence;
+- diagnostic/operator exception text now uses a shared redaction path for credential-bearing URIs, Authorization/Bearer values, API-key-like values and private-key blocks before P9 APIs/support artifacts expose it;
+- the three fixed allow-listed support-bundle extension JSON slots are size-bounded, required to be valid UTF-8 JSON, recursively sanitized and only then added to the archive.
+
+Validation: P9 focused operational/observability suite **17 PASS / 0 FAIL**; packaging/release contracts **9 PASS / 0 FAIL**. Same-command broad comparison against the direct P8 parent is parent **226 PASS / 37 FAIL / 1 SKIP** versus current **233 PASS / 37 FAIL / 1 SKIP**. The exact 37 failed node IDs are unchanged, so new failures = **0**. Python compileall, shell/JavaScript syntax, placeholder-truth gate and bounded changed-Python security scan pass. Live production incident drills and deployed support-bundle/browser acceptance remain deferred.

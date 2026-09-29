@@ -1,0 +1,40 @@
+{
+  "format": "mini-siem-p5-source-validation-v1",
+  "status": "IMPLEMENTED_TESTING_DEFERRED",
+  "scope": "P5 backup/restore source-truth audit only",
+  "focused_regression": {
+    "passed": 24,
+    "failed": 0,
+    "command_scope": [
+      "tests/test_postgres_backup_restore.py",
+      "tests/test_backup_restore_readiness.py",
+      "tests/test_install_entrypoints.py"
+    ]
+  },
+  "broad_regression": {
+    "direct_parent": {"passed": 198, "failed": 37, "skipped": 1},
+    "current": {"passed": 208, "failed": 37, "skipped": 1},
+    "new_failed_node_ids": 0,
+    "resolved_failed_node_ids": 0,
+    "failed_node_set_identical": true
+  },
+  "source_gates": {
+    "python_compileall": "PASS",
+    "shell_syntax": "PASS",
+    "javascript_syntax": "PASS",
+    "placeholder_truth": "PASS",
+    "changed_python_static_security_findings": 0
+  },
+  "domains": {
+    "postgresql": {"status": "NOT_RUN", "detail": "Live PostgreSQL qualification remains deferred."},
+    "systemd_selinux": {"status": "BLOCKED_ENVIRONMENT", "detail": "Representative systemd/SELinux host qualification remains deferred."},
+    "install_upgrade_resume": {"status": "NOT_RUN", "detail": "Live kill/reboot install/upgrade/resume qualification remains deferred."},
+    "backup_restore": {"status": "NOT_RUN", "detail": "P5 source gaps closed; real PostgreSQL/SQLite restore drills, RPO/RTO and interruption recovery remain deferred."},
+    "performance": {"status": "NOT_RUN", "detail": "Production performance qualification remains deferred."},
+    "alert_lifecycle_browser": {"status": "NOT_RUN", "detail": "Live/browser alert lifecycle qualification remains deferred."},
+    "ai_provider": {"status": "NOT_RUN", "detail": "Live external AI provider qualification remains deferred."},
+    "ingest_detection": {"status": "NOT_RUN", "detail": "Real-network ingest/detection qualification remains deferred."},
+    "operations_security": {"status": "NOT_RUN", "detail": "Production operations/security qualification remains deferred."},
+    "full_regression": {"status": "NOT_RUN", "detail": "Broad local run retains 37 inherited failures and full provisioned regression is not complete."}
+  }
+}

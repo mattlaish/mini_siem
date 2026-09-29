@@ -1,0 +1,54 @@
+{
+  "format": "mini-siem-p9-source-validation-v1",
+  "scope": "P9 Operational Diagnostics source-truth audit only",
+  "status": "IMPLEMENTED_TESTING_DEFERRED",
+  "source_gaps_closed": [
+    "critical database/listener/ingest/storage UNKNOWN state no longer permits an overall false-green HEALTHY diagnostic result",
+    "operator-facing P9 diagnostic exception text redacts credential-bearing connection URIs, Authorization/Bearer/Basic values, API-key patterns and private-key blocks",
+    "fixed allow-listed support-bundle extension JSON is size-bounded, valid UTF-8 JSON, recursively sanitized and fails closed when malformed or oversized"
+  ],
+  "focused_regression": {
+    "command_scope": [
+      "tests/test_operational_diagnostics.py",
+      "tests/test_webconsole_observability_slice.py"
+    ],
+    "passed": 17,
+    "failed": 0,
+    "skipped": 0
+  },
+  "packaging_release_contract_regression": {
+    "command_scope": [
+      "tests/test_build_source_artifact.py",
+      "tests/test_release_gate.py"
+    ],
+    "passed": 9,
+    "failed": 0
+  },
+  "broad_regression": {
+    "direct_parent": {"passed": 226, "failed": 37, "skipped": 1},
+    "current": {"passed": 233, "failed": 37, "skipped": 1},
+    "failed_node_set_identical": true,
+    "new_failed_node_ids": 0,
+    "resolved_failed_node_ids": 0
+  },
+  "source_gates": {
+    "python_compileall": "PASS",
+    "shell_syntax": "PASS",
+    "javascript_syntax": "PASS",
+    "placeholder_truth": "PASS",
+    "changed_python_static_security_findings": 0,
+    "changed_python_static_security_files": 2
+  },
+  "domains": {
+    "postgresql": {"status": "NOT_RUN", "detail": "Representative live PostgreSQL qualification remains deferred."},
+    "systemd_selinux": {"status": "BLOCKED_ENVIRONMENT", "detail": "Representative systemd/SELinux host qualification remains deferred."},
+    "install_upgrade_resume": {"status": "NOT_RUN", "detail": "Live kill/reboot install/upgrade/resume qualification remains deferred."},
+    "backup_restore": {"status": "NOT_RUN", "detail": "Real PostgreSQL/SQLite backup/restore qualification remains deferred."},
+    "performance": {"status": "NOT_RUN", "detail": "Production performance qualification remains deferred."},
+    "alert_lifecycle_browser": {"status": "NOT_RUN", "detail": "Live/browser alert lifecycle qualification remains deferred."},
+    "ai_provider": {"status": "NOT_RUN", "detail": "Live AI provider qualification remains deferred."},
+    "ingest_detection": {"status": "NOT_RUN", "detail": "P8 source gaps are closed; real-network device/parser/detection/UI qualification remains deferred."},
+    "operations_security": {"status": "NOT_RUN", "detail": "P9 source diagnostic gaps are closed; deployed incident drills/support-bundle/browser acceptance and P10 security qualification remain deferred."},
+    "full_regression": {"status": "NOT_RUN", "detail": "Broad local run retains 37 inherited failures and full provisioned regression is not complete."}
+  }
+}

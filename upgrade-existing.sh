@@ -16,6 +16,7 @@ RESOLVED_OWNER=""
 PG_DUMP_METHOD=""
 PG_DUMP_CLIENT_VERSION=""
 PG_SERVER_VERSION=""
+RECOVER_INTERRUPTED=0
 
 set_stage() {
   CURRENT_STAGE="$1"
@@ -24,17 +25,25 @@ set_stage() {
 
 usage() {
   cat <<EOF
-Usage: sudo $0 [--target /opt/mini_siem] [--backup-root /var/backups/mini-siem]
+Usage: sudo $0 [--target /opt/mini_siem] [--backup-root /var/backups/mini-siem] [--recover-interrupted]
 
 Existing installation only. Run this script from a separately extracted NEW
 mini-SIEM source package. It refuses to run in-place from the current target.
 
-For split-role PostgreSQL upgrades the schema owner credential is temporary:
-  MINISIEM_PG_OWNER_USER=auto-discovered      # optional override for legacy owner
-  MINISIEM_PG_OWNER_PASSWORD=...               # optional; otherwise TTY prompt
+For PostgreSQL upgrades the schema owner credential is temporary:
+  MINISIEM_PG_OWNER_USER=auto-discovered      # optional owner override
+  MINISIEM_PG_OWNER_PASSWORD=...               # optional; legacy config may supply it
 
-This path NEVER calls fresh PostgreSQL bootstrap and NEVER rotates the existing
-listener/dashboard/maintenance DB passwords.
+For a one-time legacy shared-owner -> split-runtime conversion:
+  MINISIEM_PG_BOOTSTRAP_USER=postgres          # role administrator
+  MINISIEM_PG_BOOTSTRAP_PASSWORD=...           # optional; otherwise TTY prompt
+
+Existing split-role runtime passwords are preserved. Legacy shared-role upgrades
+generate dedicated listener/dashboard/maintenance credentials only after a verified
+pre-upgrade backup and never persist the bootstrap/DBA credential.
+
+--recover-interrupted is ONLY for an existing-upgrade journal created by this
+script after a process kill/reboot. It is separate from fresh-install --resume.
 EOF
 }
 
@@ -42,6 +51,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --target) TARGET="${2:?--target requires a path}"; shift 2 ;;
     --backup-root) BACKUP_ROOT="${2:?--backup-root requires a path}"; shift 2 ;;
+    --recover-interrupted) RECOVER_INTERRUPTED=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown argument: $1" >&2; usage >&2; exit 2 ;;
   esac
@@ -54,6 +64,138 @@ fi
 
 TARGET="$(readlink -m "$TARGET")"
 SOURCE_REAL="$(readlink -m "$SOURCE_DIR")"
+PARENT="$(dirname "$TARGET")"
+BASE="$(basename "$TARGET")"
+UPGRADE_STATE="$PARENT/.${BASE}.existing-upgrade-state.json"
+STATE_TOOL="$SOURCE_REAL/tools/upgrade_cutover_state.py"
+
+recover_interrupted_upgrade() {
+  if [[ ! -f "$UPGRADE_STATE" ]]; then
+    echo "No interrupted existing-upgrade journal exists at $UPGRADE_STATE." >&2
+    exit 1
+  fi
+  if [[ ! -x "$STATE_TOOL" && ! -f "$STATE_TOOL" ]]; then
+    echo "Upgrade recovery helper is missing from this source: $STATE_TOOL" >&2
+    exit 1
+  fi
+  python3 "$STATE_TOOL" validate --state "$UPGRADE_STATE" --target "$TARGET" --source "$SOURCE_REAL" >/dev/null
+  readarray -t RECOVERY < <(python3 - "$UPGRADE_STATE" <<'PYREC'
+import json, sys
+p=json.load(open(sys.argv[1], encoding='utf-8'))
+phases=["STAGED","SERVICES_STOPPED","STATE_COPIED","DATABASE_MUTATION_STARTED","DATABASE_MIGRATED","READY_FOR_CUTOVER","CUTOVER_STARTED","CUTOVER_COMPLETE","SERVICES_INSTALLED","OPERATIONAL"]
+phase=p['phase']
+idx=phases.index(phase)
+if phase == 'OPERATIONAL': plan='NONE'
+elif idx < phases.index('DATABASE_MUTATION_STARTED'): plan='RESTORE_PRE_UPGRADE'
+elif phase == 'DATABASE_MUTATION_STARTED': plan='RERUN_REQUIRED'
+else: plan='COMPLETE_FORWARD'
+print(plan)
+for key in ('backend','stage','previous','failed','evidence'):
+    print(p[key])
+for svc in p.get('services_were_active') or []:
+    print('ACTIVE:'+svc)
+PYREC
+  )
+  local plan="${RECOVERY[0]}" backend="${RECOVERY[1]}" stage="${RECOVERY[2]}" previous="${RECOVERY[3]}" failed="${RECOVERY[4]}" evidence="${RECOVERY[5]}"
+  echo "Interrupted existing-upgrade recovery plan: $plan"
+  case "$plan" in
+    NONE)
+      python3 "$STATE_TOOL" archive --state "$UPGRADE_STATE" --status operational --suffix already-operational >/dev/null
+      echo "Upgrade journal was already operational; archived stale journal."
+      return 0
+      ;;
+    RESTORE_PRE_UPGRADE)
+      if [[ ! -d "$TARGET" && -d "$previous" ]]; then
+        mv "$previous" "$TARGET"
+      fi
+      [[ -d "$TARGET" ]] || { echo "Cannot recover: original target tree is missing." >&2; exit 1; }
+      [[ -d "$stage" ]] && rm -rf "$stage"
+      if command -v systemctl >/dev/null 2>&1; then
+        for item in "${RECOVERY[@]:6}"; do
+          [[ "$item" == ACTIVE:* ]] || continue
+          systemctl start "${item#ACTIVE:}" || true
+        done
+      fi
+      python3 "$STATE_TOOL" archive --state "$UPGRADE_STATE" --status recovered_pre_upgrade --suffix recovered-pre-upgrade >/dev/null
+      echo "Pre-database interrupted upgrade recovered to the original target tree."
+      return 0
+      ;;
+    RERUN_REQUIRED)
+      # Database/role mutation may have partially committed. Never restart the
+      # old runtime and never guess at rollback. Preserve evidence, clear only
+      # the active journal, and require a controlled re-run of this same source.
+      [[ -d "$stage" ]] && rm -rf "$stage"
+      python3 "$STATE_TOOL" archive --state "$UPGRADE_STATE" --status rerun_required --suffix rerun-required >/dev/null
+      echo "Upgrade was interrupted during database mutation." >&2
+      echo "Services remain stopped. Re-run upgrade-existing.sh from this same source package so idempotent migration/ledger logic can converge before cutover." >&2
+      return 3
+      ;;
+    COMPLETE_FORWARD)
+      # Once database migration completed, completing the new-source cutover is
+      # safer than silently starting old code against a newer PostgreSQL schema.
+      if [[ -d "$TARGET" ]]; then
+        if python3 "$STATE_TOOL" validate --state "$UPGRADE_STATE" --target "$TARGET" --source "$TARGET" >/dev/null 2>&1; then
+          : # target already contains the new source
+        elif [[ -d "$stage" && ! -e "$previous" ]]; then
+          mv "$TARGET" "$previous"
+          mv "$stage" "$TARGET"
+        elif [[ -d "$stage" && -e "$previous" ]]; then
+          rm -rf "$failed"
+          mv "$TARGET" "$failed"
+          mv "$stage" "$TARGET"
+        else
+          echo "Cannot safely complete forward recovery: new staged source is unavailable." >&2
+          echo "Do not start the old runtime against a possibly newer schema; use the verified P5 backup/restore path." >&2
+          exit 1
+        fi
+      else
+        if [[ -d "$stage" ]]; then
+          mv "$stage" "$TARGET"
+        else
+          echo "Cannot safely recover: both stable target and staged new source are missing." >&2
+          echo "Use the retained previous tree plus verified P5 database backup for manual recovery." >&2
+          exit 1
+        fi
+      fi
+      python3 "$STATE_TOOL" phase --state "$UPGRADE_STATE" --phase CUTOVER_COMPLETE >/dev/null
+      export MINISIEM_INSTALL_ENTRYPOINT=upgrade
+      (cd "$TARGET" && ./install-services.sh)
+      python3 "$STATE_TOOL" phase --state "$UPGRADE_STATE" --phase SERVICES_INSTALLED >/dev/null
+      if [[ "$backend" == "postgres" ]]; then
+        local py=""
+        for candidate in "$TARGET/.venv/bin/python3" "$TARGET/.venv/bin/python" "$TARGET/venv/bin/python3" "$TARGET/venv/bin/python"; do
+          [[ -x "$candidate" ]] && { py="$candidate"; break; }
+        done
+        [[ -n "$py" ]] || { echo "No project Python after recovered cutover." >&2; exit 1; }
+        "$py" "$TARGET/tools/postgres_privilege_check.py" --db-config "$TARGET/db-config.json" > "$evidence/recovered-post-upgrade-privilege-check.txt"
+      fi
+      if command -v systemctl >/dev/null 2>&1; then
+        systemctl is-active --quiet mini-siem-listener
+        systemctl is-active --quiet mini-siem-dashboard
+      fi
+      python3 "$STATE_TOOL" phase --state "$UPGRADE_STATE" --phase OPERATIONAL >/dev/null
+      python3 "$STATE_TOOL" archive --state "$UPGRADE_STATE" --status operational --suffix recovered-forward >/dev/null
+      echo "Interrupted existing upgrade completed forward successfully."
+      return 0
+      ;;
+    *) echo "Unknown recovery plan: $plan" >&2; exit 1 ;;
+  esac
+}
+
+if [[ -f "$UPGRADE_STATE" ]]; then
+  if [[ "$RECOVER_INTERRUPTED" != 1 ]]; then
+    echo "Interrupted existing-upgrade journal detected: $UPGRADE_STATE" >&2
+    echo "Run this same source package with --recover-interrupted; do not start a second upgrade transaction." >&2
+    exit 1
+  fi
+  recover_interrupted_upgrade
+  exit $?
+fi
+if [[ "$RECOVER_INTERRUPTED" == 1 ]]; then
+  echo "No interrupted existing-upgrade journal exists for $TARGET." >&2
+  exit 1
+fi
+
 if [[ "$SOURCE_REAL" == "$TARGET" ]]; then
   echo "Refusing in-place upgrade from the operational source tree." >&2
   echo "Extract the new package elsewhere, then run its upgrade-existing.sh --target $TARGET" >&2
@@ -81,8 +223,6 @@ if [[ "$operational" != 1 ]]; then
   exit 1
 fi
 
-PARENT="$(dirname "$TARGET")"
-BASE="$(basename "$TARGET")"
 STAGE="$PARENT/.${BASE}.stage-$TIMESTAMP"
 PREVIOUS="$PARENT/${BASE}.previous-$TIMESTAMP"
 FAILED="$PARENT/${BASE}.failed-$TIMESTAMP"
@@ -127,13 +267,27 @@ if command -v systemctl >/dev/null 2>&1; then
       WERE_ACTIVE+=("$svc")
     fi
   done
+fi
+
+# Durable journal is created before the first operational side effect.  It is
+# outside TARGET so a reboot during the two-directory cutover cannot erase the
+# only recovery pointer.
+STATE_TOOL="$STAGE/tools/upgrade_cutover_state.py"
+STATE_INIT=(python3 "$STATE_TOOL" init --state "$UPGRADE_STATE" --target "$TARGET" \
+  --source "$SOURCE_REAL" --backend "$BACKEND" --stage "$STAGE" --previous "$PREVIOUS" \
+  --failed "$FAILED" --evidence "$EVIDENCE_DIR")
+for svc in "${WERE_ACTIVE[@]}"; do STATE_INIT+=(--service "$svc"); done
+"${STATE_INIT[@]}" >/dev/null
+
+if command -v systemctl >/dev/null 2>&1; then
   systemctl stop mini-siem-event-partitions.timer 2>/dev/null || true
   systemctl stop mini-siem-event-partitions.service 2>/dev/null || true
   systemctl stop mini-siem-dashboard 2>/dev/null || true
   systemctl stop mini-siem-listener 2>/dev/null || true
 fi
+python3 "$STATE_TOOL" phase --state "$UPGRADE_STATE" --phase SERVICES_STOPPED >/dev/null
 
-rollback_tree() {
+handle_upgrade_error() {
   local rc=$?
   trap - ERR
   echo "Upgrade FAILED at stage: ${CURRENT_STAGE}" >&2
@@ -153,21 +307,39 @@ with open(out, "w", encoding="utf-8") as fh:
     json.dump(payload, fh, indent=2, sort_keys=True)
 os.chmod(out, 0o600)
 PYFAIL
-  echo "Upgrade failed; restoring previous application tree..." >&2
-  if [[ -d "$PREVIOUS" ]]; then
-    if [[ -d "$TARGET" ]]; then
-      rm -rf "$FAILED"
-      mv "$TARGET" "$FAILED" || true
-    fi
-    mv "$PREVIOUS" "$TARGET" || true
+  if [[ -f "$UPGRADE_STATE" ]]; then
+    python3 "$STATE_TOOL" interrupt --state "$UPGRADE_STATE" --reason "shell_error:${CURRENT_STAGE}" >/dev/null 2>&1 || true
+    local plan
+    plan="$(python3 "$STATE_TOOL" plan --state "$UPGRADE_STATE" 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["plan"])' 2>/dev/null || echo UNKNOWN)"
+    case "$plan" in
+      RESTORE_PRE_UPGRADE)
+        python3 "$STATE_TOOL" archive --state "$UPGRADE_STATE" --status failed_pre_database_recovered --suffix failed-pre-database >/dev/null 2>&1 || true
+        [[ -d "$STAGE" ]] && rm -rf "$STAGE"
+        if command -v systemctl >/dev/null 2>&1; then
+          for svc in "${WERE_ACTIVE[@]}"; do systemctl start "$svc" 2>/dev/null || true; done
+        fi
+        echo "Failure occurred before database mutation; original target remained in place and prior active services were restarted." >&2
+        ;;
+      RERUN_REQUIRED)
+        python3 "$STATE_TOOL" archive --state "$UPGRADE_STATE" --status failed_database_mutation_rerun_required --suffix failed-database-mutation >/dev/null 2>&1 || true
+        [[ -d "$STAGE" ]] && rm -rf "$STAGE"
+        echo "Database mutation may be partially committed; services remain stopped." >&2
+        echo "Re-run this same upgrade package to converge migrations before starting runtime services." >&2
+        ;;
+      COMPLETE_FORWARD)
+        echo "Database migration/cutover had progressed far enough that old-code rollback is unsafe." >&2
+        echo "The durable journal was retained. Run: sudo $SOURCE_REAL/upgrade-existing.sh --target '$TARGET' --backup-root '$BACKUP_ROOT' --recover-interrupted" >&2
+        echo "If forward recovery cannot validate the staged source, use the verified P5 backup/restore path; do not silently start old code against a newer schema." >&2
+        ;;
+      *)
+        echo "Upgrade journal could not determine a safe automatic recovery plan; services remain stopped." >&2
+        ;;
+    esac
   fi
-  if [[ -x "$TARGET/install-services.sh" ]]; then
-    (cd "$TARGET" && ./install-services.sh) || true
-  fi
-  echo "Rollback tree restored. Database backup/evidence: $EVIDENCE_DIR" >&2
+  echo "Upgrade/backup evidence: $EVIDENCE_DIR" >&2
   exit "$rc"
 }
-trap rollback_tree ERR
+trap handle_upgrade_error ERR
 
 # Copy persistent runtime state only after services are stopped. The old target
 # remains untouched until the final directory cutover and therefore is itself
@@ -186,6 +358,7 @@ for d in archive backups .venv venv; do
     cp -a "$TARGET/$d" "$STAGE/$d"
   fi
 done
+python3 "$STATE_TOOL" phase --state "$UPGRADE_STATE" --phase STATE_COPIED >/dev/null
 
 # Preserve a small non-secret upgrade inventory outside the app tree.
 python3 - "$TARGET/db-config.json" "$EVIDENCE_DIR/pre-upgrade-state.json" <<'PY'
@@ -206,9 +379,6 @@ os.chmod(out,0o600)
 PY
 
 if [[ "$BACKEND" == "postgres" ]]; then
-  for f in db-listener-credentials.json db-dashboard-credentials.json db-maintenance-credentials.json; do
-    [[ -f "$STAGE/$f" ]] || { echo "Existing split-role credential missing: $TARGET/$f" >&2; false; }
-  done
   if ! command -v pg_dump >/dev/null 2>&1 && ! command -v docker >/dev/null 2>&1; then
     echo "PostgreSQL upgrade backup requires a compatible host pg_dump or a local Docker PostgreSQL container." >&2
     false
@@ -221,16 +391,20 @@ p=c.get('postgres') or {}; b=c.get('postgres_privilege_boundary') or {}
 print(p.get('host') or 'localhost')
 print(int(p.get('port') or 5432))
 print(p.get('dbname') or 'minisiem')
-print(os.environ.get('MINISIEM_PG_OWNER_USER') or b.get('owner_role') or '')
+print(os.environ.get('MINISIEM_PG_OWNER_USER') or b.get('owner_role') or p.get('user') or '')
 print('1' if b.get('enabled') else '0')
+print(p.get('password') or '')
 PY
 )
-  PGHOST="${PGINFO[0]}"; PGPORT="${PGINFO[1]}"; PGDB="${PGINFO[2]}"; OWNER_USER="${PGINFO[3]}"; BOUNDARY="${PGINFO[4]}"
+  PGHOST="${PGINFO[0]}"; PGPORT="${PGINFO[1]}"; PGDB="${PGINFO[2]}"; OWNER_USER="${PGINFO[3]}"; BOUNDARY="${PGINFO[4]}"; LEGACY_CONFIG_PASSWORD="${PGINFO[5]:-}"
 
-  if [[ "$BOUNDARY" != 1 ]]; then
-    echo "upgrade-existing currently supports split-role PostgreSQL deployments only." >&2
-    echo "Legacy shared owner/runtime deployments require the controlled legacy-role migration path." >&2
-    false
+  if [[ "$BOUNDARY" == 1 ]]; then
+    for f in db-listener-credentials.json db-dashboard-credentials.json db-maintenance-credentials.json; do
+      [[ -f "$STAGE/$f" ]] || { echo "Existing split-role credential missing: $TARGET/$f" >&2; false; }
+    done
+  else
+    [[ -n "$OWNER_USER" ]] || { echo "Legacy PostgreSQL config has no shared owner/runtime username." >&2; false; }
+    echo "Legacy shared PostgreSQL owner/runtime deployment detected; controlled split-role conversion will run after backup."
   fi
 
   TARGET_PYTHON=""
@@ -240,7 +414,7 @@ PY
   [[ -n "$TARGET_PYTHON" ]] || { echo "Existing installation has no usable project Python runtime." >&2; false; }
 
   set_stage "postgres-owner-discovery"
-  if [[ -z "$OWNER_USER" ]]; then
+  if [[ -z "$OWNER_USER" && "$BOUNDARY" == 1 ]]; then
     echo "Discovering existing PostgreSQL database owner using the installed dashboard runtime credential..."
     OWNER_USER="$(
       cd "$TARGET"
@@ -268,6 +442,10 @@ PY
   RESOLVED_OWNER="$OWNER_USER"
   echo "Resolved PostgreSQL migration owner: $OWNER_USER"
 
+  if [[ -z "${MINISIEM_PG_OWNER_PASSWORD:-}" && "$BOUNDARY" != 1 && -n "$LEGACY_CONFIG_PASSWORD" ]]; then
+    MINISIEM_PG_OWNER_PASSWORD="$LEGACY_CONFIG_PASSWORD"
+    export MINISIEM_PG_OWNER_PASSWORD
+  fi
   if [[ -z "${MINISIEM_PG_OWNER_PASSWORD:-}" ]]; then
     if [[ ! -t 0 ]]; then
       echo "Set MINISIEM_PG_OWNER_PASSWORD for noninteractive PostgreSQL upgrade." >&2
@@ -279,9 +457,10 @@ PY
   fi
   export MINISIEM_PG_OWNER_USER="$OWNER_USER"
 
-  PG_SERVER_VERSION="$(
-    cd "$TARGET"
-    PYTHONPATH="$TARGET" "$TARGET_PYTHON" - "$TARGET/db-config.json" "$TARGET/db-dashboard-credentials.json" <<'PY'
+  if [[ "$BOUNDARY" == 1 ]]; then
+    PG_SERVER_VERSION="$(
+      cd "$TARGET"
+      PYTHONPATH="$TARGET" "$TARGET_PYTHON" - "$TARGET/db-config.json" "$TARGET/db-dashboard-credentials.json" <<'PY'
 import sys
 import db
 cfg = db.load_config(sys.argv[1], credentials_path=sys.argv[2])
@@ -292,7 +471,25 @@ try:
 finally:
     conn.close()
 PY
-  )"
+    )"
+  else
+    PG_SERVER_VERSION="$(
+      cd "$TARGET"
+      MINISIEM_PG_OWNER_PASSWORD="$MINISIEM_PG_OWNER_PASSWORD" PYTHONPATH="$TARGET" "$TARGET_PYTHON" - "$TARGET/db-config.json" "$OWNER_USER" <<'PY'
+import os, sys
+import db
+cfg = db.load_config(sys.argv[1])
+cfg["postgres"]["user"] = sys.argv[2]
+cfg["postgres"]["password"] = os.environ["MINISIEM_PG_OWNER_PASSWORD"]
+conn = db.connect(cfg)
+try:
+    row = conn.execute("SHOW server_version").fetchone()
+    print((row["server_version"] if hasattr(row, "keys") else row[0]) or "")
+finally:
+    conn.close()
+PY
+    )"
+  fi
   SERVER_MAJOR="${PG_SERVER_VERSION%%.*}"
   [[ "$SERVER_MAJOR" =~ ^[0-9]+$ ]] || { echo "Unable to determine PostgreSQL server major version: $PG_SERVER_VERSION" >&2; false; }
   echo "PostgreSQL server version: $PG_SERVER_VERSION"
@@ -383,13 +580,38 @@ PY
     "$PYTHON_BIN" -m pip install 'psycopg2-binary>=2.9'
   fi
 
+  python3 "$STATE_TOOL" phase --state "$UPGRADE_STATE" --phase DATABASE_MUTATION_STARTED >/dev/null
+
+  if [[ "$BOUNDARY" != 1 ]]; then
+    set_stage "postgres-legacy-split-role-migration"
+    BOOTSTRAP_USER="${MINISIEM_PG_BOOTSTRAP_USER:-postgres}"
+    if [[ -z "${MINISIEM_PG_BOOTSTRAP_PASSWORD:-}" ]]; then
+      if [[ ! -t 0 ]]; then
+        echo "Set MINISIEM_PG_BOOTSTRAP_PASSWORD for noninteractive legacy split-role migration." >&2
+        false
+      fi
+      read -rsp "PostgreSQL bootstrap/role-admin password for '$BOOTSTRAP_USER': " MINISIEM_PG_BOOTSTRAP_PASSWORD
+      echo
+      export MINISIEM_PG_BOOTSTRAP_PASSWORD
+    fi
+    echo "Converting legacy shared owner/runtime access to dedicated split runtime identities..."
+    "$PYTHON_BIN" "$STAGE/tools/postgres_legacy_split_migration.py" \
+      --db-config "$STAGE/db-config.json" \
+      --bootstrap-user "$BOOTSTRAP_USER" \
+      --owner-user "$OWNER_USER" \
+      > "$EVIDENCE_DIR/postgres-legacy-split-migration-report.json"
+    chmod 600 "$EVIDENCE_DIR/postgres-legacy-split-migration-report.json"
+  fi
+
   set_stage "postgres-migration"
-  echo "Applying existing-deployment PostgreSQL upgrade without rotating runtime credentials..."
+  echo "Applying existing-deployment PostgreSQL upgrade without rotating split runtime credentials..."
   "$PYTHON_BIN" "$STAGE/tools/postgres_upgrade_existing.py" \
     --db-config "$STAGE/db-config.json" \
     --owner-user "$OWNER_USER" --qualify \
     > "$EVIDENCE_DIR/postgres-upgrade-report.json"
   chmod 600 "$EVIDENCE_DIR/postgres-upgrade-report.json"
+  python3 "$STATE_TOOL" phase --state "$UPGRADE_STATE" --phase DATABASE_MIGRATED >/dev/null
+  python3 "$STATE_TOOL" phase --state "$UPGRADE_STATE" --phase READY_FOR_CUTOVER >/dev/null
 else
   # SQLite rollback is the stopped old target itself. Keep an additional DB
   # copy outside the app tree for operator recovery.
@@ -397,6 +619,7 @@ else
     cp -a "$TARGET/siem.db" "$EVIDENCE_DIR/siem-pre-upgrade.db"
     chmod 600 "$EVIDENCE_DIR/siem-pre-upgrade.db" || true
   fi
+  python3 "$STATE_TOOL" phase --state "$UPGRADE_STATE" --phase READY_FOR_CUTOVER >/dev/null
 fi
 
 # Stable-path cutover. The old source tree remains intact as PREVIOUS.
@@ -404,13 +627,18 @@ if [[ -e "$PREVIOUS" ]]; then
   echo "Backup target already exists: $PREVIOUS" >&2
   false
 fi
+python3 "$STATE_TOOL" phase --state "$UPGRADE_STATE" --phase CUTOVER_STARTED >/dev/null
 mv "$TARGET" "$PREVIOUS"
 mv "$STAGE" "$TARGET"
+# STATE_TOOL now lives in TARGET after the staged tree became the stable tree.
+STATE_TOOL="$TARGET/tools/upgrade_cutover_state.py"
+python3 "$STATE_TOOL" phase --state "$UPGRADE_STATE" --phase CUTOVER_COMPLETE >/dev/null
 
 # Low-level deterministic unit/permission reconciliation. No fresh DB bootstrap.
 export MINISIEM_INSTALL_ENTRYPOINT=upgrade
 set_stage "service-install"
 (cd "$TARGET" && ./install-services.sh)
+python3 "$STATE_TOOL" phase --state "$UPGRADE_STATE" --phase SERVICES_INSTALLED >/dev/null
 
 if [[ "$BACKEND" == "postgres" ]]; then
   PYTHON_BIN=""
@@ -429,6 +657,8 @@ if command -v systemctl >/dev/null 2>&1; then
   systemctl is-active --quiet mini-siem-dashboard
 fi
 
+python3 "$STATE_TOOL" phase --state "$UPGRADE_STATE" --phase OPERATIONAL >/dev/null
+python3 "$STATE_TOOL" archive --state "$UPGRADE_STATE" --status operational --suffix completed >/dev/null
 trap - ERR
 unset MINISIEM_PG_OWNER_PASSWORD PGPASSWORD || true
 

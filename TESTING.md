@@ -27,11 +27,17 @@ Test cases:
 4. Malformed CEF
 5. Empty extension section
 6. Unknown CEF vendor format
+7. Embedded/quoted CEF text does not override the surrounding syslog format
+8. PRI-only CEF payload remains accepted
+9. TCP newline framing delivers the final EOF frame without a trailing LF
+10. RFC6587 octet-counted frames support fragmentation and multiple frames per connection
+11. Truncated and oversized TCP frames fail closed
 
 Expected behavior:
 
 - Parsed fields displayed when possible
 - Raw event always preserved on failure
+- TCP framing remains bounded; a peer cannot grow the receive buffer without a delimiter indefinitely
 
 ---
 
@@ -466,3 +472,148 @@ Still `NOT_RUN/DEFERRED`: live PostgreSQL bootstrap/preflight, interruption at
 each fresh-install phase and resume on a real host, generated systemd unit
 execution/SELinux labels/capabilities, browser exercise of Alert Lifecycle, and
 scheduled report -> alert -> external ticket end-to-end delivery.
+
+
+## 2026-09-23 SQLite FTS5 optional-capability validation
+
+Status: `IMPLEMENTED_TESTING_DEFERRED`.
+
+Focused FTS/search regression:
+
+```text
+tests/test_sqlite_fts_optional.py
+tests/test_ingest_performance.py::test_fts5_index_sync_and_availability_probe
+tests/test_text_search_backend.py::test_sqlite_fts_builder_retains_prefix_match_contract
+tests/test_text_search_backend.py::test_sqlite_like_fallback_has_no_fts_dependency
+
+6 PASS / 0 FAIL
+```
+
+Covered behavior: FTS5-capable initialization and MATCH synchronization; forced
+no-FTS fresh initialization; ingest with no `logs_fts` objects; functional
+dashboard-generated LIKE fallback; prior FTS-created DB reopened with FTS
+capability unavailable; FTS-trigger detachment so subsequent ingest succeeds;
+and a runtime virtual-table probe independent of compile-option-only logic.
+
+Prior priority hardening suites plus the focused FTS regression:
+
+```text
+31 PASS / 0 FAIL
+```
+
+Canonical DB / Event Storage / PostgreSQL / installer / artifact-builder
+regression repeated unchanged:
+
+```text
+51 PASS / 0 FAIL
+```
+
+Broad same-environment run excluding the same three Flask/Werkzeug-dependent
+collection-blocked modules:
+
+```text
+current: 166 PASS / 37 FAIL / 1 SKIP
+parent:  162 PASS / 37 FAIL / 1 SKIP
+new failing node IDs: 0
+```
+
+The four additional passes are the new FTS optional-capability regressions. The
+37 failing node IDs are the exact inherited set already recorded in the parent
+baseline. `tests/test_log_search_logic.py` is still collection-blocked because
+Flask/Werkzeug are not installed in this offline runner; its fixture explicitly
+forces `fts5_available=False` and therefore remains the intended route-level
+fallback regression when dependencies are available.
+
+Still `NOT_RUN/DEFERRED`: execution with a genuinely FTS5-less SQLite library,
+Flask/Werkzeug-provisioned full collection, and all previously deferred live
+PostgreSQL/systemd/SELinux/browser/external-integration gates.
+
+
+## 2026-09-23 P1B/P5/P6/P8/P13 source-gap validation
+
+Status: `IMPLEMENTED_TESTING_DEFERRED`
+
+Local evidence completed in requested implementation order:
+
+- P1/P1B focused regression: **32 PASS / 0 FAIL**.
+- P5 backup/restore focused regression: **14 PASS / 0 FAIL**.
+- P6 new qualification-runner unit coverage: PASS; a short SQLite execution produced measurement evidence only and was explicitly reported `MEASURED_NO_THRESHOLDS`, not production PASS.
+- P8 CEF + placeholder-truth group: **7 PASS / 0 FAIL**; CEF includes listener -> storage -> indexed dynamic field -> correlation coverage.
+- P13 release-gate/artifact-builder focused group: **9 PASS / 0 FAIL**.
+- Broad dependency-available comparison using the same command on parent and current: parent **166 PASS / 37 FAIL / 1 SKIP**, current **187 PASS / 37 FAIL / 1 SKIP**. Exact failed-node set is unchanged: **37 inherited / 0 new / 0 resolved**.
+
+Required-but-not-run gates remain explicit: real legacy shared-role PostgreSQL conversion; PostgreSQL backup/restore and service cutover drill; representative PostgreSQL privilege/upgrade/restart recovery; Linux systemd/SELinux capability qualification; full Flask/Werkzeug-provisioned collection/browser path; real CEF network sources; live AI provider; agreed performance thresholds/capacity curves; sustained 24h/72h load; complete P12 qualification and explicit final release approval.
+
+The final P13 gate must therefore report `BLOCKED` on current qualification evidence even when source/artifact integrity gates pass.
+
+
+## P3 systemd host-hardening qualification update — 2026-09-23
+
+New source regression covers dedicated dashboard credential grouping, PostgreSQL source-tree immutability, external archive-state enforcement, live-qualification parser/reboot evidence, and the existing least-privilege installer contract. Initial focused P3 + installer/PostgreSQL integration run: 35 PASS / 0 FAIL. The local execution environment is not a systemd host (`PID 1 = supervisord`, no `/run/systemd/system`), and `tools/systemd_host_qualification.py` therefore reports `BLOCKED_ENVIRONMENT` rather than PASS/FAIL production evidence. Representative systemd/SELinux/reboot target execution remains required before P3 can be promoted.
+
+Final P3 source regression evidence: focused P3/installer/PostgreSQL integration 35 PASS / 0 FAIL; broad dependency-available direct-parent comparison 187 PASS / 37 FAIL / 1 SKIP -> 193 PASS / 37 FAIL / 1 SKIP, with the failed-node set exactly unchanged and 0 new failures. `python -m compileall`, shell syntax, placeholder-truth gate and static security scan (0 findings) pass. `P3_LOCAL_QUALIFICATION_2026-09-23.json` is intentionally `BLOCKED_ENVIRONMENT` because the build container is not booted with systemd; it is not production P3 evidence.
+
+
+## P4 install / upgrade / resume source-truth audit — 2026-09-23
+
+Status: `IMPLEMENTED_TESTING_DEFERRED`.
+
+Local focused command covered `test_p4_install_upgrade_recovery.py`, fresh-resume, install-entrypoint, PostgreSQL installer/bootstrap/legacy-split/backup/privilege, P3 systemd and artifact-builder contracts: **64 PASS / 0 FAIL**.
+
+Dependency-available broad comparison used the same command for direct parent and current, excluding only the three known Flask/Werkzeug-uncollectable modules (`test_admin_bootstrap.py`, `test_dashboard_routes.py`, `test_log_search_logic.py`):
+
+- direct P3 parent: **191 PASS / 37 FAIL / 1 SKIP**;
+- current P4 source: **196 PASS / 37 FAIL / 1 SKIP**;
+- failed node-ID sets: **identical**; new failing nodes: **0**.
+
+The five added passes are the P4 regression tests for full-manifest fresh source identity, development fallback, journal recovery-phase policy, phase/source drift refusal, and strict separation of fresh `--resume` from existing-upgrade `--recover-interrupted`.
+
+Still required on a representative deployed host: inject process kill and reboot before database mutation, during PostgreSQL migration, immediately before/after each directory rename, during service reconciliation and before health completion; verify the external journal survives, stable target recovery is deterministic, credentials/config/data are unchanged, PostgreSQL recovery never pairs old code with a newer schema, SQLite recovery preserves DB/WAL consistency, and final service state is healthy. These live drills are qualification evidence, not implied by local contract tests.
+
+## P5 backup / restore source-truth audit — 2026-09-23
+
+Status: `IMPLEMENTED_TESTING_DEFERRED`.
+
+Focused P5 + installer contract regression after the source audit: **24 PASS / 0 FAIL**. Coverage includes strict PostgreSQL manifest validation, checksum/byte-count/ledger rejection, current-deployment owner authority, historical-ledger `migration_required` behavior, newer-schema refusal, archive/manifest immutability, SQLite verified/private/unique backup and rotation, failed-integrity refusal, maintenance retention/permission contract, plus the existing install-entrypoint backup checks.
+
+Dependency-available broad comparison used the same command on the direct P4 parent and current P5 source, excluding only the three known Flask/Werkzeug-uncollectable modules: parent **198 PASS / 37 FAIL / 1 SKIP**, current **208 PASS / 37 FAIL / 1 SKIP**. The 37 failed node IDs are identical; new failures = **0**. The ten additional passes are P5 audit regressions.
+
+Still `NOT_RUN/DEFERRED`: real PostgreSQL dump/restore and service cutover, historical-backup migration drill, crash/power-loss during backup/restore, SQLite live-write restore drill, RPO/RTO, corruption recovery, reconnect/transaction integrity, and replication/failover behavior.
+
+
+## 2026-09-24 P6 performance source-truth validation
+
+Status: `IMPLEMENTED_TESTING_DEFERRED`.
+
+- P6 focused regression: **10 PASS / 0 FAIL**.
+- Short SQLite real-run smoke: evaluation `MEASURED_NO_THRESHOLDS`; evidence `VALID`; marker visibility 200/200; query and correlation observed benchmark data; cleanup 200 removed / 0 remaining. This is not production sizing evidence.
+- Direct-parent broad comparison with the same dependency-available command: P5 **208 PASS / 37 FAIL / 1 SKIP** -> P6 **215 PASS / 37 FAIL / 1 SKIP**. Exact failed-node set unchanged; new failing nodes = **0**.
+- P6 source assertions cover target-name false positives, SQLite WAL accounting, bounded sustained latency sampling, evidence invalidation on cleanup failure, marker-path integrity, invalid run parameters/thresholds and best-effort cleanup on benchmark exceptions.
+
+Still `NOT_RUN/DEFERRED`: representative PostgreSQL/deployed-host performance, agreed production thresholds, capacity curves, queue/drop and concurrency qualification, dashboard/API/AI/archive impact, and actual 24h/72h sustained execution.
+
+## 2026-09-24 P7 AI SOC / OpenAI source-truth validation
+
+Status: `IMPLEMENTED_TESTING_DEFERRED`.
+
+Focused AI/provider/progressive-investigation regression after the P7 audit: **49 PASS / 0 FAIL / 1 SKIP**. Added coverage proves Responses refusal extraction, Chat Completions refusal extraction, completed-without-text/refusal fail-closed behavior and metadata-only error audit, and external-mode redirect refusal before Authorization/evidence can be replayed.
+
+Dependency-available broad comparison used the same command on direct P6 parent and current P7 source, excluding only the three known Flask/Werkzeug-uncollectable modules: parent **215 PASS / 37 FAIL / 1 SKIP**, current **219 PASS / 37 FAIL / 1 SKIP**. The exact 37 failed node IDs are identical; new failures = **0**. The four added passes are the P7 regression tests.
+
+Still `NOT_RUN/DEFERRED`: the opt-in real OpenAI `gpt-5.6-luna` Responses call, live provider rate/timeout/error behavior, production egress controls and organization/project billing/rate-limit observations. Mocked and loopback provider tests are implementation evidence, not live-provider qualification.
+
+
+
+## 2026-09-28 — P9 Operational Diagnostics source-truth validation
+
+Status: `IMPLEMENTED_TESTING_DEFERRED`.
+
+Source validation:
+- `tests/test_operational_diagnostics.py` + `tests/test_webconsole_observability_slice.py`: **17 PASS / 0 FAIL**;
+- `tests/test_build_source_artifact.py` + `tests/test_release_gate.py`: **9 PASS / 0 FAIL**;
+- direct P8 parent broad dependency-available command: **226 PASS / 37 FAIL / 1 SKIP**;
+- P9 current source with the identical command: **233 PASS / 37 FAIL / 1 SKIP**;
+- failed-node set: **37/37 identical**, new failures **0**, resolved inherited failures **0**;
+- compileall: PASS; shell syntax: PASS; standalone JavaScript syntax: PASS when Node is available; placeholder-truth gate: PASS; bounded changed-Python security scan: **0 findings / 2 changed Python files**.
+
+Deferred: representative deployed systemd/PostgreSQL/archive/network incident drills, browser acceptance, support-bundle extraction inspection under the actual dashboard identity, production monitoring integration and full regression closure. These source tests do not promote P9 or the product to `TESTED`/`RELEASED`.

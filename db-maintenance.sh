@@ -25,6 +25,7 @@
 # Exit codes: 0 = ok, 1 = integrity failed, 2 = backup/setup error.
 
 set -u
+umask 077
 
 # ---- config (override via environment) -----------------------------------
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -35,7 +36,9 @@ ALERT_EMAIL="${ALERT_EMAIL:-}"     # optional: email address for failures
 SIEM_SYSLOG="${SIEM_SYSLOG:-}"     # optional: host:port to send a failure syslog to (e.g. 127.0.0.1:514)
 
 stamp="$(date -u +%Y%m%d-%H%M%S)"
-dest="$BACKUP_DIR/siem-$stamp.db"
+# Include the process ID so a manual run cannot overwrite a cron backup that
+# started in the same second.
+dest="$BACKUP_DIR/siem-$stamp-$$.db"
 
 log()   { echo "[$(date -u +%H:%M:%S)] $*"; }
 alert() {
@@ -54,6 +57,7 @@ alert() {
 
 command -v sqlite3 >/dev/null 2>&1 || { alert "sqlite3 not installed"; exit 2; }
 [ -f "$DB" ] || { alert "database not found at $DB"; exit 2; }
+[[ "$KEEP" =~ ^[1-9][0-9]*$ ]] || { alert "KEEP must be a positive integer"; exit 2; }
 mkdir -p "$BACKUP_DIR" || { alert "cannot create backup dir $BACKUP_DIR"; exit 2; }
 
 # ---- 1. online backup (WAL-safe) -----------------------------------------
@@ -62,6 +66,7 @@ if ! sqlite3 "$DB" ".backup '$dest'"; then
     alert "BACKUP FAILED for $DB (source may be corrupt or locked)"
     exit 2
 fi
+chmod 600 "$dest" || { alert "cannot protect backup permissions at $dest"; exit 2; }
 size=$(stat -c%s "$dest" 2>/dev/null || echo "?")
 log "backup written (${size} bytes)"
 

@@ -93,3 +93,98 @@ def test_support_bundle_journal_is_omitted_by_design():
     text = od.journal_tail_text().lower()
     assert "intentionally omitted" in text
     assert "raw event" in text
+
+
+
+def test_critical_unknown_does_not_report_false_green():
+    d = od.build_diagnostics(
+        _health(listener="UNKNOWN", ingest="UNKNOWN", detail="listener heartbeat has not been recorded"),
+        {"backend": "sqlite", "status": "NOT_APPLICABLE"},
+        {"status": "HEALTHY"},
+    )
+    assert d["overall"] == "UNKNOWN"
+    by_name = {x["name"]: x for x in d["components"]}
+    assert by_name["listener"]["status"] == "UNKNOWN"
+    assert by_name["ingest"]["status"] == "UNKNOWN"
+
+
+def test_concrete_failure_is_not_hidden_by_other_unknown_components():
+    d = od.build_diagnostics(
+        _health(database="FAILED", listener="UNKNOWN", ingest="UNKNOWN", detail="database unavailable"),
+        {"backend": "postgres", "status": "ERROR", "error": "database unavailable"},
+        {"status": "UNKNOWN"},
+    )
+    assert d["overall"] == "FAILED"
+
+
+def test_operator_text_sanitizer_redacts_connection_and_auth_credentials():
+    pem = "-----BEGIN PRIVATE KEY-----\nvery-secret-material\n-----END PRIVATE KEY-----"
+    raw = (
+        "connect postgresql://dashboard:s3cr3t@db.internal/siem failed; "
+        "Authorization: Bearer abcDEF123456789; api_key=sk-liveSecret123456; "
+        "Authorization: Basic dXNlcjpwYXNz; " + pem
+    )
+    safe = od.sanitize_text(raw)
+    for secret in ("s3cr3t", "abcDEF123456789", "sk-liveSecret123456", "dXNlcjpwYXNz", "very-secret-material"):
+        assert secret not in safe
+    assert "postgresql://dashboard:<redacted>@db.internal/siem" in safe
+    assert "Authorization=<redacted>" in safe
+    assert "<redacted-private-key>" in safe
+
+
+def test_support_bundle_sanitizes_allowlisted_extra_json(monkeypatch):
+    monkeypatch.setattr(od, "service_status_text", lambda: "ActiveState=active\n")
+    extra = {
+        "runtime_status.json": json.dumps({
+            "detail": "postgresql://dash:pw123456@db/siem Authorization: Bearer token123456",
+            "api_key": "sk-extraSecret123456",
+        })
+    }
+    payload, manifest = od.build_support_bundle(
+        _health(), {"overall": "HEALTHY"}, {"backend": "postgres", "status": "HEALTHY"},
+        {"status": "HEALTHY"}, {"backend": "postgres"}, extra_files=extra,
+    )
+    with tarfile.open(fileobj=io.BytesIO(payload), mode="r:gz") as tf:
+        data = tf.extractfile("runtime_status.json").read().decode("utf-8")
+    for secret in ("pw123456", "token123456", "sk-extraSecret123456"):
+        assert secret not in data
+    assert "<redacted>" in data
+    assert manifest["contains_credentials"] is False
+
+
+def test_support_bundle_rejects_invalid_allowlisted_extra_json(monkeypatch):
+    monkeypatch.setattr(od, "service_status_text", lambda: "ActiveState=active\n")
+    try:
+        od.build_support_bundle(
+            _health(), {"overall": "HEALTHY"}, {}, {}, {},
+            extra_files={"runtime_status.json": "not-json password=secret"},
+        )
+    except ValueError as exc:
+        assert "not valid UTF-8 JSON" in str(exc)
+    else:
+        raise AssertionError("invalid support-bundle JSON must fail closed")
+
+
+def test_support_bundle_rejects_oversized_allowlisted_extra_json(monkeypatch):
+    monkeypatch.setattr(od, "service_status_text", lambda: "ActiveState=active\n")
+    oversized = json.dumps({"detail": "x" * od.MAX_EXTRA_FILE_BYTES})
+    try:
+        od.build_support_bundle(
+            _health(), {"overall": "HEALTHY"}, {}, {}, {},
+            extra_files={"runtime_status.json": oversized},
+        )
+    except ValueError as exc:
+        assert "exceeds" in str(exc)
+    else:
+        raise AssertionError("oversized support-bundle JSON must fail closed")
+
+
+def test_p9_diagnostic_routes_use_operator_safe_exception_text():
+    source = (ROOT / "web_blueprints" / "db_health.py").read_text()
+    for line in source.splitlines():
+        if "postgres =" in line and '"status": "ERROR"' in line:
+            assert "safe_exception(exc)" in line
+        if "archive =" in line and '"status": "ERROR"' in line:
+            assert "safe_exception(exc)" in line
+    diagnostic_section = source[source.index('@bp.get("/api/diagnostics/status")'):]
+    assert '"error": diagnostics_mod.safe_exception(exc)' in diagnostic_section

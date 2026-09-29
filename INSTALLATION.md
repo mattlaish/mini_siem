@@ -61,7 +61,7 @@ python3 -m venv .venv
 
 Recommended value is `auto`:
 
-- SQLite: FTS5 when available, otherwise `LIKE`.
+- SQLite: FTS5 when the current SQLite runtime can actually create an FTS5 virtual table; otherwise escaped case-insensitive `LIKE`. FTS5 is optional acceleration, not a startup requirement.
 - PostgreSQL: indexed native FTS first; indexed `pg_trgm` second; `ILIKE` fallback last.
 
 Other accepted values are `fts`, `trigram`, and `like`. You can also use the
@@ -73,6 +73,8 @@ the FTS index, `trigram` creates only the trigram path, and `like` skips search
 index DDL. If the database account cannot create extensions, mini-SIEM continues
 running; the dashboard shows the effective fallback. A database owner can enable `pg_trgm` separately
 if substring acceleration is wanted.
+
+For SQLite, mini-SIEM probes the runtime module directly. When the probe fails, it does not create `logs_fts`, its maintenance triggers, or run FTS rebuild SQL. If an older database already contains FTS metadata but is opened by a runtime without FTS5, initialization detaches the FTS maintenance triggers so normal ingestion remains functional and search uses `LIKE`.
 
 `python3 configure-db.py` prompts for this setting and writes it into
 `db-config.json`.
@@ -121,9 +123,9 @@ The Phase 4 main ingest path also has a dedicated database writer:
 ```
 
 The installer does not need a new OS account or service for the DB writer; it is a
-thread inside the existing listener process. `siem` remains the non-login Dashboard
-service account and the listener remains `root:minisiem` when privileged syslog port
-514 is used. `install-services.sh` is now a low-level service-definition helper. Operators
+thread inside the existing listener process. `siem` remains the non-login Dashboard service account. The listener runs as the
+dedicated non-login `siem-listener` identity and receives only
+`CAP_NET_BIND_SERVICE` for privileged syslog port 514. `install-services.sh` is now a low-level service-definition helper. Operators
 use two explicit fail-closed entry points instead:
 
 - `fresh-install.sh` — new installations only; it refuses existing runtime state.
@@ -264,7 +266,7 @@ ps -eo user,group,pid,cmd | grep -E '[l]istener.py|[d]ashboard.py'
 Expected process ownership:
 
 ```text
-listener.py   root:minisiem
+listener.py   siem-listener:minisiem
 dashboard.py  siem:minisiem
 ```
 
@@ -281,6 +283,10 @@ If the dashboard fails with SQLite read-only/WAL errors, do not solve it by maki
 
 On SELinux-enforcing CentOS/RHEL systems, a project copied from a home directory can retain an inappropriate `user_home_t` label. The installer attempts a safe `restorecon` repair for `/opt`; SELinux should not be disabled as a workaround.
 
+For PostgreSQL deployments, runtime identities must not be able to write the application source tree. The installer uses component-specific groups (`minisiem-dashboard`, `minisiem-listener`, `minisiem-maintenance`) for credential files and reserves `minisiem` as a shared code/read-state group. If archive is enabled with PostgreSQL, configure an absolute archive directory outside the source tree (recommended `/var/lib/mini-siem/archive`).
+
+After installation or upgrade, run the read-only P3 host qualification described in `P3_SYSTEMD_QUALIFICATION.md`.
+
 ## 6. Existing-installation upgrade
 
 Use the dedicated upgrade entry point from a **separately extracted new source tree**:
@@ -292,7 +298,9 @@ sudo -E ./upgrade-existing.sh --target /opt/mini_siem
 The script refuses to run in place and refuses a target without operational
 mini-SIEM state. It stages the new complete source, stops services, preserves
 configuration/runtime credential files and local state, retains the previous
-application tree for rollback, then performs the stable-path cutover.
+application tree as recovery evidence, then performs the stable-path cutover.
+A durable root-only upgrade journal is stored outside the target tree before
+services are stopped so process kill/reboot cannot erase the recovery pointer.
 
 For an existing split-role PostgreSQL deployment it additionally:
 
@@ -304,13 +312,44 @@ For an existing split-role PostgreSQL deployment it additionally:
 6. never creates runtime roles and never rotates listener/dashboard/maintenance DB passwords;
 7. verifies the existing component credentials and post-cutover privilege boundary.
 
-The PostgreSQL upgrade path currently supports deployments that already use the
-split owner/runtime boundary. Legacy shared owner/runtime installations still
-require the controlled legacy-role/ownership migration and are not silently
-adopted by this script.
+The PostgreSQL upgrade path supports both already split-role deployments and a
+controlled legacy shared-owner/runtime conversion. For the legacy path it first
+requires verified pre-upgrade dump evidence, then invokes
+`tools/postgres_legacy_split_migration.py`. The existing database owner is kept
+as the dedicated migration/schema identity while listener/dashboard/maintenance
+receive separate runtime roles; its password is removed from runtime config.
+The temporary bootstrap/role-admin password is never persisted.
 
 This workflow is implemented but remains `IMPLEMENTED_TESTING_DEFERRED` until
 the live PostgreSQL/systemd/reboot/rollback gates documented in `TESTING.md` run.
+
+### Interrupted existing-upgrade recovery
+
+Existing-upgrade recovery is deliberately separate from fresh-install `--resume`.
+If an upgrade journal exists, a normal second upgrade is refused. Run the same
+source package with:
+
+```bash
+sudo -E ./upgrade-existing.sh --target /opt/mini_siem --recover-interrupted
+```
+
+Recovery is phase-aware:
+
+- before database mutation, the staged tree may be discarded and the original
+  previously-active services restarted;
+- if interruption happened while database/role mutation was in progress, old
+  services are **not** restarted automatically. The active journal is archived,
+  services stay stopped, and the same controlled upgrade must be rerun so
+  migration-ledger/idempotent logic can converge;
+- after database migration is complete, recovery completes the verified new-source
+  cutover rather than pairing old code with a newer PostgreSQL schema;
+- if the new staged source cannot be validated, use the verified P5 PostgreSQL
+  backup/restore workflow. Application-tree rollback alone is not represented as
+  a full PostgreSQL schema rollback.
+
+For packaged fresh installs, `fresh-install.sh --resume` validates the full
+`ARTIFACT_MANIFEST.json` file set plus target/backend/config identity. Runtime
+files and credentials are intentionally outside that immutable source manifest.
 
 ## 7. Uninstall behavior
 
@@ -347,8 +386,11 @@ MINISIEM_PG_BOOTSTRAP_USER=<customer-admin> \
   --bootstrap-user <customer-admin>
 ```
 
-The inspection is non-mutating. Controlled legacy ownership/privilege migration
-remains P1B work and must include backup evidence before mutation.
+The inspection is non-mutating. Controlled legacy conversion is implemented in
+`upgrade-existing.sh` and `tools/postgres_legacy_split_migration.py`, and it is
+allowed to mutate only after the upgrader has created and verified external
+pre-upgrade PostgreSQL backup evidence. Live target qualification remains
+`IMPLEMENTED_TESTING_DEFERRED`.
 
 The provisioning tool creates separate PostgreSQL identities for listener, dashboard, and maintenance and writes:
 
@@ -476,3 +518,26 @@ services are operational, use `upgrade-existing.sh`.
 The temporary customer PostgreSQL bootstrap password is never written to the
 checkpoint or runtime config; it must be supplied again when a resumed phase
 needs administrator access.
+
+
+## Dedicated PostgreSQL backup / recovery workflow — 2026-09-23
+
+`tools/postgres_backup_restore.py` provides the controlled PostgreSQL backup and
+recovery path independent of an application upgrade. `backup` creates a
+custom-format archive, validates it with `pg_restore -l`, writes a SHA-256
+manifest with server/migration metadata, and excludes passwords. `restore`
+requires that manifest, validates its checksum/byte-count/source/ledger metadata
+before database side effects, refuses to overwrite an existing database, creates a
+new recovery database owned by the **current deployment** schema owner, and restores
+without replaying archive ownership/ACLs. The source owner recorded in the manifest
+is evidence only and cannot select the target owner. Current-schema backups must
+contain all runtime-required tables; an older supported ledger is restored as
+`migration_required` for a controlled owner migration rather than being mislabeled
+as runtime-ready. Backups from a schema newer than this source understands are
+rejected. If verification fails, the newly created recovery database can be dropped
+to avoid leaving a partially restored target.
+
+Owner/bootstrap credentials are operator-supplied through protected environment or
+TTY paths only and are not written to the backup manifest. Production recovery
+runbooks must still qualify service cutover, RPO/RTO and representative historical
+backups on real PostgreSQL hosts before release.

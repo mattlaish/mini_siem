@@ -517,29 +517,48 @@ def _schema_statements(backend: str):
         # The historical logs/log_fields tables remain the raw evidence plane.
         from event_storage_v2 import postgres_schema_statements
         stmts.extend(postgres_schema_statements())
-    else:
-        # FTS5 full-text index over message text for fast search (replaces
-        # slow leading-wildcard LIKE scans). sqlite-only; Postgres would use
-        # tsvector/GIN instead. 'content' is unindexed external-content style:
-        # we store message text keyed by the log id (rowid) so MATCH is fast
-        # and we can join back to logs.
-        stmts.append(
-            "CREATE VIRTUAL TABLE IF NOT EXISTS logs_fts USING fts5("
-            "message, content='logs', content_rowid='id', tokenize='unicode61')")
-        # keep the FTS index in sync with the logs table
-        stmts.append(
-            "CREATE TRIGGER IF NOT EXISTS logs_ai AFTER INSERT ON logs BEGIN "
-            "INSERT INTO logs_fts(rowid, message) VALUES (new.id, new.message); END")
-        stmts.append(
-            "CREATE TRIGGER IF NOT EXISTS logs_ad AFTER DELETE ON logs BEGIN "
-            "INSERT INTO logs_fts(logs_fts, rowid, message) "
-            "VALUES('delete', old.id, old.message); END")
-        stmts.append(
-            "CREATE TRIGGER IF NOT EXISTS logs_au AFTER UPDATE ON logs BEGIN "
-            "INSERT INTO logs_fts(logs_fts, rowid, message) "
-            "VALUES('delete', old.id, old.message); "
-            "INSERT INTO logs_fts(rowid, message) VALUES (new.id, new.message); END")
     return stmts
+
+
+def _sqlite_fts5_schema_statements():
+    """SQLite FTS5 objects, kept separate because FTS5 is optional.
+
+    The base SQLite schema must remain usable on runtimes that do not provide
+    the FTS5 virtual-table module.  Callers must gate this group with the
+    runtime capability probe so the table and all dependent triggers are
+    created (or skipped) together.
+    """
+    return [
+        "CREATE VIRTUAL TABLE IF NOT EXISTS logs_fts USING fts5("
+        "message, content='logs', content_rowid='id', tokenize='unicode61')",
+        "CREATE TRIGGER IF NOT EXISTS logs_ai AFTER INSERT ON logs BEGIN "
+        "INSERT INTO logs_fts(rowid, message) VALUES (new.id, new.message); END",
+        "CREATE TRIGGER IF NOT EXISTS logs_ad AFTER DELETE ON logs BEGIN "
+        "INSERT INTO logs_fts(logs_fts, rowid, message) "
+        "VALUES('delete', old.id, old.message); END",
+        "CREATE TRIGGER IF NOT EXISTS logs_au AFTER UPDATE ON logs BEGIN "
+        "INSERT INTO logs_fts(logs_fts, rowid, message) "
+        "VALUES('delete', old.id, old.message); "
+        "INSERT INTO logs_fts(rowid, message) VALUES (new.id, new.message); END",
+    ]
+
+
+def _disable_sqlite_fts5_triggers(conn):
+    """Detach FTS-maintenance triggers when FTS5 is unavailable.
+
+    This matters for a database created previously by an FTS5-capable SQLite
+    binary and later opened by one without FTS5: leaving the triggers in place
+    would make ordinary log INSERT/UPDATE/DELETE operations depend on a virtual
+    table module that the current runtime cannot load.  The virtual table is
+    left intact so a later FTS5-capable runtime can recreate the triggers and
+    rebuild the index without discarding prior metadata.
+    """
+    for sql in (
+        "DROP TRIGGER IF EXISTS logs_ai",
+        "DROP TRIGGER IF EXISTS logs_ad",
+        "DROP TRIGGER IF EXISTS logs_au",
+    ):
+        conn.execute(sql)
 
 
 # --------------------------------------------------------------------------
@@ -1007,11 +1026,20 @@ def _execute_schema_sql(conn: Connection, sql: str):
 
 def initialize(config: dict):
     """Create all tables and indexes if missing, then apply migrations.
-    Idempotent."""
+    Idempotent. SQLite FTS5 is an optional acceleration capability."""
     conn = connect(config)
+    backend = config.get("backend", "sqlite")
+    sqlite_fts5 = backend != "postgres" and fts5_available(conn)
     try:
-        for stmt in _schema_statements(config.get("backend", "sqlite")):
+        for stmt in _schema_statements(backend):
             _execute_schema_sql(conn, stmt)
+
+        if backend != "postgres":
+            if sqlite_fts5:
+                for stmt in _sqlite_fts5_schema_statements():
+                    _execute_schema_sql(conn, stmt)
+            else:
+                _disable_sqlite_fts5_triggers(conn)
 
         ensure_log_fields_normalized_schema(conn)
         ensure_alert_workflow_schema(conn)
@@ -1072,7 +1100,7 @@ def initialize(config: dict):
         # search works on historical rows. Uses the internal 'docsize' shadow
         # table to detect a truly-empty index (external-content FTS otherwise
         # reflects the content table and looks non-empty).
-        if config.get("backend") != "postgres":
+        if config.get("backend") != "postgres" and sqlite_fts5:
             try:
                 have_logs = conn.execute("SELECT 1 FROM logs LIMIT 1").fetchone()
                 indexed = 0
@@ -1097,23 +1125,35 @@ def initialize(config: dict):
 
 
 def fts5_available(conn) -> bool:
-    """Return whether this SQLite build has the FTS5 extension compiled in.
+    """Return whether the current SQLite connection can actually use FTS5.
 
-    Used to decide between an indexed ``logs_fts MATCH`` message search and a
-    plain ``LIKE`` fallback. Always False for non-SQLite backends. Any probe
-    error is treated as "not available" so search degrades rather than breaks.
+    FTS5 is optional acceleration, not a startup requirement.  Probe the
+    runtime module directly with an ephemeral TEMP virtual table rather than
+    relying only on compile-option metadata, which can be incomplete for
+    dynamically supplied SQLite builds.  Probe errors degrade to False.
     """
     if getattr(conn, "backend", "sqlite") == "postgres":
         return False
+    cached = getattr(conn, "_minisiem_fts5_available", None)
+    if cached is not None:
+        return bool(cached)
+    available = False
     try:
-        row = conn.execute(
-            "SELECT COUNT(*) AS c FROM pragma_compile_options "
-            "WHERE compile_options = 'ENABLE_FTS5'"
-        ).fetchone()
-        count = row["c"] if isinstance(row, dict) else row[0]
-        return bool(count)
+        conn.execute("DROP TABLE IF EXISTS temp.__minisiem_fts5_probe")
+        conn.execute("CREATE VIRTUAL TABLE temp.__minisiem_fts5_probe USING fts5(value)")
+        conn.execute("DROP TABLE temp.__minisiem_fts5_probe")
+        available = True
     except Exception:
-        return False
+        try:
+            conn.execute("DROP TABLE IF EXISTS temp.__minisiem_fts5_probe")
+        except Exception:
+            pass
+        available = False
+    try:
+        setattr(conn, "_minisiem_fts5_available", available)
+    except Exception:
+        pass
+    return available
 
 
 def rebuild_fts(config: dict, progress=None):
@@ -1124,6 +1164,8 @@ def rebuild_fts(config: dict, progress=None):
         return 0
     conn = connect(config)
     try:
+        if not fts5_available(conn):
+            return 0
         # 'rebuild' repopulates an external-content FTS table from its source
         try:
             conn.execute("INSERT INTO logs_fts(logs_fts) VALUES('rebuild')")

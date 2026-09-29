@@ -1,0 +1,103 @@
+{
+  "backend": "sqlite",
+  "cleanup": {
+    "completed": true,
+    "remaining_logs": 0,
+    "removed_logs": 200,
+    "requested": true
+  },
+  "completed_at_utc": "2026-09-23T23:02:22.949686+00:00",
+  "evaluation": {
+    "checks": [],
+    "status": "MEASURED_NO_THRESHOLDS"
+  },
+  "evidence": {
+    "invalid_reasons": [],
+    "status": "VALID"
+  },
+  "format": "mini-siem-performance-qualification-v1",
+  "marker": "perf-qualification-0d4b99e6ee3f",
+  "measurement_integrity": {
+    "correlation_observed_benchmark_groups": true,
+    "expected_marker_rows": 200,
+    "marker_row_count_matches_ingest": true,
+    "query_observed_benchmark_rows": true,
+    "valid": true,
+    "visible_marker_rows": 200
+  },
+  "measurements": {
+    "correlation": {
+      "count": 2,
+      "groups_observed": 400,
+      "last_group_count": 200,
+      "max_ms": 1.056,
+      "mean_ms": 0.967,
+      "min_ms": 0.877,
+      "p50_ms": 0.967,
+      "p95_ms": 1.047,
+      "p99_ms": 1.055
+    },
+    "ingest": {
+      "batch_commit_latency": {
+        "count": 8,
+        "max_ms": 2.23,
+        "mean_ms": 1.064,
+        "min_ms": 0.812,
+        "p50_ms": 0.899,
+        "p95_ms": 1.8,
+        "p99_ms": 2.144,
+        "percentiles_approximate": false,
+        "sample_cap": 50000,
+        "sample_count": 8
+      },
+      "duration_seconds": 0.011039,
+      "events": 200,
+      "events_per_second": 18117.32
+    },
+    "parser": {
+      "duration_seconds": 0.003458,
+      "events": 300,
+      "events_per_second": 86752.67
+    },
+    "query": {
+      "count": 6,
+      "max_ms": 0.121,
+      "mean_ms": 0.048,
+      "min_ms": 0.004,
+      "nonempty_iterations": 6,
+      "p50_ms": 0.045,
+      "p95_ms": 0.107,
+      "p99_ms": 0.118,
+      "rows_observed": 303
+    },
+    "resources": {
+      "postgres_connections_after": null,
+      "postgres_connections_before": null,
+      "rss_after_mb": 96.582,
+      "rss_before_mb": 95.578,
+      "rss_growth_mb": 1.004,
+      "storage_after_bytes": 1267600,
+      "storage_before_bytes": 237568,
+      "storage_growth_mb": 0.982
+    }
+  },
+  "production_target_acknowledged": false,
+  "requested": {
+    "batch_size": 25,
+    "correlation_iterations": 2,
+    "duration_seconds": 0.0,
+    "events": 200,
+    "parser_events": 300,
+    "query_iterations": 6
+  },
+  "started_at_utc": "2026-09-23T23:02:22.927730+00:00",
+  "target": "mini-siem-perf.db",
+  "thresholds": {
+    "max_correlation_p95_ms": 0.0,
+    "max_query_p95_ms": 0.0,
+    "max_rss_growth_mb": 0.0,
+    "max_storage_growth_mb": 0.0,
+    "min_ingest_eps": 0.0,
+    "min_parser_eps": 0.0
+  }
+}

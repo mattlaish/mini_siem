@@ -166,3 +166,17 @@ def test_sqlite_fts_builder_retains_prefix_match_contract():
     )
     assert "logs_fts MATCH ?" in sql
     assert params == ['"fort"* NOT "debug"*']
+
+
+def test_sqlite_like_fallback_has_no_fts_dependency():
+    build = _query_helpers()["_build_log_query"]
+    sql, params = build(
+        Args({"q": "fort,!debug"}),
+        "id, received_at, source_ip, hostname, destination, severity, message",
+        search_backend="sqlite_like",
+    )
+    assert "logs_fts" not in sql
+    assert "MATCH" not in sql
+    assert "message LIKE ?" in sql
+    assert "message NOT LIKE ?" in sql
+    assert params == ["%fort%", "%debug%"]

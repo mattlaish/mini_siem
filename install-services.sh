@@ -67,6 +67,7 @@ PARTITION_TIMER_UNIT="/etc/systemd/system/${PARTITION_TIMER}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SHARED_GROUP="minisiem"
 SERVICE_USER="siem"
+DASHBOARD_GROUP="minisiem-dashboard"
 LISTENER_USER="siem-listener"
 LISTENER_GROUP="minisiem-listener"
 MAINTENANCE_USER="siem-maintenance"
@@ -213,6 +214,34 @@ PY
         MAINTENANCE_DB_EXTRA="--db-config ${SCRIPT_DIR}/db-config.json --db-credentials ${SCRIPT_DIR}/db-maintenance-credentials.json"
         echo "PostgreSQL privilege boundary: ENABLED (split listener/dashboard/maintenance identities)."
     fi
+fi
+
+# Resolve archive state before permissions/systemd units are generated. A
+# PostgreSQL deployment must keep mutable archive state outside the application
+# source tree so runtime identities cannot replace executable code or modules.
+readarray -t ARCHIVE_STATE < <("${PYTHON_BIN}" - "${SCRIPT_DIR}/db-config.json" "${SCRIPT_DIR}" <<'PY'
+import json, os, sys
+config_path, root = sys.argv[1], os.path.realpath(sys.argv[2])
+with open(config_path, encoding="utf-8") as fh:
+    cfg = json.load(fh)
+archive = cfg.get("archive") or {}
+enabled = bool(archive.get("enabled", False))
+raw = os.path.expanduser(str(archive.get("directory") or "archive"))
+path = os.path.abspath(raw if os.path.isabs(raw) else os.path.join(root, raw))
+print("1" if enabled else "0")
+print(path)
+PY
+)
+ARCHIVE_ENABLED="${ARCHIVE_STATE[0]:-0}"
+ARCHIVE_DIR="${ARCHIVE_STATE[1]:-${SERVICE_HOME}/archive}"
+if [[ "${DB_BACKEND}" == "postgres" && "${ARCHIVE_ENABLED}" == "1" ]]; then
+    case "${ARCHIVE_DIR}/" in
+        "${SCRIPT_DIR}/"*)
+            echo "PostgreSQL archive state must live outside the application source tree." >&2
+            echo "Configure archive.directory as an absolute mutable-state path such as ${SERVICE_HOME}/archive." >&2
+            exit 1
+            ;;
+    esac
 fi
 
 # Imports every service must satisfy inside the venv. PostgreSQL adds psycopg2.
@@ -372,6 +401,7 @@ fi
 
 echo "Setting up mini-SIEM service identities..."
 getent group "${SHARED_GROUP}" >/dev/null 2>&1 || groupadd --system "${SHARED_GROUP}"
+getent group "${DASHBOARD_GROUP}" >/dev/null 2>&1 || groupadd --system "${DASHBOARD_GROUP}"
 getent group "${LISTENER_GROUP}" >/dev/null 2>&1 || groupadd --system "${LISTENER_GROUP}"
 getent group "${MAINTENANCE_GROUP}" >/dev/null 2>&1 || groupadd --system "${MAINTENANCE_GROUP}"
 
@@ -405,7 +435,7 @@ ensure_service_identity() {
     fi
 }
 
-ensure_service_identity "${SERVICE_USER}" "${SHARED_GROUP}" 0
+ensure_service_identity "${SERVICE_USER}" "${DASHBOARD_GROUP}" 1
 ensure_service_identity "${LISTENER_USER}" "${LISTENER_GROUP}" 1
 ensure_service_identity "${MAINTENANCE_USER}" "${MAINTENANCE_GROUP}" 1
 
@@ -413,20 +443,31 @@ ensure_service_identity "${MAINTENANCE_USER}" "${MAINTENANCE_GROUP}" 1
 # without putting mutable state in the code tree.
 install -d -o "${SERVICE_USER}" -g "${SHARED_GROUP}" -m 0750 "${SERVICE_HOME}"
 
-# Ensure the dedicated service account can read/execute the deployed code and
-# venv even when the tree was copied with restrictive group bits. Do not grant
-# group write recursively. SQLite WAL/SHM live beside siem.db, so only the
-# project root and explicit runtime state need shared write access.
+# Ensure service accounts can read/execute the deployed code and venv. The
+# application source tree is immutable to runtime identities on PostgreSQL.
+# SQLite remains the compatibility exception because WAL/SHM files are
+# colocated with siem.db in the historical layout.
 chgrp -R "${SHARED_GROUP}" "${SCRIPT_DIR}"
 chmod -R g+rX "${SCRIPT_DIR}"
-chmod 2775 "${SCRIPT_DIR}"
+if [[ "${DB_BACKEND}" == "postgres" ]]; then
+    chmod -R g-w "${SCRIPT_DIR}"
+    chmod 2755 "${SCRIPT_DIR}"
+else
+    chmod 2775 "${SCRIPT_DIR}"
+fi
 
 for f in "${SCRIPT_DIR}/db-config.json" "${SCRIPT_DIR}/siem.db" "${SCRIPT_DIR}/siem.db-wal" "${SCRIPT_DIR}/siem.db-shm"; do
     if [[ -e "${f}" ]]; then
         chgrp "${SHARED_GROUP}" "${f}"
-        chmod g+rw "${f}"
+        if [[ "${DB_BACKEND}" == "sqlite" && "${f}" != "${SCRIPT_DIR}/db-config.json" ]]; then
+            chmod g+rw "${f}"
+        fi
     fi
 done
+
+if [[ "${ARCHIVE_ENABLED}" == "1" ]]; then
+    install -d -o "${LISTENER_USER}" -g "${SHARED_GROUP}" -m 2750 "${ARCHIVE_DIR}"
+fi
 
 # Provision an AI API-key encryption master outside the application database.
 # It is owned by the dashboard service account and remains stable across
@@ -446,21 +487,24 @@ fi
 chown "${SERVICE_USER}:${SHARED_GROUP}" "${AI_SECRET_MASTER}"
 chmod 600 "${AI_SECRET_MASTER}"
 
-# Base/auth config is readable by the dashboard service group. In secure
-# PostgreSQL mode db-config.json is non-secret; component passwords live in
-# separate credential files with stricter ownership.
-for f in "${SCRIPT_DIR}/db-config.json" "${SCRIPT_DIR}/auth-config.json"; do
-    if [[ -e "${f}" ]]; then
-        chown root:"${SHARED_GROUP}" "${f}"
-        chmod 640 "${f}"
-    fi
-done
+# db-config is shared read-only runtime configuration. auth-config can contain
+# SSO client secrets and is dashboard-only. Split PostgreSQL credentials use
+# one dedicated OS group per component; the shared code group must never grant
+# cross-component credential readability.
+if [[ -e "${SCRIPT_DIR}/db-config.json" ]]; then
+    chown root:"${SHARED_GROUP}" "${SCRIPT_DIR}/db-config.json"
+    chmod 640 "${SCRIPT_DIR}/db-config.json"
+fi
+if [[ -e "${SCRIPT_DIR}/auth-config.json" ]]; then
+    chown root:"${DASHBOARD_GROUP}" "${SCRIPT_DIR}/auth-config.json"
+    chmod 640 "${SCRIPT_DIR}/auth-config.json"
+fi
 if [[ "${PG_PRIVILEGE_BOUNDARY}" == "1" ]]; then
     chown root:"${LISTENER_GROUP}" "${SCRIPT_DIR}/db-listener-credentials.json"
     chmod 640 "${SCRIPT_DIR}/db-listener-credentials.json"
     chown root:"${MAINTENANCE_GROUP}" "${SCRIPT_DIR}/db-maintenance-credentials.json"
     chmod 640 "${SCRIPT_DIR}/db-maintenance-credentials.json"
-    chown root:"${SHARED_GROUP}" "${SCRIPT_DIR}/db-dashboard-credentials.json"
+    chown root:"${DASHBOARD_GROUP}" "${SCRIPT_DIR}/db-dashboard-credentials.json"
     chmod 640 "${SCRIPT_DIR}/db-dashboard-credentials.json"
 fi
 
@@ -518,9 +562,18 @@ if command -v runuser >/dev/null 2>&1; then
             exit 1
         fi
     fi
-    if ! runuser -u "${SERVICE_USER}" -- test -w "${SCRIPT_DIR}"; then
-        echo "Service account '${SERVICE_USER}' cannot write ${SCRIPT_DIR}; SQLite WAL/SHM creation would fail." >&2
-        exit 1
+    if [[ "${DB_BACKEND}" == "sqlite" ]]; then
+        if ! runuser -u "${SERVICE_USER}" -- test -w "${SCRIPT_DIR}"; then
+            echo "Service account '${SERVICE_USER}' cannot write ${SCRIPT_DIR}; SQLite WAL/SHM creation would fail." >&2
+            exit 1
+        fi
+    else
+        for u in "${SERVICE_USER}" "${LISTENER_USER}" "${MAINTENANCE_USER}"; do
+            if runuser -u "${u}" -- test -w "${SCRIPT_DIR}"; then
+                echo "VERIFY FAIL: PostgreSQL runtime identity ${u} can write application source tree ${SCRIPT_DIR}." >&2
+                exit 1
+            fi
+        done
     fi
 fi
 
@@ -562,6 +615,15 @@ if ! command -v tcpdump >/dev/null 2>&1; then
     echo "On CentOS/RHEL install it with: sudo dnf install -y tcpdump"
 fi
 
+# Runtime write paths used by the listener sandbox. PostgreSQL deliberately
+# does not punch a write hole through the application source tree.
+LISTENER_READWRITE_PATHS="${SERVICE_HOME}"
+if [[ "${DB_BACKEND}" == "sqlite" ]]; then
+    LISTENER_READWRITE_PATHS="${SCRIPT_DIR} ${SERVICE_HOME}"
+elif [[ "${ARCHIVE_ENABLED}" == "1" ]]; then
+    LISTENER_READWRITE_PATHS="${SERVICE_HOME} ${ARCHIVE_DIR}"
+fi
+
 # Re-running this installer is the supported repair path.  Detect partial
 # systemd state explicitly so operators know the installer is reconciling it.
 LISTENER_EXISTS=0
@@ -585,6 +647,7 @@ Group=${LISTENER_GROUP}
 SupplementaryGroups=${SHARED_GROUP}
 UMask=0002
 Environment=HOME=${SERVICE_HOME}
+Environment=PYTHONDONTWRITEBYTECODE=1
 WorkingDirectory=${SCRIPT_DIR}
 ExecStart=${PYTHON_BIN} ${SCRIPT_DIR}/listener.py --db ${SCRIPT_DIR}/siem.db --db-config ${SCRIPT_DIR}/db-config.json --port ${SYSLOG_PORT} ${LISTENER_DB_EXTRA}
 Restart=on-failure
@@ -595,7 +658,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectHome=true
 ProtectSystem=strict
-ReadWritePaths=${SCRIPT_DIR} ${SERVICE_HOME}
+ReadWritePaths=${LISTENER_READWRITE_PATHS}
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true
@@ -616,9 +679,11 @@ Wants=${LISTENER_SVC}.service
 [Service]
 Type=simple
 User=${SERVICE_USER}
-Group=${SHARED_GROUP}
+Group=${DASHBOARD_GROUP}
+SupplementaryGroups=${SHARED_GROUP}
 UMask=0002
 Environment=HOME=${SERVICE_HOME}
+Environment=PYTHONDONTWRITEBYTECODE=1
 Environment=MINISIEM_AI_SECRET_MASTER_FILE=${AI_SECRET_MASTER}
 WorkingDirectory=${SCRIPT_DIR}
 ExecStart=${PYTHON_BIN} ${SCRIPT_DIR}/dashboard.py --db ${SCRIPT_DIR}/siem.db --db-config ${SCRIPT_DIR}/db-config.json --host ${DASH_HOST} --port ${DASH_PORT} ${DASHBOARD_DB_EXTRA}
@@ -655,6 +720,7 @@ Type=oneshot
 User=${MAINTENANCE_USER}
 Group=${MAINTENANCE_GROUP}
 SupplementaryGroups=${SHARED_GROUP}
+Environment=PYTHONDONTWRITEBYTECODE=1
 WorkingDirectory=${SCRIPT_DIR}
 ExecStart=${PYTHON_BIN} ${SCRIPT_DIR}/tools/postgres_event_partition_maintenance.py ${MAINTENANCE_DB_EXTRA} --months 3
 NoNewPrivileges=true

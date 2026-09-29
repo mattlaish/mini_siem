@@ -25,7 +25,9 @@ def test_fresh_and_upgrade_are_separate_fail_closed_entrypoints():
     assert "runtime credentials" in upgrade
     assert "--bootstrap-postgres" not in upgrade
     assert "MINISIEM_INSTALL_ENTRYPOINT=upgrade" in upgrade
-    assert "Rollback tree restored" in upgrade
+    assert "--recover-interrupted" in upgrade
+    assert ".existing-upgrade-state.json" in upgrade
+    assert "old-code rollback is unsafe" in upgrade
 
     assert "--bootstrap-postgres is an internal fresh-install path" in low
     assert "Use: sudo ./fresh-install.sh" in low

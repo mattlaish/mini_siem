@@ -30,6 +30,8 @@ Deployment-host validation should confirm:
 3. Setup > Support bundle downloads successfully under the dashboard service identity;
 4. extracted support bundles contain no credential file, secret, private key, raw event or copied service journal;
 5. `audit_log` records `DIAGNOSTIC_RUN`, `SUPPORT_BUNDLE_CREATED` and `PIPELINE_DIAGNOSTIC_RUN`.
+6. a missing/stale critical runtime signal is not rendered as an overall healthy diagnostic;
+7. injected diagnostic error text containing URI/basic/Bearer/API-key/private-key credential forms is redacted in the API response and support bundle.
 
 
 ## Phase 12.2 — Installation / Upgrade Workflow
@@ -107,4 +109,21 @@ archive eviction, and post-migration service readiness.
 - Existing operational installation: run `upgrade-existing.sh --target /opt/mini_siem` from a separately extracted new source package.
 - `install-services.sh` is an internal/low-level service reconciliation helper, not the operator upgrade interface.
 
-The existing-upgrade script retains the previous application tree and writes upgrade evidence/DB backup outside the target tree. For PostgreSQL it supports already split-role deployments and preserves existing component DB passwords. Live production qualification remains deferred.
+The existing-upgrade script retains the previous application tree and writes upgrade evidence/DB backup outside the target tree. A durable existing-upgrade journal is also kept outside the stable target so a kill/reboot during cutover is recoverable with the explicit `--recover-interrupted` path. This is separate from fresh-install `--resume`. PostgreSQL recovery completes forward after a verified schema migration rather than silently starting old code against a newer schema; if forward recovery cannot validate the staged source, use the P5 recovery-to-new-database workflow. For PostgreSQL the upgrader supports already split-role deployments and preserves existing component DB passwords. Live production interruption/reboot qualification remains deferred.
+
+
+## Controlled PostgreSQL backup / restore implementation — 2026-09-23
+
+Use `tools/postgres_backup_restore.py` for controlled application-level PostgreSQL
+backup/recovery evidence. Backup output is a custom-format archive plus SHA-256
+manifest. Restore is deliberately recovery-to-new-database only: it refuses an
+existing target database, restores without archive owner/ACL replay, and validates
+required tables plus the migration ledger before success. This path does not
+implement PostgreSQL HA/replication and does not authorize automatic production
+cutover. Live restore, RPO/RTO and post-restore service qualification remain
+deferred.
+
+
+## P3 systemd host acceptance
+
+The current baseline includes `tools/systemd_host_qualification.py`; use it on the deployed target to capture actual service identity, sandbox, capability, credential-isolation, socket, SELinux, and reboot evidence. PostgreSQL deployments keep application source runtime-immutable and must place enabled archive state outside the source tree. See `P3_SYSTEMD_QUALIFICATION.md`. P3 remains `IMPLEMENTED_TESTING_DEFERRED` until representative target-host evidence passes.

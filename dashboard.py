@@ -935,7 +935,7 @@ def _build_log_query(args, select_cols, search_backend=None):
                     expr = "to_tsvector('simple',COALESCE(l.message,'')) @@ to_tsquery('simple',?)"
                     clauses.append("NOT (" + expr + ")" if neg else expr)
                     params.append(tok)
-        else:
+        elif search_backend == "sqlite_fts5":
             include, exclude = [], []
             for term in terms:
                 if not term:
@@ -954,8 +954,22 @@ def _build_log_query(args, select_cols, search_backend=None):
                     neg = term.startswith("!=") or term.startswith("!")
                     needle = (term[2:] if term.startswith("!=") else term[1:]).strip() if neg else term
                     if needle:
-                        clauses.append("l.message NOT LIKE ?" if neg else "l.message LIKE ?")
-                        params.append(f"%{needle}%")
+                        clauses.append("l.message NOT LIKE ? COLLATE NOCASE ESCAPE '\\'" if neg else
+                                       "l.message LIKE ? COLLATE NOCASE ESCAPE '\\'")
+                        params.append(f"%{_like_escape(needle)}%")
+        else:
+            # SQLite without FTS5 remains fully functional via bounded LIKE
+            # search.  FTS5 is acceleration only and must never be a startup
+            # or query-time dependency.
+            for term in terms:
+                if not term:
+                    continue
+                neg = term.startswith("!=") or term.startswith("!")
+                needle = (term[2:] if term.startswith("!=") else term[1:]).strip() if neg else term
+                if needle:
+                    clauses.append("l.message NOT LIKE ? COLLATE NOCASE ESCAPE '\\'" if neg else
+                                   "l.message LIKE ? COLLATE NOCASE ESCAPE '\\'")
+                    params.append(f"%{_like_escape(needle)}%")
 
     for needle, negate in _concept_filter_terms(source_ip):
         sql, sp = _concept_clause("l.source_ip", "source", needle, negate, backend=search_backend)
@@ -1043,7 +1057,10 @@ def _query_logs_extracted(args, limit, select_cols, sort_cap=100000):
     needs = bool(fields or filters or sort.startswith("x_"))
 
     conn = get_conn()
-    search_backend = "postgres_v2" if getattr(conn, "backend", "sqlite") == "postgres" else "sqlite_like"
+    if getattr(conn, "backend", "sqlite") == "postgres":
+        search_backend = "postgres_v2"
+    else:
+        search_backend = "sqlite_fts5" if dbmod.fts5_available(conn) else "sqlite_like"
     relation = "security_event_logs" if search_backend == "postgres_v2" else "logs"
     base_sql, base_params = _build_log_query(args, select_cols, search_backend=search_backend)
     try:

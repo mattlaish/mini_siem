@@ -1,10 +1,9 @@
 import json
 import os
-import sqlite3
-from datetime import datetime, timezone
 from flask import Blueprint, jsonify, request, send_file
 
 import archive as archive_mod
+import backup_restore as backup_restore_mod
 import db as dbmod
 import health as health_mod
 import operational_diagnostics as diagnostics_mod
@@ -45,27 +44,13 @@ def api_db_backup():
     src_path = cfg["sqlite"]["path"]
     backup_dir = _svc.cfg_get("db_backup_dir", "") or os.path.join(os.path.dirname(os.path.abspath(src_path)) or ".", "backups")
     try:
-        os.makedirs(backup_dir, exist_ok=True)
-        stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-        dest = os.path.join(backup_dir, f"siem-{stamp}.db")
-        src = sqlite3.connect(src_path)
-        dst = sqlite3.connect(dest)
-        with dst:
-            src.backup(dst)
-        dst.close()
-        src.close()
-        ok, detail = dbmod.integrity_check(dbmod.config_from_path(dest), quick=False)
-        size = os.path.getsize(dest)
-        backups = sorted(f for f in os.listdir(backup_dir) if f.startswith("siem-") and f.endswith(".db"))
-        removed = 0
-        for old in backups[:-14]:
-            try:
-                os.remove(os.path.join(backup_dir, old))
-                removed += 1
-            except OSError:
-                pass
-        _svc.audit("db_backup", target=dest, detail=f"{size} bytes, integrity={'ok' if ok else detail}")
-        return jsonify({"ok": True, "path": dest, "size_bytes": size, "verified": ok, "verify_detail": detail, "rotated_out": removed, "dir": backup_dir})
+        result = backup_restore_mod.create_sqlite_backup(src_path, backup_dir, keep=14)
+        _svc.audit(
+            "db_backup",
+            target=result["path"],
+            detail=f"{result['size_bytes']} bytes, sha256={result['sha256']}, integrity=ok",
+        )
+        return jsonify({"ok": True, **result})
     except Exception as exc:
         return jsonify({"error": f"{type(exc).__name__}: {exc}"}), 500
 
@@ -157,7 +142,7 @@ def api_postgres_security_status():
     try:
         return jsonify(_postgres_security_status(conn, _svc.db_config()))
     except Exception as exc:
-        return jsonify({"backend": _svc.db_config().get("backend"), "status": "ERROR", "error": f"{type(exc).__name__}: {exc}"}), 500
+        return jsonify({"backend": _svc.db_config().get("backend"), "status": "ERROR", "error": diagnostics_mod.safe_exception(exc)}), 500
     finally:
         conn.close()
 
@@ -258,7 +243,7 @@ def api_archive_status():
     try:
         return jsonify(_archive_status_data(conn, cfg))
     except Exception as exc:
-        return jsonify({"status": "ERROR", "error": f"{type(exc).__name__}: {exc}"}), 500
+        return jsonify({"status": "ERROR", "error": diagnostics_mod.safe_exception(exc)}), 500
     finally:
         conn.close()
 
@@ -271,11 +256,11 @@ def _diagnostic_snapshot():
         try:
             postgres = _postgres_security_status(conn, cfg)
         except Exception as exc:
-            postgres = {"backend": cfg.get("backend"), "status": "ERROR", "error": f"{type(exc).__name__}: {exc}"}
+            postgres = {"backend": cfg.get("backend"), "status": "ERROR", "error": diagnostics_mod.safe_exception(exc)}
         try:
             archive = _archive_status_data(conn, cfg)
         except Exception as exc:
-            archive = {"status": "ERROR", "error": f"{type(exc).__name__}: {exc}"}
+            archive = {"status": "ERROR", "error": diagnostics_mod.safe_exception(exc)}
         diagnostics = diagnostics_mod.build_diagnostics(health, postgres, archive)
         return health, postgres, archive, diagnostics
     finally:
@@ -290,7 +275,7 @@ def api_diagnostics_status():
     try:
         return jsonify(_diagnostic_snapshot()[3])
     except Exception as exc:
-        return jsonify({"overall": "FAILED", "error": f"{type(exc).__name__}: {exc}"}), 500
+        return jsonify({"overall": "FAILED", "error": diagnostics_mod.safe_exception(exc)}), 500
 
 
 @bp.post("/api/diagnostics/run")
@@ -304,7 +289,7 @@ def api_diagnostics_run():
         return jsonify(diagnostics)
     except Exception as exc:
         _svc.audit("DIAGNOSTIC_RUN", target="operational-readiness", detail=f"failed={type(exc).__name__}")
-        return jsonify({"overall": "FAILED", "error": f"{type(exc).__name__}: {exc}"}), 500
+        return jsonify({"overall": "FAILED", "error": diagnostics_mod.safe_exception(exc)}), 500
 
 
 @bp.post("/api/support/bundle")

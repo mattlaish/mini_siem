@@ -149,6 +149,28 @@ class LLMResponseError(RuntimeError):
         super().__init__(f"LLM response status {self.status}: {self.detail or 'no detail provided'}")
 
 
+class _RejectExternalRedirects(urllib.request.HTTPRedirectHandler):
+    """Fail closed on redirects for external AI requests.
+
+    ``urllib`` follows 301/302/303 redirects for POST requests and carries
+    ordinary request headers into the redirected request.  That behavior is
+    unsafe for the external-AI boundary because the Authorization header and
+    already-redacted SIEM evidence were approved only for the configured
+    endpoint.  External providers therefore must answer the configured API
+    endpoint directly.  Local/compatible mode retains urllib's normal redirect
+    behavior for backwards compatibility.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise urllib.error.HTTPError(
+            req.full_url,
+            code,
+            "external AI redirects are not permitted",
+            headers,
+            fp,
+        )
+
+
 # --------------------------------------------------------------------------
 # LLM client (OpenAI Responses + compatible Chat Completions)
 # --------------------------------------------------------------------------
@@ -214,6 +236,10 @@ class LLMClient:
         self._sleep = sleep_fn or time.sleep
         self._random = random_fn or random.random
         self._usage_callback = usage_callback
+        self._external_opener = (
+            urllib.request.build_opener(_RejectExternalRedirects())
+            if self.external_mode else None
+        )
 
     def _payload(self, messages, temperature: float, max_tokens: int):
         if self.api_style == "responses":
@@ -270,17 +296,29 @@ class LLMClient:
                 if not isinstance(item, dict) or item.get("type") != "message":
                     continue
                 for content in item.get("content") or []:
-                    if isinstance(content, dict) and content.get("type") == "output_text":
+                    if not isinstance(content, dict):
+                        continue
+                    if content.get("type") == "output_text":
                         text = content.get("text")
                         if text:
                             parts.append(str(text))
+                    elif content.get("type") == "refusal":
+                        refusal = content.get("refusal")
+                        if refusal:
+                            parts.append(str(refusal))
             if parts:
                 return "\n".join(parts).strip()
             try:
-                return body["choices"][0]["message"]["content"].strip()
+                message = body["choices"][0]["message"]
+                content = message.get("content")
+                if isinstance(content, str) and content.strip():
+                    return content.strip()
+                refusal = message.get("refusal")
+                if isinstance(refusal, str) and refusal.strip():
+                    return refusal.strip()
             except (KeyError, IndexError, TypeError, AttributeError):
                 pass
-        return json.dumps(body)[:2000]
+        return ""
 
     @staticmethod
     def _responses_status_error(body):
@@ -386,7 +424,8 @@ class LLMClient:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise TimeoutError("AI request exceeded total timeout budget")
-                with urllib.request.urlopen(req, timeout=min(self.timeout, max(1.0, remaining))) as resp:
+                open_request = self._external_opener.open if self._external_opener is not None else urllib.request.urlopen
+                with open_request(req, timeout=min(self.timeout, max(1.0, remaining))) as resp:
                     body = json.loads(resp.read().decode("utf-8"))
                     request_id = resp.headers.get("x-request-id", "")
                     latency_ms = int((time.monotonic() - started) * 1000)
@@ -401,13 +440,27 @@ class LLMClient:
                                 error_code=f"response_{response_error.status}",
                             )
                             raise response_error
+                    response_text = self._response_text(body)
+                    if not response_text:
+                        response_error = LLMResponseError(
+                            "empty_output",
+                            "completed provider response contained no text or refusal",
+                        )
+                        self._emit_usage(
+                            status="error", body=body, request_id=request_id,
+                            client_request_id=client_request_id,
+                            http_status=getattr(resp, "status", 200),
+                            retry_count=retry_count, latency_ms=latency_ms,
+                            error_code="response_empty_output",
+                        )
+                        raise response_error
                     self._emit_usage(
                         status="success", body=body, request_id=request_id,
                         client_request_id=client_request_id,
                         http_status=getattr(resp, "status", 200),
                         retry_count=retry_count, latency_ms=latency_ms,
                     )
-                    return self._response_text(body)
+                    return response_text
             except urllib.error.HTTPError as exc:
                 request_id = exc.headers.get("x-request-id", "") if exc.headers else ""
                 if exc.code in self.RETRYABLE_HTTP and retry_count < self.max_retries:

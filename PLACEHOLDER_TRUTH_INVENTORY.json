@@ -11,7 +11,6 @@
   ],
   "trivial_tests_reclassified": [
     "tests/test_admin_bootstrap_preservation.py",
-    "tests/test_cef_parser.py",
     "tests/test_postgres_idempotent_migration.py",
     "tests/test_postgres_migration_state.py",
     "tests/test_postgres_schema_safety.py",
@@ -50,5 +49,8 @@
   "allowed_intentional_incomplete_examples": [
     "integrations/sophos_poller_bundle/integration_example.py"
   ],
-  "status_rule": "placeholder/design/scaffold files do not count as implementation or test evidence"
+  "status_rule": "placeholder/design/scaffold files do not count as implementation or test evidence",
+  "restored_real_tests": [
+    "tests/test_cef_parser.py"
+  ]
 }

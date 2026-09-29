@@ -35,6 +35,61 @@ FINGERPRINT_FILES = (
     "tools/postgres_privilege_boundary.py",
     "tools/fresh_install_state.py",
 )
+ARTIFACT_MANIFEST = "ARTIFACT_MANIFEST.json"
+
+
+def _artifact_manifest_identity(root: Path) -> str | None:
+    """Return a verified full packaged-source identity when a release manifest exists.
+
+    Runtime files such as ``db-config.json``, databases, credentials and venvs are
+    intentionally absent from the package manifest.  Every immutable packaged
+    file listed by the artifact builder is re-hashed here, so ``--resume`` is
+    bound to the complete delivered source rather than a small hand-picked
+    subset of installer files.  The manifest bytes are included in the final
+    identity so a modified manifest cannot silently redefine the package.
+    """
+    manifest_path = root / ARTIFACT_MANIFEST
+    if not manifest_path.is_file():
+        return None
+    try:
+        raw = manifest_path.read_bytes()
+        payload = json.loads(raw.decode("utf-8"))
+    except Exception as exc:
+        raise RuntimeError(f"invalid artifact manifest {manifest_path}: {exc}") from exc
+    files = payload.get("files")
+    if not isinstance(files, list) or not files:
+        raise RuntimeError(f"artifact manifest has no packaged file list: {manifest_path}")
+
+    h = hashlib.sha256()
+    h.update(b"mini-siem-artifact-source-identity-v1\0")
+    h.update(hashlib.sha256(raw).digest())
+    seen: set[str] = set()
+    root_resolved = root.resolve()
+    for entry in sorted(files, key=lambda item: str(item.get("path", ""))):
+        rel = entry.get("path")
+        expected = entry.get("sha256")
+        if not isinstance(rel, str) or not rel or not isinstance(expected, str) or len(expected) != 64:
+            raise RuntimeError("artifact manifest contains an invalid file entry")
+        if rel in seen:
+            raise RuntimeError(f"artifact manifest contains duplicate path: {rel}")
+        seen.add(rel)
+        candidate = (root / rel)
+        resolved = candidate.resolve()
+        try:
+            resolved.relative_to(root_resolved)
+        except ValueError as exc:
+            raise RuntimeError(f"artifact manifest path escapes source root: {rel}") from exc
+        if candidate.is_symlink() or not candidate.is_file():
+            raise RuntimeError(f"packaged source file missing or not a regular file: {rel}")
+        actual = _sha_file(candidate)
+        if actual != expected:
+            raise RuntimeError(
+                f"packaged source file changed since artifact creation: {rel} "
+                f"(expected {expected}, got {actual})"
+            )
+        h.update(rel.encode("utf-8") + b"\0")
+        h.update(bytes.fromhex(actual))
+    return h.hexdigest()
 
 
 def _now() -> str:
@@ -51,7 +106,15 @@ def _sha_file(path: Path) -> str:
 
 def source_fingerprint(root: Path) -> str:
     root = root.resolve()
+    manifest_identity = _artifact_manifest_identity(root)
+    if manifest_identity is not None:
+        return manifest_identity
+
+    # Development/test trees may not carry a release artifact manifest.  Keep
+    # the historical minimum identity there, but packaged production installs
+    # always take the verified full-manifest path above.
     h = hashlib.sha256()
+    h.update(b"mini-siem-development-source-identity-v1\0")
     for rel in FINGERPRINT_FILES:
         p = root / rel
         if not p.is_file():
