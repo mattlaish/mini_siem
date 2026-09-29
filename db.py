@@ -832,7 +832,14 @@ def _ensure_performance_indexes(conn):
         "CREATE INDEX IF NOT EXISTS idx_alerts_rule_id ON alerts(rule_name, id)",
     ]
     if conn.backend == "postgres":
-        stmts = shared
+        stmts = shared + [
+            # Retire security_events indexes no query uses: nothing filters the
+            # JSONB `fields` column with GIN operators (field search goes through
+            # log_fields), and the BRIN(event_time) duplicates the (event_time,
+            # id) primary key. Both only add write cost.
+            "DROP INDEX IF EXISTS idx_se_fields_gin",
+            "DROP INDEX IF EXISTS idx_se_event_time_brin",
+        ]
     else:
         stmts = [
             # Composite (identity COLLATE NOCASE, received_at): lets the
