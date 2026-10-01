@@ -802,16 +802,8 @@ def _parse_field_filter(name, raw, source="chip"):
 
 
 def _field_value_predicate(alias, mode, needle, backend="sqlite"):
-    """Return indexed field-value predicate and parameters.
-
-    ``value_norm`` is stored case-folded, so the needle is case-folded here too.
-    This is required for correctness on PostgreSQL (which compares with a plain
-    ``=`` / ``LIKE`` and would otherwise miss mixed-case matches coming from the
-    alias-field path, where the term is not pre-folded), and is harmless on
-    SQLite where the comparison is additionally ``COLLATE NOCASE``.
-    """
+    """Return indexed field-value predicate and parameters."""
     col = f"{alias}.value_norm"
-    needle = str(needle).casefold()
     if mode == "exact":
         if str(backend).startswith("postgres"):
             return f"{col} = ?", [needle]

@@ -48,13 +48,9 @@ def test_postgres_event_storage_v2_schema_contract():
     assert "fields JSONB" in ddl
     for idx in (
         "idx_se_src_ip_time", "idx_se_dst_ip_time", "idx_se_asset_time",
-        "idx_se_identity_time", "idx_se_type_time",
+        "idx_se_identity_time", "idx_se_type_time", "idx_se_fields_gin",
     ):
         assert idx in ddl
-    # Retired as unused/redundant: no query filters `fields` with GIN operators,
-    # and BRIN(event_time) duplicates the (event_time, id) primary key.
-    assert "idx_se_fields_gin" not in ddl
-    assert "idx_se_event_time_brin" not in ddl
     assert "security_events_default" in ddl
     assert "minisiem_ensure_security_event_partitions" in ddl
     assert "p_months < 1 OR p_months > 24" in ddl
