@@ -98,6 +98,29 @@ def test_index_design_applied(pg_cfg):
     assert "idx_lf_field_value" not in idx
 
 
+def test_bootstrap_object_ownership_verification_runs(pg_cfg):
+    """Regression: the fresh-bootstrap SCHEMA_VERIFIED gate must not crash.
+
+    `_verify_object_ownership` passes a params tuple, so its ``LIKE 'pg_%'`` /
+    ``'sql_%'`` literals must be doubled (``%%``) or psycopg2 raises
+    ``IndexError: tuple index out of range`` and aborts every PostgreSQL
+    install before grants are applied.
+    """
+    from tools import postgres_bootstrap as bs
+
+    db.initialize(pg_cfg)
+    pg = pg_cfg["postgres"]
+    raw = psycopg2.connect(
+        host=pg["host"], port=pg["port"], user=pg["user"],
+        password=pg["password"], dbname=pg["dbname"])
+    try:
+        rows = bs._verify_object_ownership(raw, pg["user"])
+        # Owner created every object, so nothing is mis-owned.
+        assert rows == [], rows
+    finally:
+        raw.close()
+
+
 def test_field_search_is_case_insensitive_via_alias(pg_cfg):
     """Regression: a mixed-case host that lives only in an alias field must
     match. Before the case-fold fix, `DC01` returned zero rows on PostgreSQL."""

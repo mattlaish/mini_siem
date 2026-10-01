@@ -401,8 +401,8 @@ def _verify_object_ownership(owner_conn, owner: str) -> list[dict]:
               JOIN pg_roles r ON r.oid=c.relowner
              WHERE n.nspname='public'
                AND c.relkind IN ('r','p','S')
-               AND c.relname NOT LIKE 'pg_%'
-               AND c.relname NOT LIKE 'sql_%'
+               AND c.relname NOT LIKE 'pg_%%'
+               AND c.relname NOT LIKE 'sql_%%'
                AND r.rolname <> %s
              ORDER BY c.relname
             """,
