@@ -103,7 +103,6 @@ def postgres_schema_statements() -> list[str]:
         """CREATE TABLE IF NOT EXISTS security_events_default
             PARTITION OF security_events DEFAULT""",
         "CREATE INDEX IF NOT EXISTS idx_se_legacy_log_id ON security_events(legacy_log_id)",
-        "CREATE INDEX IF NOT EXISTS idx_se_event_time_brin ON security_events USING BRIN(event_time)",
         "CREATE INDEX IF NOT EXISTS idx_se_src_ip_time ON security_events(src_ip, event_time DESC)",
         "CREATE INDEX IF NOT EXISTS idx_se_dst_ip_time ON security_events(dst_ip, event_time DESC)",
         "CREATE INDEX IF NOT EXISTS idx_se_peer_ip_time ON security_events(peer_ip, event_time DESC)",
@@ -115,7 +114,6 @@ def postgres_schema_statements() -> list[str]:
         "CREATE INDEX IF NOT EXISTS idx_se_code_time ON security_events(event_code, event_time DESC)",
         "CREATE INDEX IF NOT EXISTS idx_se_hostname_prefix_time ON security_events(lower(hostname) text_pattern_ops, event_time DESC)",
         "CREATE INDEX IF NOT EXISTS idx_se_destination_prefix_time ON security_events(lower(destination) text_pattern_ops, event_time DESC)",
-        "CREATE INDEX IF NOT EXISTS idx_se_fields_gin ON security_events USING GIN(fields)",
         "CREATE INDEX IF NOT EXISTS idx_se_message_fts_gin ON security_events USING GIN(to_tsvector('simple', COALESCE(message,'')))",
         """CREATE OR REPLACE VIEW security_event_logs AS
             SELECT legacy_log_id AS id,

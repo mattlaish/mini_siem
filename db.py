@@ -270,7 +270,6 @@ def _schema_statements(backend: str):
         )""",
         "CREATE INDEX IF NOT EXISTS idx_logs_received_at ON logs(received_at)",
         "CREATE INDEX IF NOT EXISTS idx_logs_source_ip ON logs(source_ip)",
-        "CREATE INDEX IF NOT EXISTS idx_logs_severity ON logs(severity)",
         "CREATE INDEX IF NOT EXISTS idx_logs_hostname ON logs(hostname)",
         "CREATE INDEX IF NOT EXISTS idx_logs_destination ON logs(destination)",
         "CREATE INDEX IF NOT EXISTS idx_logs_peer_ip ON logs(peer_ip)",
@@ -465,7 +464,6 @@ def _schema_statements(backend: str):
             value   TEXT,
             value_norm TEXT
         )""",
-        "CREATE INDEX IF NOT EXISTS idx_lf_field_value ON log_fields(field, value)",
         "CREATE INDEX IF NOT EXISTS idx_lf_log_id ON log_fields(log_id)",
         # API ingest keys: products that can only POST logs authenticate with
         # one of these. Only the hash is stored; the plaintext key is shown
@@ -566,7 +564,8 @@ def _disable_sqlite_fts5_triggers(conn):
 # --------------------------------------------------------------------------
 
 def _connect_sqlite(config: dict) -> Connection:
-    raw = sqlite3.connect(config["sqlite"]["path"], check_same_thread=False)
+    sq = config.get("sqlite", {}) or {}
+    raw = sqlite3.connect(sq.get("path", "siem.db"), check_same_thread=False)
     raw.row_factory = sqlite3.Row
     # WAL journal: readers don't block the writer and commits are far
     # cheaper (no full-file fsync per transaction). synchronous=NORMAL
@@ -578,6 +577,18 @@ def _connect_sqlite(config: dict) -> Connection:
         raw.execute("PRAGMA journal_mode=WAL")
         raw.execute("PRAGMA synchronous=NORMAL")
         raw.execute("PRAGMA cell_size_check=ON")   # catch some corruption at write time
+        # Optional, bounded runtime tuning. All keys are integer-coerced (PRAGMA
+        # values cannot be bound parameters), so they are injection-safe.
+        raw.execute(f"PRAGMA busy_timeout={max(0, int(sq.get('busy_timeout_ms', 5000)))}")
+        if sq.get("cache_size_kib") is not None:
+            # negative cache_size is interpreted by SQLite as KiB, not pages.
+            raw.execute(f"PRAGMA cache_size={-max(0, int(sq['cache_size_kib']))}")
+        if sq.get("temp_store_memory"):
+            raw.execute("PRAGMA temp_store=MEMORY")
+        if sq.get("mmap_size_mb") is not None:
+            raw.execute(f"PRAGMA mmap_size={max(0, int(sq['mmap_size_mb'])) * 1024 * 1024}")
+        if sq.get("wal_autocheckpoint_pages") is not None:
+            raw.execute(f"PRAGMA wal_autocheckpoint={max(0, int(sq['wal_autocheckpoint_pages']))}")
     except sqlite3.Error:
         pass  # e.g. read-only media; fall back to defaults
     return Connection(raw, "sqlite")
@@ -785,7 +796,67 @@ def ensure_log_fields_normalized_schema(conn: Connection):
         cols = {row[1] for row in conn.execute("PRAGMA table_info(log_fields)").fetchall()}
         if "value_norm" not in cols:
             _execute_schema_sql(conn, "ALTER TABLE log_fields ADD COLUMN value_norm TEXT")
-    _execute_schema_sql(conn, "CREATE INDEX IF NOT EXISTS idx_lf_field_value_norm ON log_fields(field, value_norm)")
+    if conn.backend == "postgres":
+        _execute_schema_sql(conn, "CREATE INDEX IF NOT EXISTS idx_lf_field_value_norm ON log_fields(field, value_norm)")
+    else:
+        # value_norm is stored case-folded and the field-filter queries compare
+        # with `COLLATE NOCASE`; the index must be NOCASE too or SQLite cannot
+        # use it (a plain BINARY index is skipped for a NOCASE comparison).
+        existing = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_lf_field_value_norm'"
+        ).fetchone()
+        idx_sql = ((existing["sql"] if existing else "") or "").upper()
+        if "NOCASE" not in idx_sql:
+            _execute_schema_sql(conn, "DROP INDEX IF EXISTS idx_lf_field_value_norm")
+            _execute_schema_sql(conn, "CREATE INDEX idx_lf_field_value_norm ON log_fields(field, value_norm COLLATE NOCASE)")
+    conn.commit()
+
+
+def _ensure_performance_indexes(conn):
+    """Idempotent index tuning applied on every initialize().
+
+    Kept in one place so the backend differences are explicit: SQLite needs
+    case-insensitive (COLLATE NOCASE) identity indexes to match its
+    ``COLLATE NOCASE`` filters, while PostgreSQL search uses lower()/native
+    types on security_events and needs no equivalent here. Partial indexes keep
+    the alert-poller scans proportional to pending work rather than history.
+    """
+    shared = [
+        # Poller queues: only ever scan pending rows, so a partial index stays
+        # tiny regardless of how much alert history accumulates.
+        "CREATE INDEX IF NOT EXISTS idx_alerts_ai_pending ON alerts(id) "
+        "WHERE ai_status IS NULL OR ai_status = 'pending'",
+        "CREATE INDEX IF NOT EXISTS idx_alerts_ticket_pending ON alerts(id) "
+        "WHERE ticket_status IS NULL OR ticket_status = ''",
+        # Alert de-duplication / AI-twin lookups filter by rule_name.
+        "CREATE INDEX IF NOT EXISTS idx_alerts_rule_id ON alerts(rule_name, id)",
+    ]
+    if conn.backend == "postgres":
+        stmts = shared + [
+            # Retire security_events indexes no query uses: nothing filters the
+            # JSONB `fields` column with GIN operators (field search goes through
+            # log_fields), and the BRIN(event_time) duplicates the (event_time,
+            # id) primary key. Both only add write cost.
+            "DROP INDEX IF EXISTS idx_se_fields_gin",
+            "DROP INDEX IF EXISTS idx_se_event_time_brin",
+        ]
+    else:
+        stmts = [
+            # Composite (identity COLLATE NOCASE, received_at): lets the
+            # case-insensitive host/source/destination filters seek by identity
+            # and read the time column from the same index.
+            "CREATE INDEX IF NOT EXISTS idx_logs_host_time_ci ON logs(hostname COLLATE NOCASE, received_at)",
+            "CREATE INDEX IF NOT EXISTS idx_logs_src_time_ci ON logs(source_ip COLLATE NOCASE, received_at)",
+            "CREATE INDEX IF NOT EXISTS idx_logs_dest_time_ci ON logs(destination COLLATE NOCASE, received_at)",
+        ] + shared + [
+            # Retire indexes no query can use: every severity filter wraps the
+            # column in LOWER(), and nothing filters log_fields on raw value
+            # (searches use the case-folded value_norm column instead).
+            "DROP INDEX IF EXISTS idx_logs_severity",
+            "DROP INDEX IF EXISTS idx_lf_field_value",
+        ]
+    for s in stmts:
+        _execute_schema_sql(conn, s)
     conn.commit()
 
 
@@ -1043,6 +1114,7 @@ def initialize(config: dict):
 
         ensure_log_fields_normalized_schema(conn)
         ensure_alert_workflow_schema(conn)
+        _ensure_performance_indexes(conn)
 
         # Durable migration tracking. This prevents repeated PostgreSQL
         # ALTER TABLE execution on every service restart.
