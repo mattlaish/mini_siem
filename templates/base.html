@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="csrf-token" content="{{ csrf_token() }}">
+<title>{% block title %}mini-SIEM{% endblock %}</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+<script src="{{ url_for('static', filename='app.js') }}"></script>
+<script src="{{ url_for('static', filename='csrf.js') }}"></script>
+{% block head %}{% endblock %}
+</head>
+<body>
+<a href="#main" class="skip-link">Skip to main content</a>
+
+{% set nav_items = [
+  ('/',            'Live logs & alerts', '▤'),
+  ('/correlate',   'Correlate',          '⇄'),
+  ('/threatintel', 'Threat Intel',       '◎'),
+  ('/health',      'Health',             '♥'),
+  ('/audit',       'Audit',              '✓'),
+  ('/setup',       'Setup',              '⚙'),
+  ('/ai',          'AI Analyst',         '✦'),
+  ('/help',        'Help',               '?'),
+] %}
+
+<div class="app" id="app">
+  <div class="nav-scrim" id="navScrim" aria-hidden="true"></div>
+
+  <aside class="sidebar">
+    <div class="brand"><span class="dot" aria-hidden="true"></span> mini-SIEM</div>
+    <nav id="primaryNav" aria-label="Primary">
+      {% for href, label, ico in nav_items %}
+      <a href="{{ href }}"{% if request.path == href %} aria-current="page"{% endif %}>
+        <span class="ico" aria-hidden="true">{{ ico }}</span>{{ label }}
+      </a>
+      {% endfor %}
+      <div class="spacer"></div>
+      <div class="side-foot">
+        <a href="/logout"><span class="ico" aria-hidden="true">⍈</span>Log out</a>
+      </div>
+    </nav>
+  </aside>
+
+  <div class="main-col">
+    <header class="topbar">
+      <button class="hamburger" id="hamburger" aria-label="Open navigation" aria-expanded="false" aria-controls="primaryNav">☰</button>
+      <h1>{% block page_title %}mini-SIEM{% endblock %}</h1>
+      <div class="status" id="listenerLine">{% block status %}syslog listener{% endblock %}</div>
+      <div class="right">
+        <button class="theme-btn" id="themeToggle" type="button">☾ Dark</button>
+      </div>
+    </header>
+
+    <main id="main">
+      {% block content %}{% endblock %}
+    </main>
+  </div>
+</div>
+
+{% block scripts %}{% endblock %}
+</body>
+</html>

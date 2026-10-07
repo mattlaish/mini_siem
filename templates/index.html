@@ -1,78 +1,12 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta name="csrf-token" content="{{ csrf_token() }}">
-<script src="{{ url_for('static', filename='csrf.js') }}">document.getElementById('timelineRefresh').addEventListener('click', () => loadTimeline({incremental:true}));
-</script>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>mini-SIEM Dashboard</title>
-<style>
-  :root {
-    --ink: #16202b; --ink-soft: #4a5a6a; --line: #d7dee5;
-    --panel: #ffffff; --canvas: #eef1f4;
-    --accent: #1f5eff; --accent-soft: #e8eefc;
-    --ok: #1a7f5a; --ok-soft: #e5f5ee;
-    --warn: #b5350c; --warn-soft: #fbe9e2;
-    --mono: 'SFMono-Regular', Consolas, monospace;
-    --sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
-  }
-  * { box-sizing: border-box; }
-  body { font-family: var(--sans); margin: 0; background: var(--canvas); color: var(--ink); }
-  header { background: var(--ink); color: #fff; padding: 18px 28px; display: flex; align-items: baseline; gap: 20px; flex-wrap: wrap; }
-  header h1 { margin: 0; font-size: 18px; }
-  header nav { flex: 1; }
-  header .sub { font-family: var(--mono); font-size: 11px; color: #9fb3c8; width: 100%; margin-top: 4px; }
-  header nav a { color: #9fb3c8; font-size: 13px; text-decoration: none; margin-right: 14px; }
-  header nav a:hover, header nav a.active { color: #fff; }
-  .wrap { max-width: 1200px; margin: 24px auto; padding: 0 20px; }
-  .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 20px; }
-  .stat-card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; }
-  .stat-card .num { font-size: 22px; font-weight: 700; }
-  .stat-card .label { font-family: var(--mono); font-size: 10.5px; text-transform: uppercase; color: var(--ink-soft); margin-top: 4px; }
-  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 18px; margin-bottom: 20px; }
-  .panel h2 { margin: 0 0 12px; font-size: 14px; }
-  .toolbar { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
-  .toolbar input, .toolbar select {
-    padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; font-size: 13px; font-family: var(--sans);
-  }
-  .toolbar input[type=text] { flex: 1; min-width: 200px; font-family: var(--mono); }
-  table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
-  thead th { text-align: left; font-family: var(--mono); font-size: 10px; text-transform: uppercase; color: var(--ink-soft); padding: 6px 8px; border-bottom: 1px solid var(--line); }
-  tbody td { padding: 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
-  tbody tr:hover { background: var(--accent-soft); }
-  .msg-cell { font-family: var(--mono); font-size: 12px; }
-  .badge { font-family: var(--mono); font-size: 10px; padding: 2px 7px; border-radius: 20px; border: 1px solid var(--line); white-space: nowrap; }
-  .sev-critical, .sev-alert, .sev-emergency { background: var(--warn-soft); color: var(--warn); border-color: var(--warn); }
-  .sev-warning, .sev-error { background: #fbf1dc; color: #9a6b00; border-color: #9a6b00; }
-  .sev-informational, .sev-notice, .sev-debug { background: var(--ok-soft); color: var(--ok); border-color: var(--ok); }
-  .table-scroll { max-height: 480px; overflow-y: auto; }
-  .muted { color: var(--ink-soft); font-size: 12px; }
-</style>
-</head>
-<body>
+{% extends "base.html" %}
+{% block title %}mini-SIEM Dashboard{% endblock %}
+{% block page_title %}Live logs &amp; alerts{% endblock %}
 
-<header>
-  <h1>mini-SIEM</h1>
-  <nav>
-    <a href="/" class="active">Live logs &amp; alerts</a>
-    <a href="/correlate">Correlate</a>
-    <a href="/threatintel">Threat Intel</a>
-    <a href="/health">Health</a>
-    <a href="/audit">Audit</a>
-    <a href="/setup">Setup</a>
-    <a href="/ai">AI Analyst</a>
-    <a href="/help">Help</a>
-    <a href="/logout">Log out</a>
-  </nav>
-  <div class="sub" id="listenerLine">syslog listener</div>
-</header>
-
+{% block content %}
 <div class="wrap">
 
   <div class="panel" style="display:flex;align-items:center;gap:10px;padding:12px 18px;">
-    <button id="refreshNowBtn" style="padding:8px 14px;border:none;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;background:var(--accent);color:#fff;">Refresh now</button>
-    <button id="timelineRefresh" style="padding:8px 14px;border:1px solid var(--line);border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;">Refresh timeline</button>
+    <button id="refreshNowBtn" class="btn-primary">Refresh now</button>
     <button id="autoToggleBtn" style="padding:8px 14px;border:1px solid var(--ok);border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;background:var(--ok-soft);color:var(--ok);">Auto-refresh: ON</button>
     <span class="muted" id="lastUpdated" style="color:var(--ink-soft);font-size:12px;"></span>
   </div>
@@ -103,7 +37,7 @@
     <div class="table-scroll">
       <table>
         <thead><tr><th>Time</th><th>Rule</th><th>Severity</th><th>Source</th><th>Description</th><th>Workflow</th><th>AI</th></tr></thead>
-        <tbody id="alertsBody"><tr><td colspan="7" class="muted">Loading…</td></tr></tbody>
+        <tbody id="alertsBody" aria-live="polite" aria-relevant="additions"><tr><td colspan="7" class="muted">Loading…</td></tr></tbody>
       </table>
     </div>
   </div>
@@ -111,14 +45,14 @@
   <div class="panel">
     <h2>Log search</h2>
     <div class="toolbar">
-      <input type="text" id="qBox" placeholder="Search message… (use !term to exclude, comma-separate)" title="Examples:&#10;  error           contains 'error'&#10;  !tasklist       excludes 'tasklist'&#10;  error, !debug   contains 'error' and not 'debug'&#10;  !tasklist, !conhost   excludes both">
-      <input list="srcList" type="text" id="ipBox" placeholder="Source…">
+      <input type="text" id="qBox" aria-label="Search message text" placeholder="Search message… (use !term to exclude, comma-separate)" title="Examples:&#10;  error           contains 'error'&#10;  !tasklist       excludes 'tasklist'&#10;  error, !debug   contains 'error' and not 'debug'&#10;  !tasklist, !conhost   excludes both">
+      <input list="srcList" type="text" id="ipBox" aria-label="Filter by source" placeholder="Source…">
       <datalist id="srcList"></datalist>
-      <input list="hostList" type="text" id="hostBox" placeholder="Host…">
+      <input list="hostList" type="text" id="hostBox" aria-label="Filter by host" placeholder="Host…">
       <datalist id="hostList"></datalist>
-      <input list="destList" type="text" id="destBox" placeholder="Destination…" title="Searches the Destination column, plus any configured destination aliases (Setup -> Search field aliases). Supports !term exclusion and comma-separated terms.">
+      <input list="destList" type="text" id="destBox" aria-label="Filter by destination" placeholder="Destination…" title="Searches the Destination column, plus any configured destination aliases (Setup -> Search field aliases). Supports !term exclusion and comma-separated terms.">
       <datalist id="destList"></datalist>
-      <select id="sevBox" title="Filter by severity. 'exactly' matches one level; 'and above' shows that level and anything more severe; 'exclude' hides that level.">
+      <select id="sevBox" aria-label="Filter by severity" title="Filter by severity. 'exactly' matches one level; 'and above' shows that level and anything more severe; 'exclude' hides that level.">
         <option value="">All severities</option>
         <optgroup label="Exactly">
           <option value="emergency">emergency</option><option value="alert">alert</option>
@@ -136,15 +70,15 @@
           <option value="!=debug">not debug</option>
         </optgroup>
       </select>
-      <input type="text" id="fieldFilterBox" placeholder="field=value (e.g. action=accept)" title="Filter by any extracted field. Type field=value and press Enter — e.g. action=accept, user=matt. Works on any field, no need to add a column first." style="border-color:var(--accent);min-width:210px;">
+      <input type="text" id="fieldFilterBox" aria-label="Filter by extracted field (field=value)" placeholder="field=value (e.g. action=accept)" title="Filter by any extracted field. Type field=value and press Enter — e.g. action=accept, user=matt. Works on any field, no need to add a column first." style="border-color:var(--accent);min-width:210px;">
     </div>
     <div id="fieldChips" style="display:none;gap:6px;flex-wrap:wrap;align-items:center;margin-top:-4px;margin-bottom:8px;padding:4px;border-radius:6px;transition:background .1s,border-color .1s;border:1px dashed transparent;"></div>
     <div id="xfilterBar" class="toolbar" style="display:none;"></div>
     <div class="toolbar">
       <label class="muted" style="align-self:center;">From</label>
-      <input type="datetime-local" id="fromBox" title="Only events at or after this time">
+      <input type="datetime-local" id="fromBox" aria-label="From time" title="Only events at or after this time">
       <label class="muted" style="align-self:center;">To</label>
-      <input type="datetime-local" id="toBox" title="Only events at or before this time">
+      <input type="datetime-local" id="toBox" aria-label="To time" title="Only events at or before this time">
       <button id="refreshBtn">Apply / Refresh</button>
       <button id="clearBtn" style="background:#fff;color:var(--ink-soft);border:1px solid var(--line);">Clear</button>
       <select id="exportFmt" title="Export format">
@@ -160,7 +94,7 @@
     <div class="table-scroll">
       <table>
         <thead><tr id="logsHead"><th>Time</th><th>Log source</th><th>Net source</th><th>Severity</th><th>Host</th><th>Destination</th><th>App</th><th>Message</th></tr></thead>
-        <tbody id="logsBody"><tr><td colspan="7" class="muted">Loading…</td></tr></tbody>
+        <tbody id="logsBody" aria-live="polite" aria-relevant="additions"><tr><td colspan="8" class="muted">Loading…</td></tr></tbody>
       </table>
     </div>
     <details style="margin-top:12px;">
@@ -176,6 +110,29 @@
 
 </div>
 
+
+<!-- AI analysis popup -->
+<div id="aiModalOverlay" onclick="if(event.target===this)closeAiModal()" style="display:none;position:fixed;inset:0;background:rgba(22,32,43,.55);z-index:1000;align-items:center;justify-content:center;padding:24px;">
+  <div style="background:var(--panel);border-radius:12px;max-width:720px;width:100%;max-height:85vh;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,.3);">
+    <div style="padding:18px 22px;border-bottom:1px solid var(--line);display:flex;align-items:flex-start;justify-content:space-between;gap:12px;">
+      <div>
+        <div style="font-family:var(--mono);font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--ink-soft);margin-bottom:4px;">AI analysis</div>
+        <div id="aiModalTitle" style="font-size:16px;font-weight:700;"></div>
+        <div id="aiModalMeta" style="font-size:12px;color:var(--ink-soft);margin-top:6px;"></div>
+      </div>
+      <button onclick="closeAiModal()" style="background:none;border:none;font-size:22px;line-height:1;cursor:pointer;color:var(--ink-soft);padding:2px 6px;" title="Close (Esc)">×</button>
+    </div>
+    <div id="aiModalBody" style="padding:18px 22px;overflow-y:auto;max-height:60vh;min-height:120px;white-space:pre-wrap;font-size:13px;line-height:1.6;"></div>
+    <div style="padding:12px 22px;border-top:1px solid var(--line);display:flex;gap:10px;justify-content:flex-end;">
+      <button id="aiModalLogs" style="padding:8px 14px;border:1px solid var(--accent);background:#fff;color:var(--accent);border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;">View related logs</button>
+      <button onclick="closeAiModal()" style="padding:8px 14px;border:none;background:var(--accent);color:#fff;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;">Close</button>
+    </div>
+  </div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
 <script>
 async function loadStats() {
   const r = await fetch('/api/stats');
@@ -872,25 +829,4 @@ refreshAll(false);
 setInterval(() => { if (autoRefresh) refreshAll(true); }, 5000);
 </script>
 
-
-<!-- AI analysis popup -->
-<div id="aiModalOverlay" onclick="if(event.target===this)closeAiModal()" style="display:none;position:fixed;inset:0;background:rgba(22,32,43,.55);z-index:1000;align-items:center;justify-content:center;padding:24px;">
-  <div style="background:var(--panel);border-radius:12px;max-width:720px;width:100%;max-height:85vh;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,.3);">
-    <div style="padding:18px 22px;border-bottom:1px solid var(--line);display:flex;align-items:flex-start;justify-content:space-between;gap:12px;">
-      <div>
-        <div style="font-family:var(--mono);font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--ink-soft);margin-bottom:4px;">AI analysis</div>
-        <div id="aiModalTitle" style="font-size:16px;font-weight:700;"></div>
-        <div id="aiModalMeta" style="font-size:12px;color:var(--ink-soft);margin-top:6px;"></div>
-      </div>
-      <button onclick="closeAiModal()" style="background:none;border:none;font-size:22px;line-height:1;cursor:pointer;color:var(--ink-soft);padding:2px 6px;" title="Close (Esc)">×</button>
-    </div>
-    <div id="aiModalBody" style="padding:18px 22px;overflow-y:auto;max-height:60vh;min-height:120px;white-space:pre-wrap;font-size:13px;line-height:1.6;"></div>
-    <div style="padding:12px 22px;border-top:1px solid var(--line);display:flex;gap:10px;justify-content:flex-end;">
-      <button id="aiModalLogs" style="padding:8px 14px;border:1px solid var(--accent);background:#fff;color:var(--accent);border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;">View related logs</button>
-      <button onclick="closeAiModal()" style="padding:8px 14px;border:none;background:var(--accent);color:#fff;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;">Close</button>
-    </div>
-  </div>
-</div>
-
-</body>
-</html>
+{% endblock %}

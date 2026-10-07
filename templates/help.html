@@ -1,25 +1,8 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta name="csrf-token" content="{{ csrf_token() }}">
-<script src="{{ url_for('static', filename='csrf.js') }}"></script>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>mini-SIEM — Help</title>
+{% extends "base.html" %}
+{% block title %}Help — mini-SIEM{% endblock %}
+{% block page_title %}Help{% endblock %}
+{% block head %}
 <style>
-  :root {
-    --ink:#16202b; --ink-soft:#4a5a6a; --line:#d7dee5; --panel:#fff; --canvas:#eef1f4;
-    --accent:#1f5eff; --accent-dark:#143fb0; --accent-soft:#e8eefc;
-    --ok:#1a7f5a; --warn:#b5350c; --amber:#9a6b00;
-    --mono:'SFMono-Regular',Consolas,monospace;
-    --sans:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;
-  }
-  * { box-sizing:border-box; }
-  body { font-family:var(--sans); margin:0; background:var(--canvas); color:var(--ink); }
-  header { background:var(--ink); color:#fff; padding:18px 28px; display:flex; align-items:baseline; gap:20px; flex-wrap:wrap; }
-  header h1 { margin:0; font-size:18px; }
-  header nav a { color:#9fb3c8; font-size:13px; text-decoration:none; margin-right:14px; }
-  header nav a:hover, header nav a.active { color:#fff; }
   .wrap { max-width:1000px; margin:24px auto; padding:0 20px; display:flex; gap:24px; }
   .toc { flex:0 0 200px; position:sticky; top:24px; align-self:flex-start; font-size:13px; }
   .toc a { display:block; color:var(--ink-soft); text-decoration:none; padding:4px 0; }
@@ -36,24 +19,9 @@
   .lead { font-size:13.5px; color:var(--ink-soft); max-width:70ch; }
   @media (max-width:760px){ .wrap{flex-direction:column;} .toc{position:static;flex-basis:auto;} }
 </style>
-</head>
-<body>
+{% endblock %}
 
-<header>
-  <h1>mini-SIEM</h1>
-  <nav>
-    <a href="/">Live logs &amp; alerts</a>
-    <a href="/correlate">Correlate</a>
-    <a href="/threatintel">Threat Intel</a>
-    <a href="/health">Health</a>
-    <a href="/audit">Audit</a>
-    <a href="/setup">Setup</a>
-    <a href="/ai">AI Analyst</a>
-    <a href="/help" class="active">Help</a>
-    <a href="/logout">Log out</a>
-  </nav>
-</header>
-
+{% block content %}
 <div class="wrap">
   <nav class="toc">
     <a href="#intel">Threat Intel &amp; IOC feeds</a>
@@ -215,6 +183,4 @@
     </div>
   </div>
 </div>
-
-</body>
-</html>
+{% endblock %}

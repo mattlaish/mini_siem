@@ -1,28 +1,8 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta name="csrf-token" content="{{ csrf_token() }}">
-<script src="{{ url_for('static', filename='csrf.js') }}"></script>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>mini-SIEM — Correlate</title>
+{% extends "base.html" %}
+{% block title %}Correlate — mini-SIEM{% endblock %}
+{% block page_title %}Correlate{% endblock %}
+{% block head %}
 <style>
-  :root {
-    --ink: #16202b; --ink-soft: #4a5a6a; --line: #d7dee5;
-    --panel: #ffffff; --canvas: #eef1f4;
-    --accent: #1f5eff; --accent-dark: #143fb0; --accent-soft: #e8eefc;
-    --ok: #1a7f5a; --ok-soft: #e5f5ee;
-    --warn: #b5350c; --warn-soft: #fbe9e2;
-    --amber: #9a6b00; --amber-soft: #fbf1dc;
-    --mono: 'SFMono-Regular', Consolas, monospace;
-    --sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
-  }
-  * { box-sizing: border-box; }
-  body { font-family: var(--sans); margin: 0; background: var(--canvas); color: var(--ink); }
-  header { background: var(--ink); color: #fff; padding: 18px 28px; display: flex; align-items: baseline; gap: 20px; }
-  header h1 { margin: 0; font-size: 18px; }
-  header nav a { color: #9fb3c8; font-size: 13px; text-decoration: none; margin-right: 14px; }
-  header nav a:hover, header nav a.active { color: #fff; }
   .wrap { max-width: 1200px; margin: 24px auto; padding: 0 20px; }
   .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 18px; margin-bottom: 20px; }
   .panel h2 { margin: 0 0 4px; font-size: 15px; }
@@ -83,24 +63,9 @@
   .scope-stat strong { display: block; font-family: var(--mono); font-size: 11px; margin-bottom: 2px; }
   @media (max-width: 720px) { .form-grid, .investigate-grid { grid-template-columns: 1fr; } .investigate-grid .full { grid-column: auto; } }
 </style>
-</head>
-<body>
+{% endblock %}
 
-<header>
-  <h1>mini-SIEM</h1>
-  <nav>
-    <a href="/">Live logs &amp; alerts</a>
-    <a href="/correlate" class="active">Correlate</a>
-    <a href="/threatintel">Threat Intel</a>
-    <a href="/health">Health</a>
-    <a href="/audit">Audit</a>
-    <a href="/setup">Setup</a>
-    <a href="/ai">AI Analyst</a>
-    <a href="/help">Help</a>
-    <a href="/logout">Log out</a>
-  </nav>
-</header>
-
+{% block content %}
 <div class="wrap">
 
   <div class="panel">
@@ -171,7 +136,9 @@
   </div>
 
 </div>
+{% endblock %}
 
+{% block scripts %}
 <script>
 const $ = id => document.getElementById(id);
 
@@ -428,6 +395,4 @@ document.getElementById('saveSchedBtn').addEventListener('click', async () => {
 })();
 loadReports();
 </script>
-
-</body>
-</html>
+{% endblock %}
