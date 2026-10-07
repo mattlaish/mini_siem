@@ -111,3 +111,26 @@ reverted the merged PR #3. Both backends fixed; both designs kept.
 Validation: `compileall` clean; SQLite suite 243 passed / 38 pre-existing
 unrelated failures (no regressions; the restore fixed the 2 contract tests);
 truth gate PASS; all 3 live-PostgreSQL integration tests pass against real PG 16.
+
+## Web UI redesign — 2026-10-07
+
+Reworked all 10 Flask templates onto one shell and fixed two UI bugs.
+
+- New `templates/base.html` + `static/app.css` + `static/app.js`: left-sidebar
+  nav (mobile drawer) + slim top bar, replacing the per-page horizontal nav.
+  Active item derived from `request.path` (no `dashboard.py` change).
+- Single palette/component system (was 10 duplicated `:root` blocks); light/dark
+  theme (prefers-color-scheme + persisted manual toggle); responsive breakpoint;
+  KPI grid uses `auto-fit`. a11y: skip link, `aria-current`, `aria-live` on the
+  live tables, `aria-label` on placeholder-only search inputs.
+- Bug fixes in `index.html`: removed the orphaned "Refresh timeline" button
+  (its only handler lived in the ignored inline body of `<script src=csrf.js>`
+  and called a non-existent `loadTimeline()`); logs loading row colspan 7 → 8.
+- `login.html`/`change_password.html` share the palette/dark mode but stay
+  standalone (no sidebar); header/inputs made theme-safe.
+- No external/CDN deps; element IDs and page scripts unchanged (behavior
+  preserved). pytest unchanged at 243 passed / 38 pre-existing failures.
+
+Follow-ups not done: externalize per-page inline `<script>` blocks to allow a
+strict `script-src` CSP; move a few sub-element hardcoded light hex in secondary
+pages to vars for perfect dark-mode tint.
