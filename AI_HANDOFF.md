@@ -134,3 +134,57 @@ Reworked all 10 Flask templates onto one shell and fixed two UI bugs.
 Follow-ups not done: externalize per-page inline `<script>` blocks to allow a
 strict `script-src` CSP; move a few sub-element hardcoded light hex in secondary
 pages to vars for perfect dark-mode tint.
+
+## Managed detection + process execution monitoring — 2026-10-15
+
+Status: IMPLEMENTED_TESTING_DEFERRED. This section supersedes the older statement
+that rule-management UI is only a revisit item. See P14 in ROADMAP.md and
+DETECTION_RULE_MANAGEMENT.md for the complete operating/deployment contract.
+
+Implemented:
+- Reused existing parser, source profiles, FieldIndexer, log_fields and Event
+  Storage v2. Added provider/channel/ID-qualified 4688, Sysmon 1 and 4104 semantic
+  mapping, process/parent/identity/time/script fields and raw-JSON reindex support.
+- `/detection-rules`, `/execution-windows`, `/security-alerts`: built-in toggle/
+  threshold tuning, data-only AND condition editor, no-side-effect process/script
+  simulator, host/group calendars, overnight/holiday/one-off/exception-only windows,
+  exact path/account and expiring ticketed exceptions, atomic full before/after
+  audit and optimistic config revisions. Admin writes; authenticated read/simulate.
+- Always-Critical web-parent shell and High (`error`) out-of-hours shell rules.
+  java/httpd parents require a configured host role. Web-shell cannot be exempted.
+- Bounded persistent duplicate evidence linking in existing alerts/app_config;
+  same rule+config, host/PID/path/parent-PID/command and <=2s event time required.
+  512 keys/5-minute receipt horizon, 500 evidence IDs/alert; raw events preserved.
+- Per-host/source receipt monitoring every 15s, persisted silence latch and one
+  warning per outage; stale monitor observations are unknown. Explicitly opt-in.
+- AI usage UI works even with AI off. Provider/model input/cached/output token
+  rates produce explicit USD estimates; unknown rates remain unpriced.
+- Removed unused POST /api/correlate and POST /api/normalize. Active normalization,
+  investigate and playbook paths remain. Machine API ingest now reaches its key
+  verifier without browser login and preserves Windows JSON. Standalone HTTP and
+  async listener ingest invoke RuleEngine after storage. Auth guard setup is
+  idempotent. Existing threshold state remains in-memory by design.
+
+Validation on Python 3.12/Windows with synthetic data:
+- New tests: 29 PASS; focused detection/NXLog/routes/storage/lifecycle/CEF: 75 PASS
+  before the final equivalent full-suite run.
+- Same-environment baseline: 225 PASS / 47 FAIL / 3 SKIP.
+- Updated: 254 PASS / same 47 FAIL / 3 SKIP; zero new failing test identities.
+- Linux-only systemd_host_qualification collection excluded (`pwd` unavailable).
+  Existing failures include absent performance/search implementations and POSIX
+  permission/Unix execution assumptions; this slice does not claim a green suite.
+- Placeholder truth PASS; Python/JS syntax checked. Browser with disposable
+  synthetic data verified rule edit/save, simulation, windows, alert evidence and
+  AI usage display. No browser errors observed. Computer-use verification led to
+  clear saved/draft feedback and cancellation of newly created unsaved objects.
+
+Deployment: update the complete source/templates/static set, install requirements
+(tzdata added), restart listener and dashboard. No DB schema migration or new
+runtime privileges. No Git operations were performed; synchronization is manual.
+
+Remaining: actual Windows audit-policy/NXLog/network/notification E2E, PostgreSQL
+independent-session dedup test (added opt-in CI coverage), deployed privilege/
+systemd/load checks and site-approved calendar/exception/health configuration.
+4104 fragment reassembly and a general process graph are optional future scope.
+Existing source security/reliability backlog remains separate. Recommended next:
+real Security 4688 -> NXLog -> SIEM -> configured ticket delivery qualification.

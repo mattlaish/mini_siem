@@ -2,6 +2,10 @@
 
 ## Purpose
 
+Latest implementation: 2026-10-15 managed detection/process monitoring. See the
+dated entry at the end and ROADMAP.md P14; older slice statuses are historical
+where explicitly superseded. Owner handles Git synchronization manually.
+
 This file is the persistent implementation ledger for AI-assisted development.
 It complements, but does not replace, Git history:
 
@@ -99,9 +103,9 @@ Acceptance:
 - Example configuration contains placeholders only.
 - Application starts with documented defaults or copied local configuration.
 
-### Slice 1 — HTTP API-key ingestion authentication — PLANNED
+### Slice 1 — HTTP API-key ingestion authentication — IMPLEMENTED_TESTING_DEFERRED (2026-10-15)
 
-Confirmed issue:
+Resolved issue (historical description):
 
 - The global browser login guard currently blocks unauthenticated
   `/api/ingest` requests before the endpoint can validate its API key.
@@ -706,3 +710,69 @@ Runtime change (not documentation-only): added `investigation_profiles.py`; repl
 
 - CI (`pytest -q`) remains red pending the four in-progress feature areas
   (ingest perf pipeline, FTS text search, evidence archive, timeline UI).
+
+## 2026-10-15 — Managed detection / process execution monitoring — IMPLEMENTED_TESTING_DEFERRED
+
+### Intent
+
+Deliver the requested rule management, AI usage UI, dead-route cleanup and Windows
+process monitoring without duplicating normalization/storage/alert infrastructure.
+ROADMAP.md P14 records D1-D8 slices; DETECTION_RULE_MANAGEMENT.md is the operating
+contract. The historical optional rule-UX status is superseded.
+
+### Files Changed
+
+- Added `windows_events.py`, `detection.py`, `detection_runtime.py`, `ai_usage.py`.
+- Added `web_blueprints/detection.py`, `templates/detection.html`,
+  `static/detection.js`, `static/ai_usage.js`.
+- Updated listener/rules/normalization/typed projection, standalone dashboard and
+  combined entry point; base/AI/main templates, auth guard and requirements.
+- Added 29 synthetic tests in `tests/test_detection_management.py` and an opt-in
+  PostgreSQL concurrent duplicate-evidence test.
+- Updated roadmap, README, both AI handoff documents, TESTING and this ledger.
+
+### Behavior and Decisions
+
+- Provider+channel+ID-qualified 4688, Sysmon 1 and 4104 semantic fields, unchanged
+  original JSON, host-timezone resolution and explicit unknown/clock-skew state.
+- Built-in toggles/threshold tuning and safe field-match CRUD/simulation; saved
+  config reloads within five seconds. Threshold counters remain memory-only.
+- Always-Critical Web Server Spawning Shell; scoped Java/httpd role; High (`error`)
+  Out-of-Hours only for configured calendars. Exception-only calendars prevent a
+  backup approval from approving every shell on the host.
+- Expiring rule-specific exceptions require exact paths/account, command pattern,
+  host/group/window and ticket; actual saving admin is approver. Full before/after
+  audit commits atomically with revisioned configuration.
+- Bounded persisted duplicate evidence linking and source-specific telemetry
+  silence alerts use existing alerts/app_config. Existing AI/ticket dispatch and
+  lifecycle apply; duplicate delivery does not create a second ticket.
+- AI usage remains readable with AI off. USD amounts are current-rate estimates;
+  unknown models/providers remain unpriced. No pricing is invented.
+- Removed unused POST /api/correlate and POST /api/normalize; active normalization
+  endpoints remain. Fixed the browser-guard conflict for API-key ingest (Slice 1),
+  retained Windows JSON, and wired rules into standalone HTTP/async ingest paths.
+
+### Validation
+
+- New coverage: 29 PASS. Focused detection/NXLog/routes/typed-storage/lifecycle/CEF:
+  75 PASS. Full comparable Windows run: baseline 225 PASS / 47 FAIL / 3 SKIP;
+  updated 254 PASS / same 47 FAIL / 3 SKIP; zero newly failing identities.
+- Linux-only systemd qualification cannot collect on Windows (`pwd`). Existing
+  POSIX/platform assumptions and performance/search debt remain visible.
+- Placeholder truth PASS, Python/JavaScript syntax checked; browser edit/save,
+  simulation, calendars, original evidence and AI usage surface verified using a
+  separate synthetic localhost preview. Browser error log was empty.
+- Live PostgreSQL concurrent-session coverage added but NOT_RUN locally. Windows
+  event generation/NXLog/network/real destination notification remain deferred.
+
+### Deployment / Remaining Work
+
+Install updated requirements (`tzdata`), copy the complete source/static/templates
+set, then restart listener and dashboard. No schema DDL, second DB or added runtime
+privileges. Source package is a development handoff, not a release-qualified build.
+No Git operations were run; owner handles synchronization.
+
+Next: live 4688 -> NXLog -> SIEM -> configured notification E2E, PostgreSQL locking
+and deployed privilege/load checks. Script reassembly and general process graph
+are optional extensions. Request limits, outbound URL policy, SSO roles, IOC size
+limits, Sophos event idempotency and other pre-existing backlog remain separate.

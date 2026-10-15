@@ -1,6 +1,10 @@
 from flask import Blueprint, jsonify, request
 import os
 import ai_soc
+import ai_usage
+import json
+import auth
+from datetime import datetime, timezone
 
 bp = Blueprint("ai_api", __name__)
 _svc = None
@@ -123,7 +127,43 @@ def api_ai_usage():
         ).fetchone()
         def as_dict(row):
             return dict(row) if hasattr(row, "keys") else {}
-        return jsonify({"summary": as_dict(total), "rows": [as_dict(r) for r in rows]})
+        groups = [as_dict(r) for r in conn.execute(
+            "SELECT provider,model,COUNT(*) AS calls,COALESCE(SUM(input_tokens),0) AS input_tokens,"
+            "COALESCE(SUM(output_tokens),0) AS output_tokens,COALESCE(SUM(cached_tokens),0) AS cached_tokens "
+            "FROM ai_usage_audit GROUP BY provider,model ORDER BY provider,model").fetchall()]
+        rates = ai_usage.load_rates(conn)
+        cost = ai_usage.estimate(groups, rates)
+        return jsonify({"summary": as_dict(total), "rows": [as_dict(r) for r in rows],
+                        "by_model": groups, "rates": rates, "cost": cost})
+    finally:
+        conn.close()
+
+
+@bp.put("/api/ai/usage/rates")
+def api_ai_usage_rates():
+    denied = _svc.require_admin()
+    if denied is not None:
+        return denied
+    if request.content_length and request.content_length > 32000:
+        return jsonify(error="Rate catalog too large"), 413
+    body = request.get_json(silent=True)
+    try:
+        rates = ai_usage.validate_rates(body.get("rates") if isinstance(body, dict) else None)
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
+    conn = _svc.get_conn()
+    try:
+        before = ai_usage.load_rates(conn)
+        conn.execute("INSERT INTO app_config(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                     (ai_usage.KEY, json.dumps(rates)))
+        conn.execute("INSERT INTO audit_log(at,username,source_ip,action,target,detail) VALUES(?,?,?,?,?,?)",
+                     (datetime.now(timezone.utc).isoformat(), auth.current_user(), request.remote_addr,
+                      "ai_usage_rates_changed", ai_usage.KEY, json.dumps({"before": before, "after": rates})))
+        conn.commit()
+        return jsonify(ok=True)
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         conn.close()
 

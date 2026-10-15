@@ -164,3 +164,37 @@ def test_field_search_is_case_insensitive_via_alias(pg_cfg):
             dashboard.get_search_aliases = orig
     finally:
         conn.close()
+
+
+def test_detection_config_and_concurrent_duplicate_evidence(pg_cfg):
+    """Independent PostgreSQL sessions must link one process to one alert."""
+    import json
+    from concurrent.futures import ThreadPoolExecutor
+    from datetime import datetime, timezone
+    import detection
+    from listener import Storage, parse_syslog
+    db.initialize(pg_cfg)
+    store = Storage(db_config=pg_cfg)
+    try:
+        saved = detection.save_config(store.conn, detection.defaults(), "pg-fixture")
+        assert saved["revision"] == 1
+        raw = json.dumps({"EventID": 4688, "Channel": "Security", "SourceName": "Microsoft-Windows-Security-Auditing",
+                          "Hostname": "web-fixture", "EventTime": datetime.now(timezone.utc).isoformat(),
+                          "NewProcessName": "cmd.exe", "ParentProcessName": "tomcat7.exe", "NewProcessId": "100", "ProcessId": "50"})
+        event = parse_syslog(raw, "192.0.2.10")
+        ids = [store.insert_log(event, fields=event["_normalized"]) for _ in range(2)]
+        finding = detection.evaluate(saved, event["_normalized"])["findings"][0]
+        def emit(log_id):
+            conn = db.connect(pg_cfg)
+            try:
+                return detection.emit(conn, finding, log_id, "192.0.2.10")
+            finally:
+                conn.close()
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            emitted = list(pool.map(emit, ids))
+        assert emitted[0] == emitted[1]
+        row = store.conn.execute("SELECT log_ids,description FROM alerts WHERE id=?", (emitted[0],)).fetchone()
+        assert set(map(int, row["log_ids"].split(","))) == set(ids)
+        assert detection.describe_alert(dict(row))["detection_evidence"]["occurrences"] == 2
+    finally:
+        store.close()

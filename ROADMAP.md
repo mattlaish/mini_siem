@@ -191,13 +191,17 @@ mini-SIEM **will not become a full case-management or SOAR product**. Existing T
 
 ### 13.3-13.6 Revisit backlog
 
-The current AI Analyst, `/correlate` Investigate workspace, bounded IP entity expansion, correlation playbooks and operational metrics are real implemented capabilities. A separate consolidated investigation workspace, broader non-IP entity graph, dedicated rule-management UX and additional SOC metrics remain revisit items rather than current blockers.
+The current AI Analyst, `/correlate` Investigate workspace, bounded IP entity expansion, correlation playbooks and operational metrics are real implemented capabilities. Dedicated rule management and process execution monitoring are now implemented under P14 below. A separate consolidated investigation workspace, broader non-IP entity graph and additional SOC metrics remain revisit items rather than current blockers.
 
 ## P7 — AI SOC / OpenAI integration
 
 Status: `IMPLEMENTED_TESTING_DEFERRED`
 
 Current source includes OpenAI Responses API support with compatible Chat Completions fallback, external encrypted API-key storage with an off-database master, HTTPS fail-closed external egress, configurable outbound evidence redaction (`strict` default / `identifiers` / `none`), explicit Responses `failed`/`incomplete` handling, refusal-aware output extraction, fail-closed completed-but-empty output handling, external-provider redirect refusal before credentials/evidence can be reused at another endpoint, bounded HTTP/network retry with total timeout, provider/client request IDs, usage telemetry, metadata-only AI call audit, and opt-in live `gpt-5.6-luna` Responses qualification coverage. Mocked/provider regression passes; live provider qualification remains `NOT_RUN/DEFERRED` until `OPENAI_API_KEY` is supplied in an opted-in environment. Cost accounting, provider-specific model-capability catalog validation, and migration away from the current custom authenticated secretbox primitive remain later hardening work.
+
+2026-10-15 P7 addendum: operator-rate AI usage/cost estimates are implemented
+under P14. Provider invoice reconciliation, model-capability catalog validation
+and secretbox replacement remain separate later hardening work.
 
 ## P8 — Ingest / parsing / detection quality
 
@@ -321,3 +325,32 @@ collection remains environment-blocked for the same three modules, including
 SQLite build remains deferred.
 
 P3 source regression after this hardening: 35 focused tests PASS / 0 FAIL; broad direct-parent comparison improved from 187 PASS / 37 FAIL / 1 SKIP to 193 PASS / 37 FAIL / 1 SKIP, with the same 37 inherited failing node IDs and 0 new failures. Local host qualification is correctly `BLOCKED_ENVIRONMENT` on the non-systemd build container; representative deployed-host evidence remains the promotion gate.
+
+## P14 — Managed detection and process execution monitoring — 2026-10-15
+
+Status: `IMPLEMENTED_TESTING_DEFERRED`
+
+This user-requested scope promotes the former rule-management revisit item into
+real development. Existing normalization, storage, alert lifecycle and ticketing
+are reused. Detailed operating contract: `DETECTION_RULE_MANAGEMENT.md`.
+
+| Slice | Implementation | Remaining gate |
+| --- | --- | --- |
+| D1 Windows semantic normalization | Source-qualified Security 4688, Sysmon 1 and PowerShell 4104; canonical process/user/time fields; raw preservation and reindex | Real NXLog field variants and command-line audit policy |
+| D2 Rule management | Five built-ins toggle/tuning; bounded field-match CRUD; data-only simulator; atomic revisioned config/audit | Deployed analyst/admin browser acceptance |
+| D3 Calendars and exceptions | Host/group IANA calendars, overnight/holiday/one-off and exception-only windows; exact identity/path + expiring ticketed exceptions | Site-approved host/group/window configuration |
+| D4 Process alerts/evidence | Always-Critical web-parent shell; High out-of-hours shell; bounded transactional duplicate linking; existing lifecycle/AI/tickets | Live PostgreSQL independent-session locking; real notification delivery |
+| D5 Extended telemetry | Sysmon GUID/parent fields; 4104 script/fragment fields and script match rules | Script-fragment reassembly and broad process graph remain optional future scope |
+| D6 Receipt health | Per-host/source expectations, persisted silence latch and one warning per outage, stale state shown unknown | Source heartbeat/activity tuning, stop-NXLog end-to-end drill |
+| D7 AI usage/cost surface | Token/call/error/retry/model/recent-call UI; explicit per-model USD rate estimates and unpriced counts | Site rates; provider invoice reconciliation remains outside this slice |
+| D8 Ingest/route integration | Standalone HTTP and async ingest invoke rules after storage; API-key-only ingest preserves Windows JSON; dead correlate/normalize routes removed | Deployed split-service ingest regression |
+
+Default web-shell rule is enabled; out-of-hours and health expectations need
+explicit host/calendar configuration. Threshold windows remain in-memory by
+design. No second DB, owner migration, arbitrary code editor or new response/SOAR
+authority is introduced. Source qualification does not imply P12/P13 release.
+
+Recommended next task: exercise real 4688 -> NXLog -> listener -> indexed fields
+-> rule -> alert -> configured ticket destination, then opt into the new PostgreSQL
+concurrent duplicate-evidence test. Preserve existing P1-P13 live gates and the
+separate outstanding security/reliability slices.

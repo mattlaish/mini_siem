@@ -270,6 +270,8 @@ def _close_request_connection(_exc=None):
 # receiver falls back to a direct insert with no rule/ioc processing.
 _INGEST_HOOK = None
 _INGEST_STORAGE = None
+_HTTP_PIPELINE_LOCK = threading.Lock()
+_HTTP_PIPELINE = None
 
 
 def set_ingest_hook(on_message, storage):
@@ -283,34 +285,36 @@ def _ingest_raw(raw_line: str, source_ip: str):
     if _INGEST_HOOK is not None:
         _INGEST_HOOK(raw_line, source_ip)
         return True
-    try:
-        import listener as _listener
-        import normalize as _normalize
-        ev = _listener.parse_syslog(raw_line, source_ip)
-        conn = get_conn()
-        cur = conn.execute(
-            """INSERT INTO logs (received_at, source_ip, peer_ip, format, priority, facility,
-               severity, device_timestamp, hostname, destination, app_name, proc_id, msg_id, message, raw)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (ev["received_at"], ev["source_ip"], ev.get("peer_ip", ""), ev["format"], ev["priority"],
-             ev["facility"], ev["severity"], ev["device_timestamp"], ev["hostname"],
-             ev.get("destination", ""),
-             ev["app_name"], ev["proc_id"], ev["msg_id"], ev["message"], ev["raw"]))
-        log_id = cur.lastrowid
-        # extract searchable fields (the listener's socket path does this via
-        # FieldIndexer; poller/API events come through here, so do it too or
-        # they'd have columns but no searchable fields).
-        try:
-            fields = _normalize.extract_fields(ev.get("message"), [],
-                                               json_obj=ev.get("_json"))
-            if fields:
-                _normalize.write_fields(conn, log_id, fields)
-        except Exception:
-            pass
-        conn.commit(); conn.close()
-        return True
-    except Exception:
-        return False
+    global _HTTP_PIPELINE
+    import listener as _listener
+    import normalize as _normalize
+    import json
+    cfg = _db_config()
+    identity = json.dumps(cfg, sort_keys=True)
+    # Keep live threshold state across HTTP calls, using a component-local
+    # connection and the same transactional raw/projection write as syslog.
+    with _HTTP_PIPELINE_LOCK:
+        if _HTTP_PIPELINE is None or _HTTP_PIPELINE[0] != identity:
+            if _HTTP_PIPELINE:
+                _HTTP_PIPELINE[2].stop_monitor()
+                _HTTP_PIPELINE[1].close()
+            store = _listener.Storage(db_config=cfg)
+            engine = _listener.RuleEngine(store)
+            engine.start_monitor()
+            _HTTP_PIPELINE = (identity, store, engine)
+        _, store, engine = _HTTP_PIPELINE
+        event = _listener.parse_syslog(raw_line, source_ip)
+        with engine._lock:
+            engine._reload_config()
+            from windows_events import resolve_host_time
+            resolve_host_time(event, engine.config)
+        with store.lock:
+            patterns = _normalize.load_patterns_from_conn(store.conn)
+        fields = _normalize.extract_fields(event.get("message"), patterns, json_obj=event.get("_json"))
+        fields.update(event.get("_normalized", {}))
+        log_id = store.insert_log(event, fields=fields)
+        engine.process(log_id, event)
+    return True
 
 
 def _json_to_syslog_line(obj: dict) -> str:
@@ -318,6 +322,10 @@ def _json_to_syslog_line(obj: dict) -> str:
     existing parser understands. Recognized optional keys: severity/level,
     hostname/host, app/app_name/program, message/msg. Unknown scalar keys are
     appended as key=value so field extraction can pick them up."""
+    # Keep Windows source/channel and nested EventData intact for normalization.
+    if any(k in obj for k in ("EventID", "EventId", "event_id", "Event")):
+        import json
+        return json.dumps(obj, ensure_ascii=False)
     from datetime import datetime
     SEV = {"emergency":0,"alert":1,"critical":2,"error":3,"err":3,"warning":4,
            "warn":4,"notice":5,"informational":6,"info":6,"debug":7}
@@ -1317,6 +1325,8 @@ def api_alerts():
         "SELECT * FROM alerts ORDER BY id DESC LIMIT ?", (limit,)
     ).fetchall()]
     conn.close()
+    import detection
+    rows = [detection.describe_alert(row) for row in rows]
     if not group:
         return jsonify(rows)
 
@@ -1537,25 +1547,6 @@ def api_playbooks_run():
     conn.close()
     result["playbook"] = {k: pb[k] for k in
                           ("id", "name", "severity", "description", "response_steps")}
-    return jsonify(result)
-
-
-@app.route("/api/correlate", methods=["POST"])
-def api_correlate():
-    params = request.get_json(force=True, silent=True) or {}
-    allowed_group_by = {"source_ip", "hostname", "app_name", "user"}
-    if params.get("group_by") not in allowed_group_by:
-        return jsonify({"error": f"group_by must be one of {sorted(allowed_group_by)}"}), 400
-    if params.get("distinct_field") and params["distinct_field"] not in allowed_group_by:
-        return jsonify({"error": f"distinct_field must be one of {sorted(allowed_group_by)}"}), 400
-
-    conn = get_conn()
-    try:
-        result = run_correlation(conn, params)
-    except Exception as exc:
-        conn.close()
-        return jsonify({"error": str(exc)}), 400
-    conn.close()
     return jsonify(result)
 
 
@@ -2530,12 +2521,6 @@ def api_norm_reindex_status():
     return jsonify(_reindex_state)
 
 
-@app.route("/api/normalize", methods=["POST"])
-def api_normalize():
-    body = request.get_json(force=True, silent=True) or {}
-    return jsonify({"fields": extract_fields(body.get("message"))})
-
-
 @app.route("/api/log-fields/<int:log_id>", methods=["GET"])
 def api_log_fields(log_id):
     """Return the fields already extracted and stored for a log at ingest.
@@ -2971,6 +2956,7 @@ def _register_split_blueprints():
     from web_blueprints import reports as report_routes
     from web_blueprints import tickets as ticket_routes
     from web_blueprints import ioc_feeds as feed_routes
+    from web_blueprints import detection as detection_routes
 
     services = SimpleNamespace(
         get_conn=get_conn, audit=audit, require_admin=_require_admin_now,
@@ -2979,7 +2965,7 @@ def _register_split_blueprints():
         llm_from_config=_llm_from_config, secretbox_master=_secretbox_master,
     )
     for module in (ai_routes, db_health_routes, user_routes, report_routes,
-                   ticket_routes, feed_routes):
+                   ticket_routes, feed_routes, detection_routes):
         module.configure(services)
         app.register_blueprint(module.bp)
 

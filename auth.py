@@ -205,6 +205,7 @@ PUBLIC_ENDPOINTS = {
     "oauth_login", "oauth_callback",
     "saml_login", "saml_acs", "saml_metadata",
     "healthz",
+    "api_ingest",  # endpoint still requires its own API key
 }
 
 
@@ -224,6 +225,9 @@ def make_guard(app):
     password change are pinned to the change-password page. Enforces an
     idle-session timeout when one is configured."""
     import time as _time
+    if app.extensions.get("minisiem_auth_guard"):
+        return
+    app.extensions["minisiem_auth_guard"] = True
 
     @app.before_request
     def _guard():

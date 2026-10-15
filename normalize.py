@@ -104,6 +104,8 @@ class FieldIndexer:
         self.storage = storage
         self.reload_interval = reload_interval
         self._patterns = []
+        import detection
+        self._detection_config = detection.defaults()
         self._reload()
         t = threading.Thread(target=self._loop, daemon=True)
         t.start()
@@ -119,6 +121,8 @@ class FieldIndexer:
     def _reload(self):
         with self.storage.lock:
             self._patterns = load_patterns_from_conn(self.storage.conn)
+            import detection
+            self._detection_config = detection.load_config(self.storage.conn)
             # Refresh source profiles and hand them to the listener's parser
             # so JSON field mapping picks up UI edits without a restart.
             try:
@@ -132,8 +136,13 @@ class FieldIndexer:
     def extract(self, event: dict) -> dict:
         """Return the current ingest-time normalized field map without I/O."""
         structured = event.get("_json") if isinstance(event.get("_json"), dict) else event.get("_cef")
-        return extract_fields(event.get("message"), self._patterns,
-                              json_obj=structured if isinstance(structured, dict) else None)
+        from windows_events import normalize_windows, resolve_host_time
+        normalize_windows(event)
+        normalized = resolve_host_time(event, self._detection_config)
+        fields = extract_fields(event.get("message"), self._patterns,
+                                json_obj=structured if isinstance(structured, dict) else None)
+        fields.update(normalized)
+        return fields
 
     def process(self, log_id: int, event: dict) -> int:
         """Extract and store fields for one event. Returns field count.
@@ -207,23 +216,34 @@ def reindex(conn, batch_size: int = 500, progress=None):
     """Backfill/refresh log_fields for ALL logs using the currently
     saved patterns. Replaces each log's rows. Returns (logs, fields)."""
     patterns = load_patterns_from_conn(conn)
+    import detection
+    from windows_events import resolve_host_time
+    config = detection.load_config(conn)
     row = conn.execute("SELECT MAX(id) AS m FROM logs").fetchone()
     max_id = (row["m"] if row else None) or 0
     done_logs, done_fields = 0, 0
     last_id = 0
     while last_id < max_id:
         rows = conn.execute(
-            "SELECT id, message FROM logs WHERE id > ? ORDER BY id ASC LIMIT ?",
+            "SELECT id, message, raw, source_ip, received_at FROM logs WHERE id > ? ORDER BY id ASC LIMIT ?",
             (last_id, batch_size)).fetchall()
         if not rows:
             break
         for r in rows:
             last_id = r["id"]
             conn.execute("DELETE FROM log_fields WHERE log_id=?", (r["id"],))
-            fields = extract_fields(r["message"], patterns)
+            from listener import parse_syslog
+            event = parse_syslog(r["raw"] or r["message"], r["source_ip"])
+            event["received_at"] = r["received_at"]
+            normalized = resolve_host_time(event, config)
+            fields = extract_fields(r["message"], patterns, json_obj=event.get("_json") or event.get("_cef"))
+            fields.update(normalized)
             if fields:
                 write_fields(conn, r["id"], fields)
                 done_fields += len(fields)
+            if getattr(conn, "backend", "sqlite") == "postgres":
+                from event_storage_v2 import update_projection_fields
+                update_projection_fields(conn, r["id"], event, fields)
             done_logs += 1
         conn.commit()
         if progress:

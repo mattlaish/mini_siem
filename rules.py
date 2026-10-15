@@ -12,6 +12,7 @@ RuleEngine.rules in __init__.
 
 import re
 import time
+import threading
 from collections import defaultdict, deque
 
 import severity as severity_mod
@@ -146,6 +147,11 @@ class SeverityRule(Rule):
 class RuleEngine:
     def __init__(self, storage):
         self.storage = storage
+        self._lock = threading.RLock()
+        self._reload_at = 0
+        import detection
+        self.config = detection.defaults()
+        self._monitor = None
         self.rules = [
             ThresholdRule(
                 name="ssh_bruteforce",
@@ -176,7 +182,55 @@ class RuleEngine:
         ]
 
     def process(self, log_id: int, event: dict):
+        with self._lock:
+            self._reload_config()
+            self._process(log_id, event)
+
+    def _reload_config(self):
+        if time.monotonic() < self._reload_at or not hasattr(self.storage, "conn"):
+            return
+        import detection
+        with self.storage.lock:
+            config = detection.load_config(self.storage.conn)
+        self.config = config
+        by_id = {r["id"]: r for r in config["rules"]}
         for rule in self.rules:
+            cfg = by_id[rule.name]
+            rule.severity = cfg["severity"]
+            if isinstance(rule, ThresholdRule):
+                if (rule.threshold, rule.window_seconds) != (cfg["threshold"], cfg["window_seconds"]):
+                    rule._hits.clear()
+                rule.threshold, rule.window_seconds = cfg["threshold"], cfg["window_seconds"]
+        self._reload_at = time.monotonic() + 5
+
+    def start_monitor(self):
+        if self._monitor is None:
+            from detection_runtime import TelemetryMonitor
+            self._monitor = TelemetryMonitor(self.storage)
+            self._monitor.start()
+
+    def stop_monitor(self):
+        if self._monitor:
+            self._monitor.stop()
+
+    def _process(self, log_id, event):
+        import detection
+        from windows_events import normalize_windows, resolve_host_time
+        normalize_windows(event)
+        normalized = resolve_host_time(event, self.config)
+        if self._monitor and normalized:
+            self._monitor.observe(normalized)
+        enabled = {r["id"] for r in self.config["rules"] if r["enabled"]}
+        for rule in self.rules:
+            if rule.name not in enabled:
+                continue
+            if normalized:
+                from datetime import datetime, timezone
+                from windows_events import timestamp
+                host = detection.profile_for(self.config, normalized)
+                dt = timestamp(normalized.get("event.time"), host.get("timezone"))
+                if detection.exception_for(self.config, rule.name, normalized, host, dt, datetime.now(timezone.utc)):
+                    continue
             result = rule.evaluate(log_id, event, self.storage)
             if result:
                 if len(result) == 4:
@@ -192,3 +246,12 @@ class RuleEngine:
                     log_ids=log_ids,
                 )
                 print(f"  [ALERT] {rule.name} ({alert_severity}) — {description}")
+        if normalized:
+            result = detection.evaluate(self.config, normalized)
+            for finding in result["findings"]:
+                with self.storage.lock:
+                    try:
+                        detection.emit(self.storage.conn, finding, log_id, event.get("source_ip", "unknown"))
+                    except Exception:
+                        self.storage.conn.rollback()
+                        raise

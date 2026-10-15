@@ -60,6 +60,26 @@
     <button id="masterToggle">Turn ON</button>
   </div>
 
+  <section class="panel" id="usagePanel" aria-label="AI usage and estimated cost">
+    <div class="row"><h2>Usage &amp; estimated cost</h2><button type="button" id="refreshUsage" class="secondary">Refresh</button></div>
+    <p class="sub">All retained provider calls. USD estimates use your rates per million tokens; they are not provider invoices. Unpriced calls remain unpriced.</p>
+    <p id="usageSummary" role="status">Loading…</p>
+    <div style="overflow-x:auto"><table><thead><tr><th>Provider / model</th><th>Calls</th><th>Input</th><th>Cached input</th><th>Output</th><th>Est. USD</th></tr></thead><tbody id="usageModels"></tbody></table></div>
+    <details><summary>Configure model rates (USD / 1M tokens)</summary>
+      <form id="usageRateForm" class="row" style="margin:12px 0">
+        <label>Provider<input id="rateProvider" required maxlength="200"></label>
+        <label>Model<input id="rateModel" required maxlength="200"></label>
+        <label>Input<input id="rateInput" type="number" required min="0" max="100000" step="any"></label>
+        <label>Cached input<input id="rateCached" type="number" required min="0" max="100000" step="any"></label>
+        <label>Output<input id="rateOutput" type="number" required min="0" max="100000" step="any"></label>
+        <button type="submit">Save rate</button>
+      </form>
+      <div id="usageRates"></div>
+    </details>
+    <details><summary>Recent calls</summary><div style="overflow-x:auto"><table><thead><tr><th>Time</th><th>Model</th><th>Status</th><th>Tokens</th><th>Latency</th><th>Retries</th></tr></thead><tbody id="usageCalls"></tbody></table></div></details>
+  </section>
+  <script src="{{ url_for('static', filename='ai_usage.js') }}" defer></script>
+
   <div id="aiBody">
 
   <div class="disclaimer">

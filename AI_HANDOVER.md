@@ -1,5 +1,21 @@
 # AI_HANDOVER.md
 
+## Current slice — 2026-10-15 managed detection
+
+Rule management, Windows process/script normalization, approved calendars/scoped
+exceptions, process alerts/duplicate linking, receipt health and AI usage/cost
+estimates are implemented. The former optional-rule-UX note is superseded by P14
+in ROADMAP.md. Read AI_HANDOFF.md's 2026-10-15 entry and
+DETECTION_RULE_MANAGEMENT.md before extending this slice.
+
+Validation: 29 new tests PASS; full comparable Windows suite 254 PASS / 47 inherited
+FAIL / 3 SKIP against baseline 225 PASS / same 47 FAIL / 3 SKIP. Zero new failures.
+Linux systemd collection and live PostgreSQL/NXLog deployment remain deferred.
+No release claim; overall IMPLEMENTED_TESTING_DEFERRED remains authoritative.
+Do not recreate normalization, replace existing storage/alerts, change verified
+Sophos auth/token/cursor behavior, or make threshold windows persistent as an
+incidental refactor. No Git operations are authorized; owner synchronizes manually.
+
 
 ## PostgreSQL Migration Invariant
 

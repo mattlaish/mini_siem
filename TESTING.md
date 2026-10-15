@@ -1,5 +1,33 @@
 # mini-SIEM Testing Handover
 
+## 2026-10-15 managed detection / process monitoring
+
+`tests/test_detection_management.py`: 29 passing tests covering provider/channel
+collisions, flat/nested 4688/Sysmon/4104, process/parent PID mapping, scoped Java,
+all-hours Critical vs out-of-hours High, IANA/naive/DST/overnight/holiday handling,
+expiring scoped backup exceptions, config revision conflicts and full audit,
+cross-source duplicate evidence and engine restart, notification-once via existing
+TicketWorker, source-specific telemetry silence/recovery, async and standalone
+ingest, anonymous API-key-only ingest, CSRF/RBAC, simulation without writes,
+dead-route 404, raw evidence and cached-token/unpriced AI cost estimates.
+
+Focused detection + existing NXLog/routes/typed-storage/alert-lifecycle/CEF:
+75 PASS. Final comparable full suite: 254 PASS / 47 FAIL / 3 SKIP. Unmodified source
+under the same Python 3.12/Windows/dependencies: 225 PASS / same 47 FAIL / 3 SKIP.
+New failing test identities: zero. POSIX file modes, Linux-only execution and
+existing performance/search baseline debt are not waived by these results.
+
+`tests/test_systemd_host_qualification.py` cannot collect on Windows (`pwd`);
+excluded from both comparable full runs. PostgreSQL integration is skipped without
+driver/explicit target. Added a real PostgreSQL test for config persistence and
+concurrent independent-session duplicate linking; it is NOT_RUN locally.
+
+Browser acceptance used a separate localhost synthetic preview DB/session, never
+production credentials/events. Verified rule edit/save, process simulation,
+calendar page, alert evidence and AI usage while AI was off. Python/JS syntax and
+placeholder truth gate pass. Live Windows -> NXLog -> network -> deployed SIEM ->
+external notification and PostgreSQL/systemd/load qualification remain deferred.
+
 ## Completed Validation Areas
 
 ### PostgreSQL Upgrade Path

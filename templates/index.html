@@ -245,6 +245,10 @@ async function _updateAlertWorkflow(id, payload) {
   return d;
 }
 
+function escapeAlert(value) {
+  return String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
 async function loadAlerts() {
   const grouped = document.getElementById('groupToggle').checked;
   const r = await fetch('/api/alerts?limit=200' + (grouped ? '&group=1' : ''));
@@ -270,8 +274,8 @@ async function loadAlerts() {
           <td class="msg-cell">${countBadge}${timespan}</td>
           <td>${g.rule_name}</td>
           <td><span class="badge sev-${g.severity}">${g.severity}</span></td>
-          <td class="msg-cell">${g.source_ip || '—'}</td>
-          <td>${g.description}</td>
+          <td class="msg-cell">${escapeAlert(g.source_ip || '—')}</td>
+          <td>${escapeAlert(g.description)}</td>
           <td>${_workflowControl(rep)}</td>
           <td>${multi ? _groupAiBadge(g) : _aiBadge(rep.ai_status)}</td>
         </tr>`;
@@ -280,8 +284,8 @@ async function loadAlerts() {
           <td class="msg-cell" style="padding-left:34px;">${new Date(m.created_at).toLocaleString()}</td>
           <td class="muted">${m.rule_name}</td>
           <td><span class="badge sev-${m.severity}">${m.severity}</span></td>
-          <td class="msg-cell">${m.source_ip || '—'}</td>
-          <td>${m.description}</td>
+          <td class="msg-cell">${escapeAlert(m.source_ip || '—')}</td>
+          <td>${escapeAlert(m.description)}</td>
           <td>${_workflowControl(m)}</td>
           <td>${m.ai_status === 'done' ? `<button class="ai-view" data-id="${m.id}" style="cursor:pointer;border:1px solid var(--ok);background:var(--ok-soft);color:var(--ok);border-radius:20px;font-size:10px;font-family:var(--mono);padding:2px 8px;">✓</button>` : _aiBadge(m.ai_status)}</td>
         </tr>`).join('') : '';
@@ -305,8 +309,8 @@ async function loadAlerts() {
         <td class="msg-cell">${new Date(a.created_at).toLocaleString()}</td>
         <td>${a.rule_name}</td>
         <td><span class="badge sev-${a.severity}">${a.severity}</span></td>
-        <td class="msg-cell">${a.source_ip || '—'}</td>
-        <td>${a.description}</td>
+        <td class="msg-cell">${escapeAlert(a.source_ip || '—')}</td>
+        <td>${escapeAlert(a.description)}</td>
         <td>${_workflowControl(a)}</td>
         <td>${a.ai_status === 'done' ? `<button class="ai-view" data-id="${a.id}" style="cursor:pointer;border:1px solid var(--ok);background:var(--ok-soft);color:var(--ok);border-radius:20px;font-size:10px;font-family:var(--mono);padding:2px 8px;">✓ analysis</button>` : _aiBadge(a.ai_status)}</td>
       </tr>`).join('');

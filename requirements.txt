@@ -1,5 +1,6 @@
 Flask>=2.3,<4.0
 waitress>=3.0,<4.0
+tzdata>=2024.1
 # Local username/password login needs nothing extra (werkzeug ships with Flask).
 # Optional, only if you enable the matching feature:
 #   PostgreSQL backend:        psycopg2-binary>=2.9

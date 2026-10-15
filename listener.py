@@ -395,6 +395,8 @@ def _try_parse_json_event(raw: str, source_ip: str):
         "_json": obj,
         "_profile": (matched_profile.get("name") if matched_profile else None),
     }
+    from windows_events import normalize_windows
+    normalize_windows(event)
     return enrich_src_dst(event)
 
 
@@ -846,7 +848,11 @@ class IngestPipeline:
                 if received_at:
                     event["received_at"] = received_at
                 fields = self.fields.extract(event) if self.fields else {}
-                self.storage.insert_log(event, fields=fields)
+                log_id = self.storage.insert_log(event, fields=fields)
+                if self.rules:
+                    self.rules.process(log_id, event)
+                if self.ioc_matcher:
+                    self.ioc_matcher.process(log_id, event)
                 if self.forwarders:
                     self.forwarders.forward(event)
                 with self._lock:
@@ -1159,6 +1165,7 @@ def main():
 
     storage = Storage(db_config=db_cfg)
     engine = RuleEngine(storage)
+    engine.start_monitor()
     forwarders = ForwarderManager(storage, listen_port=ports[0])
     ioc = IOCMatcher(storage)
     fields = FieldIndexer(storage)
@@ -1208,6 +1215,7 @@ def main():
     except KeyboardInterrupt:
         print("\nShutting down.")
     finally:
+        engine.stop_monitor()
         runtime_reporter.stop()
 
 

@@ -2,6 +2,10 @@
 
 ## Design and operating documents
 
+- `DETECTION_RULE_MANAGEMENT.md` — managed rules, Windows process/script fields,
+  approved execution windows, scoped exceptions, telemetry receipt health and AI
+  usage/cost estimates (2026-10-15 development slice).
+
 - `DEVELOPMENT.md` — engineering contract, implementation state, and active Short/Medium/Long investigation state machine.
 - `OPERATION.md` — SOC operating model for triggers, related evidence, progressive LLM escalation, and evidence handling.
 - `PRODUCT.md` — product behavior and user-facing progressive investigation semantics.

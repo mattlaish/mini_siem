@@ -81,16 +81,16 @@ def main():
     print(f"[listen] syslog ports: {', '.join(map(str, ports))}")
     storage = Storage(db_config=db_cfg)
     engine = RuleEngine(storage)
+    engine.start_monitor()
     forwarders = ForwarderManager(storage, listen_port=ports[0])
     ioc = IOCMatcher(storage)
     fields = FieldIndexer(storage)
 
     def on_message(raw: str, source_ip: str):
         event = parse_syslog(raw, source_ip)
-        log_id = storage.insert_log(event)
+        log_id = storage.insert_log(event, fields=fields.extract(event))
         engine.process(log_id, event)
         ioc.process(log_id, event)
-        fields.process(log_id, event)
         forwarders.forward(event)
         sev = event["severity"] or "-"
         print(f"[{event['received_at']}] {source_ip} [{sev}] {event['message'][:120]}")
