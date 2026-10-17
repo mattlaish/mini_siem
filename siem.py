@@ -88,8 +88,9 @@ def main():
 
     def on_message(raw: str, source_ip: str):
         event = parse_syslog(raw, source_ip)
-        log_id = storage.insert_log(event, fields=fields.extract(event))
-        engine.process(log_id, event)
+        extracted = fields.extract(event)
+        log_id = storage.insert_log(event, fields=extracted)
+        engine.process(log_id, event, fields=extracted)
         ioc.process(log_id, event)
         forwarders.forward(event)
         sev = event["severity"] or "-"

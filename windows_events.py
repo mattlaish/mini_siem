@@ -1,6 +1,7 @@
 """Source-qualified Windows event normalization; original JSON stays untouched."""
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
+import ipaddress
 import ntpath
 
 
@@ -20,6 +21,47 @@ def timestamp(value, zone=None):
         return dt.astimezone(timezone.utc)
     except (ValueError, TypeError, KeyError):
         return None
+
+
+def _host_key(name):
+    return str(name or "").strip().rstrip(".").casefold()
+
+
+def _is_ip(name):
+    try:
+        ipaddress.ip_address(name)
+        return True
+    except ValueError:
+        return False
+
+
+def host_matches(configured, observed):
+    """Exact hostname match, or a short name against the same host's FQDN.
+
+    Domain-joined Windows reports Computer as an FQDN while operators often
+    type the short name. Two different FQDNs never match each other, and IP
+    addresses only ever match exactly.
+    """
+    c, o = _host_key(configured), _host_key(observed)
+    if not c or not o:
+        return False
+    if c == o:
+        return True
+    if _is_ip(c) or _is_ip(o) or ("." in c) == ("." in o):
+        return False
+    return c.split(".", 1)[0] == o.split(".", 1)[0]
+
+
+def find_host_profile(hosts, observed):
+    """Exact profile first; otherwise the single short/FQDN match. Ambiguous
+    short-name matches (one short name, several domains) resolve to none
+    rather than guessing a timezone or role."""
+    key = _host_key(observed)
+    exact = [h for h in hosts if _host_key(h.get("hostname")) == key]
+    if exact:
+        return exact[0]
+    loose = [h for h in hosts if host_matches(h.get("hostname"), observed)]
+    return loose[0] if len(loose) == 1 else {}
 
 
 def basename(value):
@@ -119,7 +161,7 @@ def resolve_host_time(event, config):
     fields = event.get("_normalized", {})
     if not fields:
         return fields
-    host = next((h for h in config["hosts"] if h["hostname"].casefold() == fields.get("host.name", "").casefold()), {})
+    host = find_host_profile(config["hosts"], fields.get("host.name", ""))
     dt = timestamp(fields.get("event.time"), host.get("timezone"))
     if dt:
         fields["event.time"] = dt.isoformat()

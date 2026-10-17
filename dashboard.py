@@ -313,7 +313,7 @@ def _ingest_raw(raw_line: str, source_ip: str):
         fields = _normalize.extract_fields(event.get("message"), patterns, json_obj=event.get("_json"))
         fields.update(event.get("_normalized", {}))
         log_id = store.insert_log(event, fields=fields)
-        engine.process(log_id, event)
+        engine.process(log_id, event, fields=fields)
     return True
 
 

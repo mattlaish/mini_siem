@@ -188,3 +188,43 @@ systemd/load checks and site-approved calendar/exception/health configuration.
 4104 fragment reassembly and a general process graph are optional future scope.
 Existing source security/reliability backlog remains separate. Recommended next:
 real Security 4688 -> NXLog -> SIEM -> configured ticket delivery qualification.
+
+## Detection hardening — 2026-10-17
+
+Four issues found reviewing the detection slice, all fixed on `main`:
+
+1. Robustness. A stored detection config that failed validation (e.g. after an
+   upgrade adds a built-in) made `RuleEngine.process` raise for every event, which
+   in listener/siem/dashboard ingest also skipped IOC matching and forwarding, and
+   broke the Detection Rules page. Now: `detection.migrate_config` upgrades older
+   configs on load; the engine keeps its last good config on reload failure;
+   `RuleEngine.process` never raises (errors counted in `engine.errors` /
+   `engine.last_error`, logged, rolled back); one failed alert write no longer stops
+   the event's other findings; `load_config_or_fallback` gives the UI defaults with
+   the stored revision plus `load_warning` so an admin can save over it; the
+   telemetry monitor skips its tick instead of pruning state; corrupt state rows are
+   replaced. New exception restrictions apply on save only (`validate_config(strict=True)`)
+   so tightened validation cannot make a stored config unloadable.
+2. Hostnames. Profiles matched only the exact name, but domain-joined Windows reports
+   the FQDN, so a short-name profile silently lost its schedule, roles, timezone and
+   exceptions. `windows_events.host_matches/find_host_profile`: exact first, then
+   short name vs FQDN; different FQDNs and IPs never cross-match; ambiguous short
+   names resolve to none. Used by evaluation, schedules, exceptions and telemetry.
+   Unprofiled Windows hosts are recorded (`detection_unprofiled_hosts_v1`) and listed
+   at `GET /api/detection/unprofiled-hosts` / on /execution-windows with Add profile.
+3. Web-shell defaults now include tomcat8-11.exe, php-cgi.exe and direct recon/LOLBin
+   children (whoami, net/net1, nltest, systeminfo, certutil, bitsadmin, rundll32,
+   regsvr32, mshta, wscript, cscript, wmic, bash). Saved configs keep their lists.
+4. Custom rules gain `scope` (`windows` default = old behaviour, or `all`). All-events
+   rules use generic fields plus extracted `field.<name>`; ingest call sites pass the
+   extracted fields to the engine. Non-Windows matches aggregate into one alert per
+   rule/host/source stream. Exceptions on rules they cannot apply to are rejected on
+   save. Simulator accepts `{"event": {...}}` (any JSON) or `{"raw": "<syslog line>"}`
+   through the live parse/extract path.
+
+Validation: tests/test_detection_hardening.py 34 PASS (26 of them fail against the
+pre-fix code); existing detection tests 29 PASS; full suite 306 PASS / same 38
+pre-existing failures; live PostgreSQL integration 5 PASS plus a PostgreSQL
+end-to-end detection run (stream aggregation, Tomcat9 -> whoami on an FQDN host);
+truth gate PASS; static scan clean for detection files; browser check of scope
+selector, raw-syslog simulation and unprofiled-host Add profile with no JS errors.

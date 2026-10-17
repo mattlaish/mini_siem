@@ -152,6 +152,10 @@ class RuleEngine:
         import detection
         self.config = detection.defaults()
         self._monitor = None
+        self._all_events_rules = False
+        self.errors = 0
+        self.last_error = None
+        self._last_error_logged = 0.0
         self.rules = [
             ThresholdRule(
                 name="ssh_bruteforce",
@@ -181,17 +185,53 @@ class RuleEngine:
             SeverityRule(name="high_severity_event", severity="critical"),
         ]
 
-    def process(self, log_id: int, event: dict):
-        with self._lock:
-            self._reload_config()
-            self._process(log_id, event)
+    def process(self, log_id: int, event: dict, fields: dict | None = None):
+        """Evaluate one stored event. Never raises.
+
+        Callers run IOC matching and forwarding after this; a detection
+        failure (bad stored config, database error while writing an alert)
+        must not silently skip those for every event. Errors are counted,
+        logged and the connection is rolled back so the next writer starts
+        clean.
+        """
+        try:
+            with self._lock:
+                self._reload_config()
+                self._process(log_id, event, fields)
+        except Exception as exc:  # noqa: BLE001 - isolation boundary
+            self._report("process", exc)
+            self._rollback()
+
+    def _report(self, where, exc):
+        self.errors += 1
+        message = f"{type(exc).__name__}: {exc}"
+        now = time.monotonic()
+        # Log a new error immediately; repeat a persistent one once a minute.
+        if message != self.last_error or now - self._last_error_logged >= 60:
+            print(f"[detection] {where} failed ({self.errors} total): {message}")
+            self._last_error_logged = now
+        self.last_error = message
+
+    def _rollback(self):
+        try:
+            with self.storage.lock:
+                self.storage.conn.rollback()
+        except Exception:  # noqa: BLE001 - best effort
+            pass
 
     def _reload_config(self):
         if time.monotonic() < self._reload_at or not hasattr(self.storage, "conn"):
             return
+        # Whatever happens, do not retry on every event.
+        self._reload_at = time.monotonic() + 5
         import detection
-        with self.storage.lock:
-            config = detection.load_config(self.storage.conn)
+        try:
+            with self.storage.lock:
+                config = detection.load_config(self.storage.conn)
+        except Exception as exc:  # noqa: BLE001 - keep the last good config
+            self._report("config reload (keeping last good configuration)", exc)
+            self._rollback()
+            return
         self.config = config
         by_id = {r["id"]: r for r in config["rules"]}
         for rule in self.rules:
@@ -201,7 +241,8 @@ class RuleEngine:
                 if (rule.threshold, rule.window_seconds) != (cfg["threshold"], cfg["window_seconds"]):
                     rule._hits.clear()
                 rule.threshold, rule.window_seconds = cfg["threshold"], cfg["window_seconds"]
-        self._reload_at = time.monotonic() + 5
+        self._all_events_rules = any(r["enabled"] and r["kind"] == "match" and r.get("scope", "windows") == "all"
+                                     for r in config["rules"])
 
     def start_monitor(self):
         if self._monitor is None:
@@ -213,9 +254,10 @@ class RuleEngine:
         if self._monitor:
             self._monitor.stop()
 
-    def _process(self, log_id, event):
+    def _process(self, log_id, event, fields=None):
         import detection
-        from windows_events import normalize_windows, resolve_host_time
+        from datetime import datetime, timezone
+        from windows_events import normalize_windows, resolve_host_time, timestamp
         normalize_windows(event)
         normalized = resolve_host_time(event, self.config)
         if self._monitor and normalized:
@@ -225,8 +267,6 @@ class RuleEngine:
             if rule.name not in enabled:
                 continue
             if normalized:
-                from datetime import datetime, timezone
-                from windows_events import timestamp
                 host = detection.profile_for(self.config, normalized)
                 dt = timestamp(normalized.get("event.time"), host.get("timezone"))
                 if detection.exception_for(self.config, rule.name, normalized, host, dt, datetime.now(timezone.utc)):
@@ -246,12 +286,15 @@ class RuleEngine:
                     log_ids=log_ids,
                 )
                 print(f"  [ALERT] {rule.name} ({alert_severity}) — {description}")
-        if normalized:
-            result = detection.evaluate(self.config, normalized)
-            for finding in result["findings"]:
-                with self.storage.lock:
-                    try:
-                        detection.emit(self.storage.conn, finding, log_id, event.get("source_ip", "unknown"))
-                    except Exception:
-                        self.storage.conn.rollback()
-                        raise
+        if not normalized and not self._all_events_rules:
+            return
+        # Windows canonical fields win over the generic/extracted view.
+        candidate = {**detection.generic_fields(event, fields), **(normalized or {})}
+        result = detection.evaluate(self.config, candidate)
+        for finding in result["findings"]:
+            with self.storage.lock:
+                try:
+                    detection.emit(self.storage.conn, finding, log_id, event.get("source_ip", "unknown"))
+                except Exception as exc:  # noqa: BLE001 - keep emitting the other findings
+                    self.storage.conn.rollback()
+                    self._report(f"alert write for {finding['rule_id']}", exc)

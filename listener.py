@@ -850,7 +850,7 @@ class IngestPipeline:
                 fields = self.fields.extract(event) if self.fields else {}
                 log_id = self.storage.insert_log(event, fields=fields)
                 if self.rules:
-                    self.rules.process(log_id, event)
+                    self.rules.process(log_id, event, fields=fields)
                 if self.ioc_matcher:
                     self.ioc_matcher.process(log_id, event)
                 if self.forwarders:
@@ -1182,7 +1182,7 @@ def main():
                 fields._maybe_capture_unidentified(log_id, event, len(extracted_fields))
             except Exception:
                 pass
-            engine.process(log_id, event)
+            engine.process(log_id, event, fields=extracted_fields)
             ioc.process(log_id, event)
             forwarders.forward(event)  # relay the original raw message downstream
             runtime_reporter.record_success(event.get("received_at"), source_ip=source_ip)

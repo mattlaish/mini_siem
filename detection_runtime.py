@@ -4,9 +4,14 @@ import threading
 from datetime import datetime, timezone
 
 import detection
-from windows_events import timestamp
+from windows_events import find_host_profile, timestamp
 
 TELEMETRY_KEY = "detection_telemetry_v1"
+# Windows hosts sending process/script events with no matching host profile:
+# their timezone, roles, schedules and exceptions silently do not apply.
+UNPROFILED_KEY = "detection_unprofiled_hosts_v1"
+UNPROFILED_MAX = 200
+UNPROFILED_TTL_SECONDS = 7 * 86400
 SOURCES = {"4688": "security_4688", "1": "sysmon_1", "4104": "powershell_4104"}
 
 
@@ -27,7 +32,7 @@ class TelemetryMonitor:
 
     def observe(self, fields):
         source = SOURCES.get(fields.get("event.id"))
-        host = fields.get("host.name", "").casefold()
+        host = fields.get("host.name", "").strip().casefold()
         if not source or not host:
             return
         with self._lock:
@@ -45,8 +50,28 @@ class TelemetryMonitor:
         with self.storage.lock:
             conn = self.storage.conn
             try:
-                config = detection.load_config(conn)
+                config, warning = detection.load_config_or_fallback(conn)
+                if warning:
+                    # Do not evaluate (and prune) saved telemetry state against
+                    # fallback defaults; the stale heartbeat shows as unknown.
+                    print(f"[detection-health] skipped: {warning}")
+                    conn.rollback()
+                    return {}
                 state = detection._locked_json(conn, TELEMETRY_KEY, {})
+                # Attribute each observed host to its profile (exact name, or a
+                # short name against the FQDN Windows reports), newest wins.
+                received, unprofiled = {}, {}
+                for pkey, observation in pending.items():
+                    observed, source = pkey.rsplit("|", 1)
+                    profile = find_host_profile(config["hosts"], observed)
+                    if not profile:
+                        unprofiled.setdefault(observed, set()).add(source)
+                        continue
+                    key = profile["hostname"].casefold() + "|" + source
+                    if observation["last_received_at"] > received.get(key, {}).get("last_received_at", ""):
+                        received[key] = observation
+                if unprofiled:
+                    self._record_unprofiled(conn, unprofiled, now)
                 active_keys = set()
                 for host in config["hosts"]:
                     if not host.get("telemetry_enabled"):
@@ -55,7 +80,7 @@ class TelemetryMonitor:
                         key = host["hostname"].casefold() + "|" + source
                         active_keys.add(key)
                         entry = state.setdefault(key, {"expected_since": now.isoformat()})
-                        observation = pending.get(key)
+                        observation = received.get(key)
                         if observation and observation["last_received_at"] > entry.get("last_received_at", ""):
                             entry.update(observation)
                         anchor = timestamp(entry.get("last_received_at") or entry["expected_since"])
@@ -81,6 +106,19 @@ class TelemetryMonitor:
                 if self._pending.get(key) == value:
                     self._pending.pop(key, None)
         return state
+
+    @staticmethod
+    def _record_unprofiled(conn, unprofiled, now):
+        seen = detection._locked_json(conn, UNPROFILED_KEY, {})
+        for host, sources in unprofiled.items():
+            entry = seen.get(host) if isinstance(seen.get(host), dict) else {}
+            entry["last_seen"] = now.isoformat()
+            entry["sources"] = sorted(set(entry.get("sources", [])) | sources)
+            seen[host] = entry
+        fresh = {h: v for h, v in seen.items()
+                 if timestamp(v.get("last_seen")) and (now - timestamp(v["last_seen"])).total_seconds() < UNPROFILED_TTL_SECONDS}
+        fresh = dict(sorted(fresh.items(), key=lambda kv: kv[1]["last_seen"])[-UNPROFILED_MAX:])
+        conn.execute("UPDATE app_config SET value=? WHERE key=?", (json.dumps(fresh), UNPROFILED_KEY))
 
     def _run(self):
         while not self._stop.is_set():
