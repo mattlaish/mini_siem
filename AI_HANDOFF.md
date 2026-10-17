@@ -212,9 +212,13 @@ Four issues found reviewing the detection slice, all fixed on `main`:
    names resolve to none. Used by evaluation, schedules, exceptions and telemetry.
    Unprofiled Windows hosts are recorded (`detection_unprofiled_hosts_v1`) and listed
    at `GET /api/detection/unprofiled-hosts` / on /execution-windows with Add profile.
-3. Web-shell defaults now include tomcat8-11.exe, php-cgi.exe and direct recon/LOLBin
-   children (whoami, net/net1, nltest, systeminfo, certutil, bitsadmin, rundll32,
-   regsvr32, mshta, wscript, cscript, wmic, bash). Saved configs keep their lists.
+3. Web-shell rule is behaviour-based: defaults add tomcat8-11.exe and php-cgi.exe
+   parents and, by default (`child_match: any`), alert on ANY child of a web server
+   except legitimate ones (`excluded_children`: conhost, csc, cvtres, vbc, WerFault,
+   wermgr, php-cgi, rotatelogs) and workers re-launching the parent's own binary
+   (same full path). The earlier incident tool (whoami) is not special-cased; a tool
+   list misses renamed/dropped/other binaries. `listed` mode keeps an explicit list;
+   configs saved before child modes load as `listed` with their own list.
 4. Custom rules gain `scope` (`windows` default = old behaviour, or `all`). All-events
    rules use generic fields plus extracted `field.<name>`; ingest call sites pass the
    extracted fields to the engine. Non-Windows matches aggregate into one alert per

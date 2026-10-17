@@ -197,14 +197,68 @@ def test_modern_tomcat_and_php_parents_are_covered(parent):
     assert "web_server_shell" in {x["rule_id"] for x in detection.evaluate(detection.defaults(), f)["findings"]}
 
 
-@pytest.mark.parametrize("child,fires", [("whoami.exe", True), ("certutil.exe", True), ("rundll32.exe", True),
-                                         ("net1.exe", True), ("mshta.exe", True),
-                                         ("csc.exe", False), ("conhost.exe", False)])
-def test_w3wp_direct_recon_children(child, fires):
-    f = win_event(ParentProcessName=r"C:\Windows\System32\inetsrv\w3wp.exe",
-                  NewProcessName="C:\\Windows\\System32\\" + child)["_normalized"]
-    found = "web_server_shell" in {x["rule_id"] for x in detection.evaluate(detection.defaults(), f)["findings"]}
-    assert found is fires
+W3WP = r"C:\Windows\System32\inetsrv\w3wp.exe"
+
+
+def web_findings(cfg, **kw):
+    f = win_event(**kw)["_normalized"]
+    return "web_server_shell" in {x["rule_id"] for x in detection.evaluate(cfg, f)["findings"]}
+
+
+@pytest.mark.parametrize("child", [
+    r"C:\Windows\System32\whoami.exe",            # the incident tool
+    r"C:\Windows\System32\curl.exe",              # any other built-in
+    r"C:\Windows\System32\notepad.exe",
+    r"C:\Users\Public\x.exe",                     # dropped payload
+    r"C:\inetpub\temp\svchost.exe",               # renamed lookalike
+    r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
+])
+def test_any_child_of_a_web_server_is_critical_by_default(child):
+    assert web_findings(detection.defaults(), ParentProcessName=W3WP, NewProcessName=child)
+
+
+@pytest.mark.parametrize("child", ["csc.exe", "cvtres.exe", "vbc.exe", "conhost.exe", "WerFault.exe", "php-cgi.exe"])
+def test_legitimate_web_server_children_are_excluded(child):
+    assert not web_findings(detection.defaults(), ParentProcessName=W3WP,
+                            NewProcessName="C:\\Windows\\System32\\" + child)
+
+
+def test_worker_relaunching_parent_binary_is_not_alerted_but_lookalike_is():
+    cfg = config()                                      # HMSWEB1 has the web_server role
+    apache = r"C:\Apache24\bin\httpd.exe"
+    assert not web_findings(cfg, ParentProcessName=apache, NewProcessName=apache)
+    assert web_findings(cfg, ParentProcessName=apache, NewProcessName=r"C:\Users\Public\httpd.exe")
+
+
+def test_exclusions_are_tunable_and_listed_mode_still_works():
+    cfg = detection.defaults()
+    rule = next(r for r in cfg["rules"] if r["id"] == "web_server_shell")
+    node = dict(ParentProcessName=W3WP, NewProcessName=r"C:\Program Files\nodejs\node.exe")
+    assert web_findings(cfg, **node)
+    rule["excluded_children"].append("node.exe")         # e.g. a site hosting iisnode
+    assert not web_findings(detection.validate_config(cfg), **node)
+    rule.update(child_match="listed", children=["cmd.exe"])
+    assert not web_findings(cfg, ParentProcessName=W3WP, NewProcessName=r"C:\Users\Public\x.exe")
+    assert web_findings(cfg, ParentProcessName=W3WP, NewProcessName=r"C:\Windows\System32\cmd.exe")
+
+
+def test_saved_config_without_child_mode_keeps_its_explicit_list(store):
+    saved = detection.defaults()
+    rule = next(r for r in saved["rules"] if r["id"] == "web_server_shell")
+    for key in ("child_match", "excluded_children"):
+        rule.pop(key)
+    rule["children"] = ["cmd.exe"]
+    put_raw_config(store.conn, saved)
+    loaded = next(r for r in detection.load_config(store.conn)["rules"] if r["id"] == "web_server_shell")
+    assert loaded["child_match"] == "listed" and loaded["children"] == ["cmd.exe"]
+
+
+@pytest.mark.parametrize("bad", [dict(child_match="some"), dict(child_match="listed", children=[])])
+def test_child_mode_validation(bad):
+    cfg = detection.defaults()
+    next(r for r in cfg["rules"] if r["id"] == "web_server_shell").update(bad)
+    with pytest.raises(ValueError):
+        detection.validate_config(cfg)
 
 
 # ---------------------------------------------------------------- 4. all-events rules

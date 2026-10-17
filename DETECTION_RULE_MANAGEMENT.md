@@ -65,14 +65,20 @@ Microsoft references: [4688 fields and command-line auditing](https://learn.micr
 
 ## Rule behavior
 
-`web_server_shell`: default parents tomcat7-11.exe (Tomcat 8+ runs as the
-`tomcatN.exe` Windows service), w3wp.exe and php-cgi.exe; default children are the
-shells plus reconnaissance/living-off-the-land binaries a web shell often runs
-directly (whoami, net/net1, nltest, systeminfo, certutil, bitsadmin, rundll32,
-regsvr32, mshta, wscript, cscript, wmic, bash). csc.exe and conhost.exe are excluded
-because IIS/ASP.NET spawn them legitimately. Critical at any hour. java.exe/httpd.exe
-also require the host's `web_server` role. Saved configurations keep their own
-lists; only new/unsaved configurations get the new defaults.
+`web_server_shell` detects the behaviour, not a tool list: by default
+(`child_match: any`) **any** process launched by a web server is Critical at any
+hour, because an attacker can run any binary (built-in, renamed or dropped). Default
+web-server parents are tomcat7-11.exe (Tomcat 8+ runs as the `tomcatN.exe` Windows
+service), w3wp.exe and php-cgi.exe; java.exe/httpd.exe also require the host's
+`web_server` role. Children IIS/ASP.NET/PHP-FastCGI/Apache start during normal
+operation are excluded (`excluded_children`: conhost, csc, cvtres, vbc, WerFault,
+wermgr, php-cgi, rotatelogs), and a worker re-launching the parent's own binary
+(same full path, e.g. Apache or PHP-FastCGI workers) is ignored; a same-named binary
+at a different path still alerts. Add site-specific legitimate children (e.g.
+node.exe for iisnode) to the exclusion list. `child_match: listed` alerts only on the
+`children` list (shells plus common reconnaissance/LOLBins). Configurations saved
+before child modes existed load as `listed` with their own list, so saved behaviour
+never changes silently.
 Parents/children and required role are editable. Calendar exceptions cannot exempt
 this rule; administrators can explicitly toggle it. Office hours never suppress it.
 

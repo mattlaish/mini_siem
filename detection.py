@@ -22,12 +22,19 @@ SHELLS = ["cmd.exe", "powershell.exe", "pwsh.exe"]
 # JVM in-process), so tomcat7.exe alone misses every modern Tomcat service.
 WEB_SHELL_PARENTS = ["tomcat7.exe", "tomcat8.exe", "tomcat9.exe", "tomcat10.exe", "tomcat11.exe",
                      "w3wp.exe", "php-cgi.exe"]
-# Web shells frequently run reconnaissance / living-off-the-land binaries
-# directly instead of through cmd.exe. Deliberately excludes csc.exe and
-# conhost.exe, which IIS/ASP.NET spawn legitimately.
+# Used only in "listed" child mode. The default "any" mode alerts on every
+# process a web server launches, because an attacker can run any binary
+# (renamed, dropped or living-off-the-land); a fixed tool list only catches
+# the tools of the last incident.
 WEB_SHELL_CHILDREN = SHELLS + ["whoami.exe", "net.exe", "net1.exe", "nltest.exe", "systeminfo.exe",
                                "certutil.exe", "bitsadmin.exe", "rundll32.exe", "regsvr32.exe",
                                "mshta.exe", "wscript.exe", "cscript.exe", "wmic.exe", "bash.exe"]
+# Children IIS / ASP.NET / PHP-FastCGI / Apache start during normal operation.
+# Children re-launching the parent's own binary (Apache and PHP-FastCGI
+# workers) are excluded by path in the evaluator, not by name.
+WEB_SHELL_EXCLUDED = ["conhost.exe", "csc.exe", "cvtres.exe", "vbc.exe", "werfault.exe", "wermgr.exe",
+                      "php-cgi.exe", "rotatelogs.exe"]
+CHILD_MATCH_MODES = {"any", "listed"}
 WINDOWS_KINDS = {"process_creation", "script_execution"}
 MATCH_SCOPES = {"windows", "all"}
 # Fields every ingested event has, for all-events match rules.
@@ -57,8 +64,9 @@ def defaults():
     rules = [{"id": k, "name": k.replace("_", " ").title(), "kind": "builtin", "enabled": True, **v}
              for k, v in BUILTINS.items()]
     rules += [
-        {"id": "web_server_shell", "name": "Web server spawning shell", "kind": "web_shell", "enabled": True,
-         "severity": "critical", "children": WEB_SHELL_CHILDREN[:], "parents": WEB_SHELL_PARENTS[:],
+        {"id": "web_server_shell", "name": "Web server launched a process", "kind": "web_shell", "enabled": True,
+         "severity": "critical", "child_match": "any", "excluded_children": WEB_SHELL_EXCLUDED[:],
+         "children": WEB_SHELL_CHILDREN[:], "parents": WEB_SHELL_PARENTS[:],
          "scoped_parents": ["java.exe", "httpd.exe"], "required_role": "web_server"},
         {"id": "out_of_hours_shell", "name": "Out-of-hours shell execution", "kind": "out_of_hours",
          "enabled": True, "severity": "error", "children": SHELLS[:]},
@@ -158,6 +166,11 @@ def validate_config(config, strict=False):
                 raise ValueError("Web server shell rule must remain critical/web_shell")
             for field in ("children", "parents", "scoped_parents"):
                 _strings(rule.get(field), field)
+            _strings(rule.get("excluded_children", []), "excluded_children")
+            if rule.get("child_match", "listed") not in CHILD_MATCH_MODES:
+                raise ValueError("child_match must be 'any' or 'listed'")
+            if rule.get("child_match", "listed") == "listed" and not rule["children"]:
+                raise ValueError("Listed child mode needs at least one child process")
             if any(basename(p) in {"java.exe", "httpd.exe"} for p in rule["parents"]):
                 raise ValueError("java.exe/httpd.exe require a scoped host role")
             _strings([rule.get("required_role")], "required role", 1)
@@ -260,6 +273,10 @@ def migrate_config(stored):
             if current is None:
                 cfg["rules"].append(rule)
             else:
+                if rule["id"] == "web_server_shell":
+                    # Saved before child modes existed: it was an explicit child list.
+                    current.setdefault("child_match", "listed")
+                    current.setdefault("excluded_children", [])
                 for key, value in rule.items():
                     current.setdefault(key, copy.deepcopy(value))
     return cfg
@@ -424,9 +441,18 @@ def evaluate(config, fields, now=None):
             parents = {basename(v) for v in rule["parents"]}
             scoped = {basename(v) for v in rule["scoped_parents"]}
             roles = {r.casefold() for r in host.get("roles", [])}
-            match = process and name in {basename(v) for v in rule["children"]} and (
+            any_child = rule.get("child_match", "listed") == "any"
+            excluded = {basename(v) for v in rule.get("excluded_children", [])}
+            path, parent_path = fields.get("process.path", ""), fields.get("process.parent.path", "")
+            # A worker re-launching the parent's own binary (Apache, PHP-FastCGI)
+            # is normal; compare full paths so a renamed lookalike still alerts.
+            same_binary = bool(path) and path.strip('"').casefold() == parent_path.strip('"').casefold()
+            child_ok = bool(name) if any_child else name in {basename(v) for v in rule["children"]}
+            match = process and child_ok and name not in excluded and not same_binary and (
                 parent in parents or (parent in scoped and rule["required_role"].casefold() in roles))
-            reason = "Web server parent launched a shell or reconnaissance tool; applies at every hour"
+            reason = ("Web server process launched a child process that is not an approved web-server child; "
+                      "applies at every hour") if any_child else \
+                "Web server parent launched a listed shell or tool; applies at every hour"
         elif rule["kind"] == "out_of_hours":
             match = process and name in {basename(v) for v in rule["children"]} and bool(schedules) and dt is not None and not any(in_window(s, dt) for s in schedules)
             reason = "Shell execution is outside the host/group approved windows"
