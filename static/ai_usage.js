@@ -19,11 +19,12 @@
       const d = await r.json();
       if (!r.ok) throw new Error(r.status === 403 ? 'Usage is available to administrators.' : (d.error || 'Usage unavailable'));
       const s = d.summary, c = d.cost;
-      el('usageSummary').textContent = `${s.calls} calls · ${s.total_tokens} tokens · ${s.errors} errors · ${s.retries} retries · Estimated USD ${c.estimated_usd === null ? 'unpriced' : c.estimated_usd.toFixed(6)} · ${c.unpriced_calls} unpriced calls`;
+      el('usageSummary').textContent = `${s.calls} AI requests · ${s.total_tokens} tokens used · ${s.errors} failed requests · ${s.retries} automatic retries · Estimated USD ${c.estimated_usd === null ? 'not estimated' : c.estimated_usd.toFixed(6)} · ${c.unpriced_calls} requests without a price set`;
+      if(!s.calls)el('usageSummary').textContent='No AI requests recorded yet. Usage remains available when analysis is off.';
       el('usageModels').replaceChildren();
       d.by_model.forEach(g => row(el('usageModels'), [g.provider+' / '+g.model,g.calls,g.input_tokens,g.cached_tokens,g.output_tokens,g.estimated_usd === null ? 'Unpriced' : g.estimated_usd.toFixed(6)]));
       el('usageCalls').replaceChildren();
-      d.rows.forEach(g => row(el('usageCalls'), [g.at,g.model,g.status,g.total_tokens,g.latency_ms+' ms',g.retry_count]));
+      d.rows.forEach(g => row(el('usageCalls'), [MS.fmtTime(g.at),g.model,MS.label(g.status),g.total_tokens,g.latency_ms+' ms',g.retry_count]));
       rates = d.rates;
       el('usageRates').replaceChildren();
       rates.forEach((rate, i) => {

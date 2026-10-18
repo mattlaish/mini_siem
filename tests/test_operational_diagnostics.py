@@ -83,7 +83,7 @@ def test_static_webconsole_contracts_present():
     assert '@bp.post("/api/diagnostics/run")' in db_health
     assert '@bp.post("/api/support/bundle")' in db_health
     assert "Incident diagnostics" in health and "dependencyGrid" in health
-    assert "Support bundle" in setup and "/api/support/bundle" in setup
+    assert "Support report" in setup and "/api/support/bundle" in setup
     assert "troublePipeline" in setup
     assert 'payload["sources"]' in listener
     assert "PIPELINE_DIAGNOSTIC_RUN" in (ROOT / "dashboard.py").read_text()

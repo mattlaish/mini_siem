@@ -17,18 +17,18 @@
   ('Investigate', [
     ('/',                  'Live logs & alerts', '▤'),
     ('/security-alerts',   'Alerts',             '!'),
-    ('/correlate',         'Correlate',          '⇄'),
-    ('/threatintel',       'Threat Intel',       '◎'),
+    ('/correlate',         'Investigations',          '⇄'),
+    ('/threatintel',       'Threat Intelligence',       '◎'),
     ('/ai',                'AI Analyst',         '✦'),
   ]),
   ('Detection', [
     ('/detection-rules',   'Detection Rules',    '◇'),
-    ('/execution-windows', 'Execution Windows',  '◷'),
+    ('/execution-windows', 'Approved Hours',  '◷'),
   ]),
   ('Admin', [
-    ('/health',            'Health',             '♥'),
-    ('/audit',             'Audit',              '✓'),
-    ('/setup',             'Setup',              '⚙'),
+    ('/health',            'System Health',             '♥'),
+    ('/audit',             'Activity History',              '✓'),
+    ('/setup',             'Settings',              '⚙'),
   ]),
 ] %}
 
@@ -58,7 +58,7 @@
     <header class="topbar">
       <button class="hamburger" id="hamburger" aria-label="Open navigation" aria-expanded="false" aria-controls="primaryNav">☰</button>
       <h1>{% block page_title %}mini-SIEM{% endblock %}</h1>
-      <a class="ingest-status" id="ingestStatus" href="/health" data-state="unknown"><span class="dot" aria-hidden="true"></span><span class="txt">Checking ingestion…</span></a>
+      <a class="ingest-status" id="ingestStatus" href="/health" data-state="unknown"><span class="dot" aria-hidden="true"></span><span class="txt">Checking log collection…</span></a>
       <div class="right">
         <button class="theme-btn" id="themeToggle" type="button">☾ Dark</button>
       </div>

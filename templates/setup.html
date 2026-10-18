@@ -1,6 +1,6 @@
 {% extends "base.html" %}
-{% block title %}Setup — mini-SIEM{% endblock %}
-{% block page_title %}Setup{% endblock %}
+{% block title %}Settings — mini-SIEM{% endblock %}
+{% block page_title %}Settings{% endblock %}
 {% block head %}
 <style>
   .wrap { max-width: 1100px; margin: 24px auto; padding: 0 20px; }
@@ -58,33 +58,33 @@
 <div class="wrap">
  <div class="setup-layout">
   <nav class="setup-nav" id="setupNav">
-    <a data-target="sec-listen" class="active">Listen ports</a>
-    <a data-target="sec-troubleshoot">Troubleshoot</a>
-    <a data-target="sec-support">Support bundle</a>
+    <a data-target="sec-listen" class="active">Receive device logs</a>
+    <a data-target="sec-troubleshoot">Check log delivery</a>
+    <a data-target="sec-support">Support report</a>
     <a data-target="sec-selfmon">Monitor this host</a>
-    <a data-target="sec-pollers">API poller connectors</a>
-    <a data-target="sec-mapping">Source field mapping</a>
-    <a data-target="sec-aliases">Search field aliases</a>
-    <a data-target="sec-receiver">API log receiver</a>
-    <a data-target="sec-ticket">Ticket connector</a>
+    <a data-target="sec-pollers">Cloud log connections</a>
+    <a data-target="sec-mapping">Log field mapping</a>
+    <a data-target="sec-aliases">Search across log sources</a>
+    <a data-target="sec-receiver">Receive logs by API</a>
+    <a data-target="sec-ticket">Ticketing connection</a>
     <a data-target="sec-users">Users &amp; access</a>
     <a data-target="sec-forwarding">Syslog forwarding</a>
   </nav>
   <div class="setup-content" id="setupContent">
 
   <div class="panel" data-section="sec-listen">
-    <h2>Syslog listen ports</h2>
-    <p class="sub">Which UDP/TCP port(s) the syslog listener binds. <strong>514</strong> is standard; add others (comma-separated) for devices that send elsewhere, e.g. <span class="mono">10514</span>. Every port runs the same pipeline. <strong>The listener reads this at startup — changes here take effect only after you restart the listener process.</strong></p>
+    <h2>Receive device logs</h2>
+    <p class="sub">Choose the ports your devices use to send logs. <strong>514</strong> is the standard syslog port. Separate additional ports with commas, for example <span class="mono">514,10514</span>. All ports use the same detection and forwarding settings. <strong>Restart the log collection service after saving a port change.</strong></p>
 
     <div id="portsRestartBanner" style="display:none;background:var(--warn-soft);border:1px solid var(--warn);border-radius:8px;padding:12px;margin-bottom:12px;">
       <div style="font-weight:600;margin-bottom:4px;">Restart required</div>
-      <div style="font-size:13px;color:var(--ink-soft);">Listen ports saved as <strong id="portsSavedVal"></strong>. Restart the listener process for this to take effect. It's a separate process from this dashboard, so restarting it won't interrupt the console. For example:</div>
+      <div style="font-size:13px;color:var(--ink-soft);">Listen ports saved as <strong id="portsSavedVal"></strong>. Ask your administrator to restart the log collection service to apply these ports. The web console can stay open. For installations using the standard service:</div>
       <pre class="mono" style="background:var(--canvas);padding:8px;border-radius:6px;margin-top:8px;">sudo systemctl restart mini-siem-listener</pre>
-      <div class="hint">Use the installed systemd service so the configured database and component credential overlay are preserved.</div>
+      <div class="hint">Use the installed service to keep the existing database connection and credentials.</div>
     </div>
 
     <div class="fld-row">
-      <div class="fld"><label>Listen port(s) <span class="hint">(comma-separated)</span></label>
+      <div class="fld"><label>Receiving ports <span class="hint">(comma-separated)</span></label>
         <input type="text" id="listenPorts" class="mono" placeholder="514,10514"></div>
       <div class="fld" style="align-self:end;"><button id="savePortsBtn">Save ports</button></div>
     </div>
@@ -92,15 +92,15 @@
   </div>
 
   <div class="panel" data-section="sec-troubleshoot">
-    <h2>Syslog troubleshoot</h2>
-    <p class="sub">Check one source across the syslog path. A short <strong>4-second</strong> packet-header capture verifies network arrival, then the console correlates bounded listener counters and newly stored events for the same peer IP. It does not display syslog payloads and does not accept custom packet filters.</p>
-    <div class="warn-note">Pipeline correlation is diagnostic evidence, not packet-to-row proof. Network, listener, parser, storage and search stages are reported separately; UNKNOWN means the available telemetry cannot prove that stage.</div>
+    <h2>Check log delivery</h2>
+    <p class="sub">Enter a device IP to check whether its logs are reaching mini-SIEM. The <strong>4-second</strong> check compares network arrivals, collection activity and recently saved events. Log message contents are not captured.</p>
+    <div class="warn-note">Each step is checked separately. A network arrival does not prove the event was saved or is searchable. Not confirmed means there is not enough information to verify that step; it does not mean the step passed. The check uses the source IP and receiving ports only; custom network filters are not supported.</div>
     <div class="fld-row" style="display:flex;gap:10px;align-items:flex-end;max-width:620px;">
       <div class="fld" style="flex:1;">
         <label>Source IP <span class="hint">(IPv4 or IPv6)</span></label>
         <input type="text" id="troubleSourceIp" class="mono" placeholder="192.0.2.25" autocomplete="off" spellcheck="false">
       </div>
-      <div class="fld"><button id="troubleCaptureBtn">Capture 4 seconds</button></div>
+      <div class="fld"><button id="troubleCaptureBtn">Check delivery (4 seconds)</button></div>
     </div>
     <div id="troubleCaptureStatus" style="margin-top:14px;"></div>
     <div id="troublePipeline" style="display:none;margin-top:12px;"></div>
@@ -108,11 +108,11 @@
   </div>
 
   <div class="panel" data-section="sec-support">
-    <h2>Support bundle</h2>
-    <p class="sub">Generate a bounded diagnostics archive for incident handoff. The bundle contains health, runtime, PostgreSQL security/schema status, archive status, service state and sanitized configuration summary.</p>
-    <div class="warn-note"><strong>Data minimization:</strong> credential files, database passwords, API keys, private keys and raw log/event payloads are excluded. Service journal contents are intentionally omitted because listener stdout may contain event-message excerpts.</div>
+    <h2>Support report</h2>
+    <p class="sub">Download a report to share with your support team. It includes system health, service status, database checks, archive status and a settings summary with sensitive values removed.</p>
+    <div class="warn-note"><strong>Privacy:</strong> passwords, API keys, private keys and original event messages are excluded. Service logs are also omitted because they may contain event content. Review the report before sharing it.</div>
     <div style="margin-top:14px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
-      <button id="supportBundleBtn">Generate support bundle</button>
+      <button id="supportBundleBtn">Download support report</button>
       <span class="status-line" id="supportBundleStatus"></span>
     </div>
   </div>
@@ -183,28 +183,28 @@ sudo systemctl restart auditd</pre>
   </div>
 
   <div class="panel" data-section="sec-pollers">
-    <h2>API poller connectors</h2>
-    <p class="sub">Pull logs from a cloud service on a schedule. Pick the authentication scheme that matches the vendor's API — the form shows only the fields that scheme needs. mini-SIEM bookmarks a cursor so nothing is missed or duplicated.</p>
+    <h2>Cloud log connections</h2>
+    <p class="sub">Collect logs automatically from a cloud service such as Sophos Central. Choose the sign-in method specified by your provider and enter its connection details. mini-SIEM saves its collection position so later checks can continue from there; provider behavior and delivery failures can still affect completeness.</p>
 
     <div class="form-grid" style="grid-template-columns:1fr 1fr;">
       <div class="fld"><label>Name</label><input type="text" id="pName" class="mono" placeholder="sophos-central"></div>
-      <div class="fld"><label>Auth scheme</label>
+      <div class="fld"><label>Sign-in method</label>
         <select id="pScheme">
-          <option value="oauth2_client_credentials">OAuth2 client-credentials (generic)</option>
-          <option value="oauth2_sophos">OAuth2 + Sophos whoami (tenant discovery)</option>
-          <option value="api_key">API key in header (no token)</option>
+          <option value="oauth2_client_credentials">OAuth2 — client ID and secret</option>
+          <option value="oauth2_sophos">Sophos Central — automatic account discovery</option>
+          <option value="api_key">API key — provider-specified header</option>
         </select>
       </div>
 
       <!-- OAuth2 fields -->
-      <div class="fld full sch-oauth"><label>Token URL <span class="hint">(OAuth2 token endpoint)</span></label><input type="text" id="pTokenUrl" class="mono" placeholder="https://id.sophos.com/api/v2/oauth2/token"></div>
+      <div class="fld full sch-oauth"><label>Sign-in URL <span class="hint">(OAuth2 token URL from your provider)</span></label><input type="text" id="pTokenUrl" class="mono" placeholder="https://id.sophos.com/api/v2/oauth2/token"></div>
       <div class="fld sch-oauth"><label>Client ID</label><input type="text" id="pClientId" class="mono"></div>
       <div class="fld sch-oauth"><label>Client secret</label><input type="password" id="pClientSecret" class="mono" placeholder="stored encrypted"></div>
       <div class="fld sch-oauth"><label>Scope <span class="hint">(optional)</span></label><input type="text" id="pScope" class="mono" placeholder="token"></div>
 
       <!-- Sophos-only fields -->
-      <div class="fld full sch-sophos"><label>Whoami URL <span class="hint">(tenant discovery)</span></label><input type="text" id="pWhoamiUrl" class="mono" placeholder="https://api.central.sophos.com/whoami/v1"></div>
-      <div class="fld sch-sophos"><label>Tenant header override <span class="hint">(optional; default X-Tenant-ID)</span></label><input type="text" id="pTenantHeader" class="mono" placeholder="X-Tenant-ID"></div>
+      <div class="fld full sch-sophos"><label>Account discovery URL <span class="hint">(Sophos Whoami)</span></label><input type="text" id="pWhoamiUrl" class="mono" placeholder="https://api.central.sophos.com/whoami/v1"></div>
+      <div class="fld sch-sophos"><label>Account header name <span class="hint">(leave blank for Sophos; automatically uses X-Tenant-ID)</span></label><input type="text" id="pTenantHeader" class="mono" placeholder="X-Tenant-ID"></div>
 
       <!-- API-key fields -->
       <div class="fld sch-apikey"><label>API key</label><input type="password" id="pApiKey" class="mono" placeholder="stored encrypted"></div>
@@ -212,16 +212,16 @@ sudo systemctl restart auditd</pre>
 
       <!-- common -->
       <div class="fld full"><label>Events URL <span class="hint">(with the Sophos scheme a path like /siem/v1/events works)</span></label><input type="text" id="pEventsUrl" class="mono" placeholder="https://api-us.central.sophos.com/siem/v1/events"></div>
-      <div class="fld"><label>Poll interval <span class="hint">(seconds, min 15)</span></label><input type="number" id="pInterval" class="mono" value="60" min="15"></div>
-      <div class="fld"><label>Initial lookback <span class="hint">(seconds, first run)</span></label><input type="number" id="pLookback" class="mono" value="86400"></div>
-      <div class="fld"><label>Secret storage</label>
+      <div class="fld"><label>Check for new logs every <span class="hint">(seconds, min 15)</span></label><input type="number" id="pInterval" class="mono" value="60" min="15"></div>
+      <div class="fld"><label>Collect earlier logs from <span class="hint">(seconds before the first connection; 86400 = 24 hours)</span></label><input type="number" id="pLookback" class="mono" value="86400"></div>
+      <div class="fld"><label>Credential storage</label>
         <select id="pSecretMode">
           <option value="encrypted">Encrypted in mini-SIEM database</option>
-          <option value="vaultgate">VaultGate broker (not configured yet)</option>
+          <option value="vaultgate">VaultGate credential service (not set up)</option>
         </select>
       </div>
       <div class="fld"><label>Enabled</label>
-        <select id="pEnabled"><option value="1">Yes — poll on schedule</option><option value="0" selected>No — save but don't poll</option></select>
+        <select id="pEnabled"><option value="1">Yes — collect logs automatically</option><option value="0" selected>No — save without collecting logs</option></select>
       </div>
       <div class="fld full"><button id="addPollerBtn">Add connector</button><span class="status-line" id="pollerStatus"></span></div>
     </div>
@@ -230,14 +230,14 @@ sudo systemctl restart auditd</pre>
 
     <h3 style="font-size:13px;margin:18px 0 8px;">Configured connectors</h3>
     <table class="tbl" id="pollersTable"><thead><tr>
-      <th>Name</th><th>Scheme</th><th>Events URL</th><th>Every</th><th>Status</th><th>Last poll</th><th></th>
+      <th>Name</th><th>Sign-in method</th><th>Events URL</th><th>Every</th><th>Status</th><th>Last check</th><th></th>
     </tr></thead><tbody></tbody></table>
-    <p class="sub" id="noPollers" style="display:none;">No connectors yet.</p>
+    <p class="sub" id="noPollers" style="display:none;">No cloud connections yet. Add your provider details above to start collecting logs.</p>
   </div>
 
   <div class="panel" data-section="sec-mapping">
-    <h2>Source field mapping</h2>
-    <p class="sub">Map each JSON log source's keys into mini-SIEM's columns (host, message, severity, timestamp) without editing code. Each mapping is a <strong>profile</strong>; the parser applies the first matching profile to an incoming JSON event. Windows/NXLog and Sophos ship as editable defaults. Non-JSON syslog isn't affected.</p>
+    <h2>Log field mapping</h2>
+    <p class="sub">Choose which fields from a log source appear as Host, Message, Severity and Time. A <strong>profile</strong> groups these choices for a source. The first matching profile is used; lower priority numbers are checked first. Windows/NXLog and Sophos profiles are included. These settings apply to JSON logs only.</p>
 
     <h3 style="font-size:13px;margin:14px 0 8px;">Latest unidentified log</h3>
     <div id="unidBox" class="sub" style="background:var(--canvas);border:1px solid var(--line);border-radius:6px;padding:10px;">Loading…</div>
@@ -255,24 +255,24 @@ sudo systemctl restart auditd</pre>
       <div class="fld"><label>Priority <span class="hint">(lower = checked first)</span></label><input type="number" id="profPriority" class="mono" value="100"></div>
       <div class="fld"><label>Match type</label>
         <select id="profMatchType">
-          <option value="key_present">A JSON key is present</option>
+          <option value="key_present">Log contains this field</option>
           <option value="source_ip">Source equals</option>
           <option value="app_contains">App name contains</option>
         </select>
       </div>
       <div class="fld"><label>Match value <span class="hint">(the key / source / text to match)</span></label><input type="text" id="profMatchValue" class="mono" placeholder="customer_id"></div>
-      <div class="fld"><label>Host ← keys <span class="hint">(comma priority list)</span></label><input type="text" id="profMapHost" class="mono" placeholder="location,Hostname,host"></div>
-      <div class="fld"><label>Message ← keys</label><input type="text" id="profMapMessage" class="mono" placeholder="name,description,Message"></div>
-      <div class="fld"><label>App ← keys</label><input type="text" id="profMapApp" class="mono" placeholder="type,SourceName"></div>
-      <div class="fld"><label>Msg-ID ← keys</label><input type="text" id="profMapMsgid" class="mono" placeholder="type,EventID"></div>
-      <div class="fld"><label>Severity ← keys</label><input type="text" id="profMapSeverity" class="mono" placeholder="severity"></div>
-      <div class="fld"><label>Timestamp ← keys</label><input type="text" id="profMapTimestamp" class="mono" placeholder="when,created_at"></div>
-      <div class="fld"><label>Timestamp format <span class="hint">(optional strptime, e.g. %Y-%m-%dT%H:%M:%S.%fZ)</span></label><input type="text" id="profTsFormat" class="mono" placeholder="leave blank to auto-detect"></div>
+      <div class="fld"><label>Host field names <span class="hint">(check in this order, separated by commas)</span></label><input type="text" id="profMapHost" class="mono" placeholder="location,Hostname,host"></div>
+      <div class="fld"><label>Message field names</label><input type="text" id="profMapMessage" class="mono" placeholder="name,description,Message"></div>
+      <div class="fld"><label>Application field names</label><input type="text" id="profMapApp" class="mono" placeholder="type,SourceName"></div>
+      <div class="fld"><label>Event ID field names</label><input type="text" id="profMapMsgid" class="mono" placeholder="type,EventID"></div>
+      <div class="fld"><label>Severity field names</label><input type="text" id="profMapSeverity" class="mono" placeholder="severity"></div>
+      <div class="fld"><label>Event time field names</label><input type="text" id="profMapTimestamp" class="mono" placeholder="when,created_at"></div>
+      <div class="fld"><label>Timestamp format <span class="hint">(advanced; leave blank for automatic recognition, e.g. %Y-%m-%dT%H:%M:%S.%fZ)</span></label><input type="text" id="profTsFormat" class="mono" placeholder="leave blank to auto-detect"></div>
       <div class="fld"><label>Enabled</label><select id="profEnabled"><option value="1">Yes</option><option value="0">No</option></select></div>
     </div>
 
-    <h3 style="font-size:13px;margin:14px 0 8px;">Test against a raw event</h3>
-    <p class="sub" style="margin-top:0;">Paste a raw JSON event (or load the unidentified one above), then preview how the profile above maps it — before saving.</p>
+    <h3 style="font-size:13px;margin:14px 0 8px;">Preview with a sample event</h3>
+    <p class="sub" style="margin-top:0;">Paste a sample JSON log, or use the unidentified event above, to check how its fields will appear before saving.</p>
     <textarea id="profTestRaw" class="mono" style="width:100%;min-height:90px;font-size:12px;" placeholder='{"customer_id":"...","location":"srv-1","name":"...","severity":"low"}'></textarea>
     <div style="margin-top:8px;">
       <button id="profPreviewBtn" style="background:#fff;border:1px solid var(--accent);color:var(--accent);">Preview mapping</button>
@@ -284,14 +284,14 @@ sudo systemctl restart auditd</pre>
   </div>
 
   <div class="panel" data-section="sec-aliases">
-    <h2>Search field aliases</h2>
+    <h2>Search across log sources</h2>
     <p class="sub">Define, per concept, which raw field names — beyond the obvious column —
       also mean "source", "host", or "destination" for a log. This is what lets
       <strong>Log Search</strong> and the <strong>Correlation</strong> playbooks find the same
       machine across sources that use different field names for it (e.g. Fortigate's
       <span class="mono">src=</span> vs. Sophos's <span class="mono">endpoint_ip</span>). Changes
       apply to search and correlation <strong>immediately</strong>, including historical data —
-      nothing needs to be reindexed.</p>
+      you do not need to update earlier logs.</p>
 
     <div class="form-grid" style="grid-template-columns:140px 1fr;align-items:start;row-gap:14px;">
       <label style="padding-top:8px;font-weight:600;">Source</label>
@@ -309,7 +309,7 @@ sudo systemctl restart auditd</pre>
                placeholder="computer, machinename, endpoint_name, device, location">
         <p class="sub" style="margin:4px 0 0;font-size:11.5px;">Checked in addition to the
           <span class="mono">Host</span> column (<span class="mono">hostname</span>) — usually
-          already correct via Source field mapping above; this is the safety net for
+          already correct via Log field mapping above; this is the safety net for
           un-profiled or future sources.</p>
       </div>
 
@@ -330,8 +330,8 @@ sudo systemctl restart auditd</pre>
   </div>
 
   <div class="panel" data-section="sec-receiver">
-    <h2>API log receiver</h2>
-    <p class="sub">Accept logs over HTTP from products that can only send via an API (not raw syslog). Senders authenticate with an API key and <span class="mono">POST</span> to <span class="mono">/api/ingest</span>. Received logs run through the same pipeline as syslog — rules, threat-intel, field extraction, and forwarding all apply. <strong>Keys are shown once at creation and stored only as a hash; if you lose a key, delete it and make a new one.</strong></p>
+    <h2>Receive logs by API</h2>
+    <p class="sub">Connect products that send logs by API instead of syslog. Create an API key for each product, then use the connection example below. Received logs use your existing detection, threat intelligence and forwarding settings. <strong>Copy a new key immediately: it is shown only once. If it is lost, remove it and create a replacement.</strong></p>
 
     <div id="apiKeyNew" style="display:none;background:var(--ok-soft);border:1px solid var(--ok);border-radius:8px;padding:12px;margin-bottom:12px;">
       <div style="font-size:12px;color:var(--ink-soft);margin-bottom:4px;">New API key for <strong id="apiKeyNewName"></strong> — copy it now, it won't be shown again:</div>
@@ -370,8 +370,8 @@ sudo systemctl restart auditd</pre>
   </div>
 
   <div class="panel" data-section="sec-ticket">
-    <h2>Ticket system connector</h2>
-    <p class="sub">Automatically create a ticket in your ticketing system (Jira, ServiceNow, Zammad, osTicket, or any REST endpoint) for every alert at or above a severity threshold — including <span class="mono">threat_intel_match</span> alerts from IOC hits. Scheduled playbook reports with findings also raise alerts through the same path. <strong>This makes outbound HTTP calls from the SIEM to your ticket API.</strong></p>
+    <h2>Ticketing connection</h2>
+    <p class="sub">Automatically create a ticket in your ticketing system (Jira, ServiceNow, Zammad, osTicket, or any REST endpoint) for alerts at or above your selected severity, including matches against known threats. Scheduled playbook reports with findings also raise alerts through the same path. <strong>This makes outbound HTTP calls from the SIEM to your ticket API.</strong></p>
     <div class="form-grid" style="grid-template-columns:1fr 3fr;">
       <div class="fld"><label>Enabled</label>
         <select id="tkEnabled"><option value="false">Off</option><option value="true">On</option></select></div>
@@ -379,9 +379,9 @@ sudo systemctl restart auditd</pre>
         <input type="text" id="tkUrl" class="mono" placeholder="https://your-ticket-system/api/tickets"></div>
       <div class="fld"><label>Min severity</label>
         <select id="tkSev"><option>critical</option><option>error</option><option selected>warning</option><option>notice</option></select></div>
-      <div class="fld"><label>Headers JSON <span class="hint">(auth token etc. — write-only, not echoed back)</span></label>
+      <div class="fld"><label>Authentication headers (JSON) <span class="hint">(auth token etc. — write-only, not echoed back)</span></label>
         <input type="text" id="tkHeaders" class="mono" placeholder='{"Authorization": "Bearer YOUR-TOKEN"}'></div>
-      <div class="fld full"><label>Body template <span class="hint">(JSON sent per alert; placeholders: {{id}} {{rule_name}} {{severity}} {{source_ip}} {{description}} {{created_at}} {{log_ids}} {{ai_analysis}})</span></label>
+      <div class="fld full"><label>Ticket content template <span class="hint">(JSON sent per alert; placeholders: {{id}} {{rule_name}} {{severity}} {{source_ip}} {{description}} {{created_at}} {{log_ids}} {{ai_analysis}})</span></label>
         <textarea id="tkTemplate" style="min-height:120px;"></textarea></div>
       <div class="fld full">
         <button id="tkSaveBtn">Save</button>
@@ -416,7 +416,7 @@ sudo systemctl restart auditd</pre>
       <div class="fld"><label>Username</label><input type="text" id="nuName" class="mono" placeholder="analyst"></div>
       <div class="fld"><label>Password <span class="hint">(min 8 chars)</span></label><input type="password" id="nuPass" class="mono"></div>
       <div class="fld"><label>Role</label>
-        <select id="nuRole"><option value="admin">admin</option><option value="analyst">analyst</option><option value="viewer">viewer</option></select>
+        <select id="nuRole"><option value="admin">Administrator</option><option value="analyst">Analyst</option><option value="viewer">Read-only viewer</option></select>
       </div>
       <div class="fld full"><button id="addUserBtn">Add user</button><span class="status-line" id="userStatus"></span></div>
     </div>
@@ -443,8 +443,8 @@ sudo systemctl restart auditd</pre>
     <h2>Syslog forwarding</h2>
     <p class="sub">
       Relay every received syslog message — the <strong>original raw text</strong>, exactly as it arrived —
-      to one or more downstream receivers, in addition to storing it here. Config changes take effect
-      within ~5 seconds without restarting the listener. Optional filters let a destination receive only
+      to one or more downstream receivers, in addition to storing it here. Changes take effect
+      within about five seconds without restarting log collection. Optional filters let a destination receive only
       a subset (by minimum severity and/or a regex over the raw message).
     </p>
     <div class="warn-note">
@@ -488,7 +488,7 @@ sudo systemctl restart auditd</pre>
         </select>
       </div>
       <div class="fld half">
-        <label>Filter pattern <span class="hint">(optional regex over raw message)</span></label>
+        <label>Filter pattern <span class="hint">(advanced: regular expression matched against the original message)</span></label>
         <input type="text" id="fPattern" class="mono" placeholder="e.g. sshd|firewall — blank forwards all">
       </div>
       <div class="fld half">
@@ -501,20 +501,20 @@ sudo systemctl restart auditd</pre>
         </select>
       </div>
       <div class="fld half">
-        <label>TCP framing <span class="hint">(only applies to TCP destinations)</span></label>
+        <label>TCP message format <span class="hint">(only applies to TCP destinations)</span></label>
         <select id="fFraming">
           <option value="newline">Newline-delimited (default)</option>
-          <option value="octet">Octet-counting (RFC 6587)</option>
+          <option value="octet">Length-prefixed (RFC 6587; use if required by the receiver)</option>
         </select>
       </div>
       <div class="fld full">
-        <button id="addBtn">Add forwarder</button>
+        <button id="addBtn">Add destination</button>
         <span class="status-line" id="addStatus"></span>
       </div>
     </div>
 
     <h3 style="margin-top:24px;">Configured destinations</h3>
-    <p class="sub" style="margin-top:-4px;">Counters are flushed by the listener every ~10 seconds. "Test" sends one test message from the dashboard process.</p>
+    <p class="sub" style="margin-top:-4px;">Delivery counts update about every 10 seconds. Test sends a sample message from the web console; it does not replay stored logs.</p>
     <div id="fwTableWrap"><div class="muted">Loading…</div></div>
   </div>
 
@@ -616,7 +616,7 @@ async function loadAliases() {  try {
     $('aliasHost').value = (d.host || []).join(', ');
     $('aliasDest').value = (d.destination || []).join(', ');
   } catch (e) {
-    $('aliasStatus').textContent = 'Failed to load.'; $('aliasStatus').className = 'status-line err';
+    $('aliasStatus').textContent = 'Settings could not be loaded. Refresh the page and try again.'; $('aliasStatus').className = 'status-line err';
   }
 }
 
@@ -628,7 +628,7 @@ $('aliasSaveBtn').addEventListener('click', async () => {
     if (!r.ok) throw new Error('save failed');
     st.textContent = 'Saved — applies immediately, including to existing logs.'; st.className = 'status-line ok';
   } catch (e) {
-    st.textContent = 'Failed to save.'; st.className = 'status-line err';
+    st.textContent = 'Settings were not saved. Check your connection and try again.'; st.className = 'status-line err';
   }
 });
 
@@ -644,7 +644,7 @@ async function loadForwarders() {
   const rows = await r.json();
   const wrap = $('fwTableWrap');
   if (!rows.length) {
-    wrap.innerHTML = '<div class="muted">No forwarders configured yet. Add one above.</div>';
+    wrap.innerHTML = '<div class="muted">No delivery destinations yet. Add a destination above to share incoming logs with another system.</div>';
     return;
   }
   wrap.innerHTML = `<table>
@@ -656,7 +656,7 @@ async function loadForwarders() {
       <tr>
         <td><strong>${esc(f.name)}</strong></td>
         <td class="mono-cell">${esc(f.protocol)}://${esc(f.host)}:${f.port}</td>
-        <td class="mono-cell">${f.min_severity ? 'sev≥' + esc(f.min_severity) : ''}${f.min_severity && f.filter_pattern ? ' · ' : ''}${f.filter_pattern ? 'regex: ' + esc(f.filter_pattern) : ''}${!f.min_severity && !f.filter_pattern ? '<span class="muted">all messages</span>' : ''}${f.origin_mode && f.origin_mode !== 'off' ? ' · <span style="color:var(--accent);">origin: ' + esc(f.origin_mode) + '</span>' : ''}${f.protocol === 'tcp' && f.tcp_framing === 'octet' ? ' · <span style="color:var(--accent);">RFC6587</span>' : ''}</td>
+        <td class="mono-cell">${f.min_severity ? 'sev≥' + esc(f.min_severity) : ''}${f.min_severity && f.filter_pattern ? ' · ' : ''}${f.filter_pattern ? 'message pattern: ' + esc(f.filter_pattern) : ''}${!f.min_severity && !f.filter_pattern ? '<span class="muted">all messages</span>' : ''}${f.origin_mode && f.origin_mode !== 'off' ? ' · <span style="color:var(--accent);">origin: ' + esc(f.origin_mode) + '</span>' : ''}${f.protocol === 'tcp' && f.tcp_framing === 'octet' ? ' · <span style="color:var(--accent);">RFC6587</span>' : ''}</td>
         <td>${f.enabled ? '<span class="badge b-on">enabled</span>' : '<span class="badge b-off">disabled</span>'}</td>
         <td>${f.forwarded_count || 0}</td>
         <td class="mono-cell">${f.last_forward_at ? esc(f.last_forward_at.replace('T',' ').slice(0,19)) : '—'}</td>
@@ -692,7 +692,7 @@ $('addBtn').addEventListener('click', async () => {
     if (data.error) {
       $('addStatus').textContent = data.error; $('addStatus').className = 'status-line err';
     } else {
-      $('addStatus').textContent = 'Added — the listener picks it up within ~5s.'; $('addStatus').className = 'status-line ok';
+      $('addStatus').textContent = 'Destination added. Incoming logs will use these settings within about five seconds.'; $('addStatus').className = 'status-line ok';
       $('fName').value = ''; $('fHost').value = ''; $('fPattern').value = '';
       loadForwarders();
     }
@@ -710,7 +710,7 @@ async function toggleFw(id, enabled) {
 }
 
 async function deleteFw(id, name) {
-  if (!confirm(`Delete forwarder "${name}"? The listener will stop forwarding to it within ~5 seconds.`)) return;
+  if (!confirm(`Remove destination "${name}"? New logs will stop being sent there within about five seconds. Stored logs will remain here.`)) return;
   await fetch('/api/forwarders/' + id, { method: 'DELETE' });
   loadForwarders();
 }
@@ -726,7 +726,7 @@ async function testFw(id, btn) {
   }
 }
 
-// ---- API log receiver ----
+// ---- Receive logs by API ----
 async function loadApiKeys() {
   let rows = [];
   try { rows = await (await fetch('/api/ingest/keys')).json(); } catch(e) { return; }
@@ -811,14 +811,14 @@ async function runSyslogTroubleshoot() {
     }
     const pipe = document.getElementById('troublePipeline');
     const stages = d.pipeline || {};
-    const labels = [['network','Network'],['listener','Listener'],['parser','Parser'],['storage','Storage'],['search','Search']];
+    const labels = [['network','Arrives at server'],['listener','Received by mini-SIEM'],['parser','Log format recognized'],['storage','Saved'],['search','Searchable']];
     if (pipe && Object.keys(stages).length) {
       pipe.innerHTML = '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:8px;">' + labels.map(([key,label]) => {
         const v = stages[key] || {}; const good = v.status === 'PASS'; const warn = v.status === 'WARNING';
         const bg = good ? 'var(--ok-soft)' : warn ? 'var(--warn-soft)' : 'var(--canvas)';
         const border = good ? 'var(--ok)' : warn ? 'var(--warn)' : 'var(--line)';
         return '<div style="background:'+bg+';border:1px solid '+border+';border-radius:8px;padding:9px 10px;">' +
-          '<div style="font-weight:700;font-size:12px;">'+esc(label)+' · '+esc(v.status||'UNKNOWN')+'</div>' +
+          '<div style="font-weight:700;font-size:12px;">'+esc(label)+' · '+esc(MS.label(v.status||'UNKNOWN'))+'</div>' +
           '<div class="hint" style="margin-top:4px;">'+esc(v.detail||'')+'</div></div>';
       }).join('') + '</div>';
       pipe.style.display = 'block';
@@ -831,7 +831,7 @@ async function runSyslogTroubleshoot() {
     st.innerHTML = '<span class="status-line err">' + esc(e.message || 'Capture failed.') + '</span>';
   } finally {
     btn.disabled = false;
-    btn.textContent = 'Capture 4 seconds';
+    btn.textContent = 'Check delivery (4 seconds)';
   }
 }
 document.getElementById('troubleCaptureBtn').addEventListener('click', runSyslogTroubleshoot);
@@ -847,7 +847,7 @@ async function generateSupportBundle() {
   try {
     const r = await fetch('/api/support/bundle', {method:'POST'});
     if (!r.ok) {
-      let msg = 'Support bundle failed.';
+      let msg = 'Support report failed.';
       try { const d = await r.json(); msg = d.error || msg; } catch(e) {}
       throw new Error(msg);
     }
@@ -860,20 +860,20 @@ async function generateSupportBundle() {
     URL.revokeObjectURL(url);
     st.textContent = 'Generated ' + name + ' (' + Math.ceil(blob.size/1024) + ' KB).'; st.className = 'status-line ok';
   } catch(e) {
-    st.textContent = e.message || 'Support bundle failed.'; st.className = 'status-line err';
+    st.textContent = e.message || 'Support report failed.'; st.className = 'status-line err';
   } finally { btn.disabled = false; }
 }
 const supportBundleBtn = document.getElementById('supportBundleBtn');
 if (supportBundleBtn) supportBundleBtn.addEventListener('click', generateSupportBundle);
 
-// ---- Syslog listen ports ----
+// ---- Receive device logs ----
 async function loadListenPorts() {
   try {
     const d = await (await fetch('/api/listen-ports')).json();
     if (d.ports) document.getElementById('listenPorts').value = d.ports.join(',');
     if (d.config_writable === false) {
       document.getElementById('portsStatus').textContent =
-        'Note: the config file is not writable by the dashboard process — changes may fail to save.';
+        'Settings cannot be saved from this console. Ask your administrator to check the application settings-file permissions.';
     }
   } catch(e) {}
 }
@@ -903,7 +903,7 @@ document.getElementById('savePortsBtn').addEventListener('click', async () => {
 });
 loadListenPorts();
 
-// ---- API poller connectors ----
+// ---- Cloud log connections ----
 function pFmtTime(s){ if(!s) return '—'; try{ return MS.fmtTime(s); }catch(e){ return s; } }
 async function loadPollers(){
   let rows=[];
@@ -915,7 +915,7 @@ async function loadPollers(){
   if(!rows.length){ none.style.display='block'; document.getElementById('pollersTable').style.display='none'; return; }
   none.style.display='none'; document.getElementById('pollersTable').style.display='';
   rows.forEach(p=>{
-    const status = p.enabled ? (p.last_error ? `<span style="color:var(--err);">error</span>` : `<span style="color:var(--ok);">polling</span>`) : `<span class="muted">disabled</span>`;
+    const status = p.enabled ? (p.last_error ? `<span style="color:var(--err);">error</span>` : `<span style="color:var(--ok);">Collecting logs</span>`) : `<span class="muted">disabled</span>`;
     const schemeLabel = {oauth2_client_credentials:'OAuth2', oauth2_sophos:'Sophos', api_key:'API key'}[p.auth_scheme] || p.auth_scheme;
     const tr=document.createElement('tr');
     tr.innerHTML=`<td class="mono-cell">${esc(p.name)}</td>`+
@@ -923,7 +923,7 @@ async function loadPollers(){
       `<td class="mono-cell" style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(p.events_url)}">${esc(p.events_url)}</td>`+
       `<td>${p.interval_seconds}s</td>`+
       `<td>${status}${p.last_error?`<br><span style="font-size:11px;color:var(--err);word-break:break-word;white-space:normal;">${esc(p.last_error)}</span>`:''}</td>`+
-      `<td style="font-size:12px;">${pFmtTime(p.last_poll_at)}${p.pulled_count?`<br><span class="muted">${p.pulled_count} pulled</span>`:''}</td>`+
+      `<td style="font-size:12px;">${pFmtTime(p.last_poll_at)}${p.pulled_count?`<br><span class="muted">${p.pulled_count} events collected</span>`:''}</td>`+
       `<td><button data-id="${p.id}" data-en="${p.enabled}" class="pTgl" style="font-size:11px;padding:3px 8px;">${p.enabled?'Disable':'Enable'}</button> <button data-id="${p.id}" class="pDel" style="font-size:11px;padding:3px 8px;color:var(--err);">Delete</button></td>`;
     tb.appendChild(tr);
   });
@@ -950,7 +950,7 @@ async function loadPollers(){
   function updNote(){
     if(!note) return;
     if(modeSel.value==='vaultgate'){
-      note.innerHTML='⚠ VaultGate brokering isn\'t wired up yet — a connector using it will report "VaultGate not configured" until you connect VaultGate. Use encrypted-in-database for now.';
+      note.innerHTML='⚠ VaultGate is not available in this installation. Choose encrypted database storage to use this connection.';
     } else {
       note.innerHTML='The secret is encrypted at rest in mini-SIEM\'s database. This protects against someone reading the database file; it does not protect against full host compromise (the key lives on this server).';
     }
@@ -986,7 +986,7 @@ async function loadPollers(){
 
 loadApiKeys();
 
-// ---- Source field mapping (profiles + tester + unidentified) ----
+// ---- Log field mapping (profiles + tester + unidentified) ----
 function profFormToBody(){
   return {
     name: $('profName').value, priority: Number($('profPriority').value||100),
@@ -1200,7 +1200,7 @@ async function loadIdleTimeout() {
   });
   loadIdleTimeout();
 })();
-// ---- Ticket connector ----
+// ---- Ticketing connection ----
 async function loadTicketCfg(){
   const c = await (await fetch('/api/tickets/config')).json();
   document.getElementById('tkEnabled').value = c.enabled ? 'true' : 'false';

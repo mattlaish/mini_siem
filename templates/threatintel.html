@@ -52,7 +52,7 @@
 
   <div class="panel">
     <h2>Recent IOC matches</h2>
-    <p class="sub">Enabled indicators are checked against every log live at ingest; a match raises a <span class="mono">threat_intel_match</span> alert. <a href="/help#intel">Learn more</a></p>
+    <p class="sub">Incoming logs are checked against enabled indicators. A match creates a known-threat alert with the related evidence. <a href="/help#intel">Learn more</a></p>
     <div class="table-scroll">
       <table>
         <thead><tr><th>Time</th><th>Type</th><th>Indicator</th><th>Threat</th><th>Source</th><th>Host</th><th>Log</th></tr></thead>
@@ -97,7 +97,7 @@ badsite.example.net,domain,Phishing kit
 
   <div class="panel">
     <h2>External feed URLs (auto-import)</h2>
-    <p class="sub">Auto-import a plain-text indicator list from the web, on demand or on a schedule. <strong>Makes outbound HTTP requests from the SIEM.</strong> <a href="/help#intel">Learn more</a></p>
+    <p class="sub">Auto-import a plain-text indicator list from the web, on demand or on a schedule. <strong>mini-SIEM needs network access to the feed provider.</strong> <a href="/help#intel">Learn more</a></p>
     <div class="form-grid" style="grid-template-columns:1fr 2fr 1fr 1fr;">
       <div class="fld"><label>Feed name</label><input type="text" id="feedName" placeholder="feodo-tracker"></div>
       <div class="fld"><label>URL</label><input type="text" id="feedUrl" class="mono" placeholder="https://feodotracker.abuse.ch/downloads/ipblocklist.txt"></div>
@@ -113,10 +113,10 @@ badsite.example.net,domain,Phishing kit
         <div class="fld"><label>Auth type</label>
           <select id="feedAuthScheme">
             <option value="none" selected>None (public feed)</option>
-            <option value="header">Static header key</option>
-            <option value="authorization">Authorization header (raw key)</option>
-            <option value="query_param">URL query parameter</option>
-            <option value="basic">HTTP Basic auth</option>
+            <option value="header">API key in a header</option>
+            <option value="authorization">Authorization header (key without a prefix)</option>
+            <option value="query_param">API key in a URL parameter</option>
+            <option value="basic">Username and password (HTTP Basic)</option>
           </select>
         </div>
         <div class="fld" id="feedAuthHeaderNameFld" style="display:none;">
@@ -124,7 +124,7 @@ badsite.example.net,domain,Phishing kit
           <input type="text" id="feedAuthHeaderName" class="mono" placeholder="X-OTX-API-Key">
         </div>
         <div class="fld" id="feedAuthQueryParamFld" style="display:none;">
-          <label>Query param name</label>
+          <label>URL parameter name</label>
           <input type="text" id="feedAuthQueryParam" class="mono" placeholder="key">
         </div>
         <div class="fld" id="feedAuthBasicUserFld" style="display:none;">

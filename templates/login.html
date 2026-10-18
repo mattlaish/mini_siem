@@ -52,7 +52,7 @@
       {% if oauth_enabled or saml_enabled %}
         {% if local_enabled %}<div class="divider">OR</div>{% endif %}
         {% if oauth_enabled %}<a class="sso" href="/auth/oauth/login">Sign in with {{ oauth_name }}</a>{% endif %}
-        {% if saml_enabled %}<a class="sso" href="/auth/saml/login">Sign in with SAML SSO</a>{% endif %}
+        {% if saml_enabled %}<a class="sso" href="/auth/saml/login">Sign in with your organization</a>{% endif %}
       {% endif %}
     </div>
     <div class="foot">Authorized use only. Activity may be logged.</div>

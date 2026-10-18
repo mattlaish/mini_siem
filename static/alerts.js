@@ -37,7 +37,7 @@
     FILTERS.forEach(([k, id]) => {
       if (!u.has(k)) return;
       const v = u.get(k) === 'all' && k === 'status' ? '' : u.get(k);
-      if (k === 'rule' && v && ![...$(id).options].some(o => o.value === v)) $(id).add(new Option(v, v));
+      if (k === 'rule' && v && ![...$(id).options].some(o => o.value === v)) $(id).add(new Option(MS.label(v), v));
       $(id).value = v;
     });
     return u.get('id');
@@ -76,17 +76,17 @@
     const body = $('aqRows');
     $('aqCount').textContent = `${rows.length}${rows.length >= 500 ? '+' : ''} alert${rows.length === 1 ? '' : 's'}`;
     if (!rows.length) {
-      body.innerHTML = `<tr><td colspan="8" class="muted">No alerts match these filters.${$('fStatus').value === 'open' ? ' Nothing open — nice.' : ''}</td></tr>`;
+      body.innerHTML = `<tr><td colspan="8" class="muted">No alerts match these filters.${$('fStatus').value === 'open' ? ' There are no open alerts in this view.' : ''}</td></tr>`;
       return;
     }
     body.innerHTML = rows.map((a, i) => `
       <tr data-i="${i}" class="${i === selected ? 'sel' : ''}" aria-selected="${i === selected}">
         <td class="msg-cell t">${MS.timeHTML(a.created_at, true)}</td>
-        <td><span class="badge sev-${esc(a.severity)}">${esc(a.severity)}</span></td>
-        <td>${esc(a.rule_name)}</td>
+        <td><span class="badge sev-${esc(a.severity)}">${esc(MS.label(a.severity))}</span></td>
+        <td>${esc(MS.label(a.rule_name))}</td>
         <td class="msg-cell">${esc(host(a))}</td>
         <td class="desc c-desc"><div class="line">${esc(a.description)}</div></td>
-        <td><span class="st st-${esc(status(a))}">${esc(status(a))}</span></td>
+        <td><span class="st st-${esc(status(a))}">${esc(MS.label(status(a)))}</span></td>
         <td>${esc(a.workflow_assignee) || '<span class="muted">—</span>'}</td>
         <td class="c-count">${occurrences(a)}</td>
       </tr>`).join('');
@@ -116,14 +116,14 @@
       const a = {...wf.alert, ...(ev.alert || {})};
       const st = status(a);
       const fields = (a.detection_evidence && a.detection_evidence.fields) || {};
-      const keyFields = PINNED.filter(k => fields[k]).map(k => `<dt>${esc(k)}</dt><dd>${esc(String(fields[k]).slice(0, 600))}</dd>`).join('');
-      const history = (wf.events || []).map(e => `<div>${MS.timeHTML(e.at)} · <strong>${esc(e.actor)}</strong> ${esc(e.from_status)} → ${esc(e.to_status)}${e.assignee ? ' · assignee ' + esc(e.assignee) : ''}${e.note ? `<br><span class="muted">${esc(e.note)}</span>` : ''}</div>`).join('')
-        || '<div class="muted">No workflow changes yet.</div>';
-      const options = [st, ...(NEXT[st] || [])].map(s => `<option value="${s}"${s === st ? ' selected' : ''}>${s === st ? s + ' (current)' : s}</option>`).join('');
+      const keyFields = PINNED.filter(k => fields[k]).map(k => `<dt title="${esc(k)}">${esc(MS.label(k))}</dt><dd>${esc(String(fields[k]).slice(0, 600))}</dd>`).join('');
+      const history = (wf.events || []).map(e => `<div>${MS.timeHTML(e.at)} · <strong>${esc(e.actor)}</strong> ${esc(MS.label(e.from_status))} → ${esc(MS.label(e.to_status))}${e.assignee ? ' · assignee ' + esc(e.assignee) : ''}${e.note ? `<br><span class="muted">${esc(e.note)}</span>` : ''}</div>`).join('')
+        || '<div class="muted">No status or assignment changes yet.</div>';
+      const options = [st, ...(NEXT[st] || [])].map(s => `<option value="${s}"${s === st ? ' selected' : ''}>${s === st ? MS.label(s) + ' (current)' : MS.label(s)}</option>`).join('');
       const events = (ev.events || []).map(e => `#${e.id} · received ${MS.fmtTime(e.received_at)}\n${e.raw}`).join('\n\n');
       drawer.innerHTML = `
         <h2><span>Alert #${a.id}</span><button type="button" id="aqClose" aria-label="Close detail">Close</button></h2>
-        <div><span class="badge sev-${esc(a.severity)}">${esc(a.severity)}</span> <strong>${esc(a.rule_name)}</strong></div>
+        <div><span class="badge sev-${esc(a.severity)}">${esc(MS.label(a.severity))}</span> <strong>${esc(MS.label(a.rule_name))}</strong></div>
         <p style="font-size:13px;line-height:1.5;">${esc(a.description)}</p>
         <dl><dt>Created</dt><dd>${MS.timeHTML(a.created_at, true)}</dd><dt>Source</dt><dd>${esc(a.source_ip || '—')}</dd>
             <dt>Occurrences</dt><dd>${occurrences(a)}</dd>${keyFields}</dl>
@@ -136,7 +136,7 @@
         </form>` : `<p class="muted">Read-only: analyst or administrator role is needed to change alerts. <a href="/?ids=${esc(a.log_ids || '')}">Open related logs →</a></p>`}
         <h3 style="font-size:13px;margin:14px 0 4px;">History</h3><div class="aq-hist">${history}</div>
         <h3 style="font-size:13px;margin:14px 0 4px;">Original events</h3>
-        ${events ? `<pre>${esc(events)}</pre>` : '<p class="muted">No linked events in hot storage.</p>'}
+        ${events ? `<pre>${esc(events)}</pre>` : '<p class="muted">No linked events are currently available here. Check Log Search for archived evidence.</p>'}
         <p class="muted" style="font-size:11px;">${esc(ev.note || '')}</p>`;
       $('aqClose').onclick = close;
       if ($('aqForm')) $('aqForm').onsubmit = async e => {
@@ -144,7 +144,7 @@
         const f = e.target, body = {status: f.status.value, assignee: f.assignee.value.trim(), note: f.note.value.trim()};
         try {
           await save(id, body);
-          MS.toast(`Alert #${id} saved (${body.status}).`, 'success');
+          MS.toast(`Alert #${id} saved (${MS.label(body.status)}).`, 'success');
           await load(); open(id);
         } catch (err) { MS.toast(err.message, 'error'); }
       };
@@ -195,7 +195,7 @@
 
   (async () => {
     try {
-      (await api('/api/alerts/rules')).forEach(r => $('fRule').add(new Option(r, r)));
+      (await api('/api/alerts/rules')).forEach(r => $('fRule').add(new Option(MS.label(r), r)));
     } catch (e) { /* rule filter stays "All rules" */ }
     const initial = restore();
     await load();

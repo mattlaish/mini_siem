@@ -109,11 +109,11 @@ def test_web_console_exposes_read_only_observability_and_systemd_restart():
     setup = (ROOT / "templates" / "setup.html").read_text(encoding="utf-8")
     api = (ROOT / "web_blueprints" / "db_health.py").read_text(encoding="utf-8")
 
-    assert "PostgreSQL security &amp; schema readiness" in health
+    assert "Database access and upgrade checks" in health
     assert "Archive &amp; maintenance" in health
     assert "/api/postgres/security-status" in health
     assert "/api/archive/status" in health
-    assert "Archive execution remains CLI/maintenance-only" in health
+    assert "Archives are managed by the scheduled maintenance service or your administrator" in health
     assert "sudo systemctl restart mini-siem-listener" in setup
     assert "pkill -f listener.py" not in setup
     assert "sudo python3 listener.py --db siem.db" not in setup

@@ -111,18 +111,18 @@
     </div>
     <div class="table-scroll">
       <table>
-        <thead><tr id="logsHead"><th>Time</th><th>Log source</th><th>Net source</th><th>Severity</th><th>Host</th><th>Destination</th><th>App</th><th>Message</th></tr></thead>
+        <thead><tr id="logsHead"><th>Time</th><th>Log source</th><th>Source address</th><th>Severity</th><th>Host</th><th>Destination</th><th>App</th><th>Message</th></tr></thead>
         <tbody id="logsBody" aria-live="polite" aria-relevant="additions"><tr><td colspan="8" class="muted">Loading…</td></tr></tbody>
       </table>
     </div>
     <details style="margin-top:12px;">
-      <summary style="font-size:12.5px;font-weight:600;cursor:pointer;">Normalization — field extraction settings</summary>
+      <summary style="font-size:12.5px;font-weight:600;cursor:pointer;">Searchable fields and display columns</summary>
       <p class="muted" style="font-size:12px;margin:8px 0;">Click any log row above to extract fields from its message. <span class="mono">key=value</span> and <span class="mono">key: value</span> pairs are extracted automatically. Add custom regex patterns below (one per line, Python syntax) using <strong>named groups</strong> to pull fields from messages that don't use key=value, e.g. <span class="mono">(?P&lt;user&gt;\S+) logged in from (?P&lt;ip&gt;[\d.]+)</span></p>
       <textarea id="normPatterns" style="width:100%;min-height:70px;font-family:var(--mono);font-size:12px;border:1px solid var(--line);border-radius:6px;padding:8px;" placeholder="Failed password for (?P&lt;user&gt;\S+) from (?P&lt;src&gt;[\d.]+)"></textarea>
       <p class="muted" style="font-size:12px;margin:12px 0 6px;"><strong>Extracted columns:</strong> field names (comma-separated) to show as sortable, filterable columns to the right of Message — from key=value pairs or your patterns' named groups, e.g. <span class="mono">user, action, srcport</span></p>
       <input type="text" id="normColumns" class="mono" style="width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:6px;font-size:13px;" placeholder="user, action">
-      <div style="margin-top:8px;"><button id="savePatternsBtn">Save patterns &amp; columns</button> <button id="reindexBtn" style="background:#fff;color:var(--accent);border:1px solid var(--accent);">Re-index existing logs</button><span class="muted" id="patternsStatus" style="margin-left:10px;"></span></div>
-      <p class="muted" style="font-size:11.5px;margin:6px 0 0;">Fields are extracted and indexed when each log <em>arrives</em>. After adding or changing patterns, run <strong>Re-index existing logs</strong> once so older logs get the new fields too.</p>
+      <div style="margin-top:8px;"><button id="savePatternsBtn">Save patterns &amp; columns</button> <button id="reindexBtn" style="background:#fff;color:var(--accent);border:1px solid var(--accent);">Update fields in earlier logs</button><span class="muted" id="patternsStatus" style="margin-left:10px;"></span></div>
+      <p class="muted" style="font-size:11.5px;margin:6px 0 0;">New logs use your saved field settings automatically. After changing a pattern, choose <strong>Update fields in earlier logs</strong> to make those fields searchable in older logs too. Original events are kept unchanged.</p>
     </details>
   </div>
 
@@ -645,7 +645,7 @@ function renderXColumns() {
   bar.style.display = 'flex';
   bar.innerHTML = xCols.map(c =>
     `<input type="text" class="xcol-filter" data-col="${c}" placeholder="filter ${c}…" style="max-width:160px;">`).join('')
-    + '<span class="muted" style="align-self:center;font-size:11.5px;">indexed — searches all events (re-index after changing patterns to cover older logs)</span>';
+    + '<span class="muted" style="align-self:center;font-size:11.5px;">Searches all saved events. Update fields in earlier logs after changing extraction patterns.</span>';
   bar.querySelectorAll('.xcol-filter').forEach(inp => inp.addEventListener('change', loadLogs));
 }
 
@@ -888,10 +888,10 @@ document.getElementById('reindexBtn').addEventListener('click', async () => {
   const poll = setInterval(async () => {
     const sdat = await (await fetch('/api/norm-reindex/status')).json();
     if (sdat.running) {
-      st.textContent = `Re-indexing… ${sdat.done_logs.toLocaleString()} logs done`;
+      st.textContent = `Updating searchable fields… ${sdat.done_logs.toLocaleString()} logs done`;
     } else {
       clearInterval(poll);
-      st.textContent = sdat.last_result || 'Re-index complete.';
+      st.textContent = sdat.last_result || 'Searchable fields updated.';
       st.style.color = 'var(--ok)';
       loadLogs();
     }

@@ -2,8 +2,8 @@
 
 ## Purpose
 
-Latest implementation: 2026-10-15 managed detection/process monitoring. See the
-dated entry at the end and ROADMAP.md P14; older slice statuses are historical
+Latest implementation: 2026-10-18 operator language and usability pass. See the
+dated entry at the end and UX_REVIEW.md; older slice statuses are historical
 where explicitly superseded. Owner handles Git synchronization manually.
 
 This file is the persistent implementation ledger for AI-assisted development.
@@ -776,3 +776,33 @@ Next: live 4688 -> NXLog -> SIEM -> configured notification E2E, PostgreSQL lock
 and deployed privilege/load checks. Script reassembly and general process graph
 are optional extensions. Request limits, outbound URL policy, SSO roles, IOC size
 limits, Sophos event idempotency and other pre-existing backlog remain separate.
+
+## 2026-10-18 - Operator language and task-focused usability
+
+Status: IMPLEMENTED_TESTING_DEFERRED; local UI checks complete, not a release gate.
+
+- Worked directly in C:/Users/mattlai/Projects/mini_siem with scoped approval;
+  no Git, alternate active source tree, production DB, credential or ACL change.
+- Whole-tree safe-text audit: 376 initial files, excluding credentials, databases,
+  archives and Git/cache internals. Reviewed all 13 templates; updated 12 and four
+  shared scripts. UI routes, option values, identifiers and original evidence stay
+  unchanged; operator labels replace implementation-oriented explanations.
+- Added weekday/source choices, exception rule/window selectors, readable sample
+  results with optional JSON, unsaved-reload confirmation and shared display labels.
+  Fixed hidden reference labels and AI-off connection settings accessibility.
+- AI remains off until explicitly enabled; enabling connection editing does not
+  start external requests. Original log severity remains exact; alert error displays
+  as High without changing stored data or treating failed AI requests as High.
+- New tests/test_product_language.py: 17 PASS. Three existing literal-copy assertions
+  updated to the new text; their security and endpoint contracts remain intact.
+- Direct Projects Windows/Python 3.12 baseline 306 PASS / 47 FAIL / 3 SKIP; final
+  323 PASS / identical 47 FAIL / 3 SKIP. No new failing identities. Linux-only
+  systemd host qualification excluded; PostgreSQL/provider/NXLog E2E NOT_RUN.
+- Python syntax 145, static JS 5, rendered inline JS 7, authenticated page render
+  11 and placeholder truth gate PASS. Existing IDs and explicit option values
+  preserved. Browser QA used only disposable localhost synthetic data; no captured
+  browser errors. Validation XML, reports and backups remain outside source.
+- Added UX_REVIEW.md with remaining priorities: guided connection setup, role-aware
+  advanced settings, field/time-zone pickers, compact mobile navigation and uniform
+  request recovery. README and AI_HANDOFF updated; local source manifest refreshed.
+  Original October 15 ZIP unchanged; no new archive or production acceptance claim.

@@ -55,14 +55,14 @@
   <div class="panel" id="masterPanel" style="display:flex;align-items:center;justify-content:space-between;gap:12px;">
     <div>
       <h2 style="margin:0;">AI SOC Analyst <span id="stateBadge" class="badge b-amber">OFF</span></h2>
-      <p class="sub" id="stateHint" style="margin:6px 0 0;">Turn this on once your LLM/API endpoint is configured. It stays off until then — no connections are attempted.</p>
+      <p class="sub" id="stateHint" style="margin:6px 0 0;">Set up and test your AI connection before turning this on. It stays off until then — no connections are attempted.</p>
     </div>
     <button id="masterToggle">Turn ON</button>
   </div>
 
   <section class="panel" id="usagePanel" aria-label="AI usage and estimated cost">
     <div class="row"><h2>Usage &amp; estimated cost</h2><button type="button" id="refreshUsage" class="secondary">Refresh</button></div>
-    <p class="sub">All retained provider calls. USD estimates use your rates per million tokens; they are not provider invoices. Unpriced calls remain unpriced.</p>
+    <p class="sub">View recorded AI requests, usage and estimated USD cost. Tokens are the units your provider uses to measure input and answers. Estimates use the prices you enter, not your provider invoice; requests without a price are excluded from the estimate.</p>
     <p id="usageSummary" role="status">Loading…</p>
     <div style="overflow-x:auto"><table><thead><tr><th>Provider / model</th><th>Calls</th><th>Input</th><th>Cached input</th><th>Output</th><th>Est. USD</th></tr></thead><tbody id="usageModels"></tbody></table></div>
     <details><summary>Configure model rates (USD / 1M tokens)</summary>
@@ -84,15 +84,15 @@
 
   <div class="disclaimer">
     This assistant can use a <strong>local</strong> LLM or an explicitly configured external provider.
-    Local mode keeps model traffic on your network; external mode sends the bounded triage/chat context to that
+    Local mode keeps AI requests on your network; external mode sends selected alert and conversation evidence to that
     provider. Its output is assistive analysis, <strong>not</strong> an authoritative verdict. Always verify against
-    the raw evidence before acting. The model cannot run its own database queries.
+    the original events before acting. AI cannot search the database independently.
   </div>
 
   <!-- Settings -->
   <div class="panel collapsed" id="settingsPanel">
     <div class="settings-head" onclick="document.getElementById('settingsPanel').classList.toggle('collapsed')">
-      <h2>LLM connection <span class="muted" id="connSummary"></span></h2>
+      <h2>AI connection <span class="muted" id="connSummary"></span></h2>
       <span class="muted">▼ settings</span>
     </div>
     <div class="settings-body">
@@ -136,7 +136,7 @@
 
       <div class="row">
         <div class="fld">
-          <label>Endpoint base URL</label>
+          <label>AI service address</label>
           <input type="text" id="baseUrl" class="mono" placeholder="http://localhost:11434/v1">
         </div>
         <div class="fld">
@@ -151,20 +151,20 @@
 
       <div class="row" style="margin-top:12px;">
         <div class="fld full">
-          <label>System prompt <span class="hint">(defines the AI's role &amp; output format; blank = built-in SOC analyst prompt)</span></label>
+          <label>Analyst instructions <span class="hint">(defines the AI's role &amp; output format; blank = built-in SOC analyst prompt)</span></label>
           <textarea id="sysPrompt" class="mono" style="min-height:120px;" placeholder="(using built-in SOC analyst prompt — type here to override)"></textarea>
-          <div style="margin-top:4px;"><button type="button" id="loadDefaultPrompt" class="secondary" style="font-size:11px;padding:3px 10px;">Load built-in prompt to edit</button></div>
+          <div style="margin-top:4px;"><button type="button" id="loadDefaultPrompt" class="secondary" style="font-size:11px;padding:3px 10px;">Use default analyst instructions</button></div>
         </div>
       </div>
       <div class="row">
         <div class="fld full">
-          <label>User prompt template <span class="hint">(how evidence is framed each request; blank = default. Placeholders: {evidence} {rule_name} {severity} {source_ip} {description} — must include {evidence})</span></label>
+          <label>Evidence instructions <span class="hint">(how evidence is framed each request; blank = default. Placeholders: {evidence} {rule_name} {severity} {source_ip} {description} — must include {evidence})</span></label>
           <textarea id="userTemplate" class="mono" style="min-height:90px;" placeholder="{evidence}&#10;&#10;Triage this alert and prioritize containment steps."></textarea>
         </div>
       </div>
       <div class="row">
         <div class="fld" style="max-width:220px;">
-          <label>Max output tokens <span class="hint">(64–8192)</span></label>
+          <label>Maximum answer length <span class="hint">(64–8192 tokens; provider usage units)</span></label>
           <input type="number" id="maxTokens" class="mono" min="64" max="8192" step="1" placeholder="900">
         </div>
         <div class="fld" style="max-width:360px;">
@@ -181,7 +181,7 @@
           <input type="checkbox" id="autoTriage" style="width:auto;"> Automatically triage new alerts
         </label>
         <div class="fld" style="max-width:260px;">
-          <label style="font-size:12px;">Ordinary alert auto-triage severity ≥</label>
+          <label style="font-size:12px;">Analyze other alerts at or above</label>
           <select id="autoMinSev">
             <option value="">All alerts</option>
             <option value="warning">warning and above</option>
@@ -200,7 +200,7 @@
           </select>
         </div>
       </div>
-      <p class="sub" style="margin-top:8px;">When on, new alerts are triaged in the background. NXLog Windows warning-or-higher events are dedicated triggers and are always triaged even when this threshold is set to error or critical. Trigger policy and related evidence are separate: after any alert is selected for triage, the LLM context may include matching events from NXLog, firewall, API/pollers, and other sources where the trigger IP appears as source, destination, peer, or an indexed endpoint field, regardless of severity.</p>
+      <p class="sub" style="margin-top:8px;">New alerts are analyzed automatically when this is on. Windows events received through NXLog at Warning or higher are always selected, even if the setting above is stricter. For any selected alert, AI may also review related activity from other log sources and lower severities to explain what happened.</p>
       <div class="row" style="margin-top:12px;">
         <button id="saveCfg">Save</button>
         <button class="secondary" id="testCfg">Test connection</button>
@@ -212,7 +212,7 @@
   <!-- Alert triage -->
   <div class="panel">
     <h2>Triage an alert</h2>
-    <p class="sub">Pick a recent alert; the server gathers the triggering events plus the source's history and asks the model to assess it.</p>
+    <p class="sub">Pick a recent alert; mini-SIEM reviews the alert and related activity to suggest what needs attention.</p>
     <div class="row">
       <div class="fld" style="flex:3;">
         <label>Alert</label>
@@ -226,7 +226,7 @@
   <!-- Chat -->
   <div class="panel">
     <h2>Ask about your logs</h2>
-    <p class="sub">Ask in plain language. The server retrieves relevant events by keyword and passes them to the model as evidence.</p>
+    <p class="sub">Ask in plain language. mini-SIEM uses matching events to help answer your question. Verify conclusions against the linked evidence.</p>
     <div class="chat-log" id="chatLog"></div>
     <div class="row">
       <div class="fld" style="flex:5;">
@@ -291,17 +291,18 @@ document.getElementById('loadDefaultPrompt').addEventListener('click', () => {
 });
 
 function applyEnabledState(){
-  $('aiBody').style.opacity = aiEnabled ? '1' : '0.45';
-  $('aiBody').style.pointerEvents = aiEnabled ? 'auto' : 'none';
+  // Connection settings stay usable so setup does not require enabling AI first.
+  ['triageBtn','alertSelect','chatSend','chatInput'].forEach(id=>{$(id).disabled=!aiEnabled;});
+  if(!aiEnabled)$('alertSelect').innerHTML='<option value="">Turn on AI to choose an alert</option>';
   const badge = $('stateBadge'), btn = $('masterToggle'), hint = $('stateHint');
   if (aiEnabled){
     badge.textContent = 'ON'; badge.className = 'badge b-ok';
     btn.textContent = 'Turn OFF'; btn.className = 'secondary';
-    hint.textContent = 'AI Analyst is active. Configure the LLM connection below and start triaging.';
+    hint.textContent = 'AI analysis is on. Review an alert or ask about your logs below.';
   } else {
     badge.textContent = 'OFF'; badge.className = 'badge b-amber';
     btn.textContent = 'Turn ON'; btn.className = '';
-    hint.textContent = 'Turn this on once your LLM/API endpoint is configured. It stays off until then — no connections are attempted.';
+    hint.textContent = 'Set up and test your AI connection before turning this on. It stays off until then — no connections are attempted.';
   }
 }
 

@@ -50,7 +50,7 @@ def test_setup_contains_troubleshoot_tab_and_no_custom_filter_box():
     assert 'id="troubleSourceIp"' in text
     assert 'id="troubleCaptureBtn"' in text
     assert "/api/troubleshoot/syslog-capture" in text
-    assert "custom packet filters" in text
+    assert "custom network filters are not supported" in text
 
 
 def test_dashboard_uses_fixed_helper_and_shell_free_subprocess():

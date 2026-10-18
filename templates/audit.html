@@ -1,6 +1,6 @@
 {% extends "base.html" %}
-{% block title %}Audit — mini-SIEM{% endblock %}
-{% block page_title %}Audit{% endblock %}
+{% block title %}Activity History — mini-SIEM{% endblock %}
+{% block page_title %}Activity History{% endblock %}
 {% block head %}
 <style>
   .wrap { max-width:1150px; margin:24px auto; padding:0 20px; }
@@ -27,12 +27,12 @@
 {% block content %}
 <div class="wrap">
   <div class="panel">
-    <h2>Audit trail</h2>
-    <p class="sub">Who did what in the SIEM itself: logins and failures, password changes, user management, IOC and feed changes, forwarder/AI/ticket configuration, report runs. Recorded server-side with the acting user and their client IP.</p>
+    <h2>Activity history</h2>
+    <p class="sub">Who did what in the SIEM itself: logins and failures, password changes, user management, IOC and feed changes, forwarder/AI/ticket configuration, report runs. Each entry includes who made the change and the IP address they used.</p>
     <div class="toolbar">
       <select id="fUser"><option value="">All users</option></select>
       <select id="fAction"><option value="">All actions</option></select>
-      <input type="text" id="fQ" data-hotkey="search" placeholder="Search target/detail…">
+      <input type="text" id="fQ" data-hotkey="search" placeholder="Search activity details…">
       <select id="fLimit"><option value="200">Last 200</option><option value="500">Last 500</option><option value="2000">Last 2000</option></select>
       <button id="applyBtn">Apply</button>
       <span class="muted" id="countLine" style="align-self:center;"></span>
@@ -69,7 +69,7 @@ async function load(){
   const d = await (await fetch('/api/audit?' + p.toString())).json();
   if (!filtersLoaded){
     $('fUser').innerHTML = '<option value="">All users</option>' + (d.users||[]).map(u=>`<option>${esc(u)}</option>`).join('');
-    $('fAction').innerHTML = '<option value="">All actions</option>' + (d.actions||[]).map(a=>`<option>${esc(a)}</option>`).join('');
+    $('fAction').innerHTML = '<option value="">All actions</option>' + (d.actions||[]).map(a=>`<option value="${esc(a)}">${esc(MS.label(a))}</option>`).join('');
     filtersLoaded = true;
   }
   const rows = d.entries || [];
@@ -81,7 +81,7 @@ async function load(){
       <td class="mono">${MS.fmtTime(e.at)}</td>
       <td><strong>${esc(e.username)}</strong></td>
       <td class="mono">${esc(e.source_ip||'—')}</td>
-      <td><span class="badge ${badgeClass(e.action)}">${esc(e.action)}</span></td>
+      <td><span class="badge ${badgeClass(e.action)}">${esc(MS.label(e.action))}</span></td>
       <td class="mono">${esc(e.target||'—')}</td>
       <td style="font-size:12px;">${esc(e.detail||'—')}</td>
     </tr>`).join('');

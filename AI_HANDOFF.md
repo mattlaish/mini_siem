@@ -1,5 +1,36 @@
 # AI Handover Prompt - mini-SIEM
 
+## Operator language pass - 2026-10-18
+
+Work directly in C:/Users/mattlai/Projects/mini_siem, using scoped approval when
+this chat's Documents-based sandbox lacks write access. Do not silently move source
+development. No Git operations were authorized or run for this pass.
+
+See UX_REVIEW.md for the whole-tree wording audit, implementation and remaining UX
+priorities. Reviewed all 13 templates and updated 12 plus shared UI scripts without changing
+routes, database schema, provider options or raw evidence. Known identifiers/status
+codes get display-only labels; unknown custom labels are preserved. Named weekday
+and source checkboxes round-trip the same values. Exceptions select supported rules
+and named windows. Sample tests show a readable summary plus optional original JSON.
+Unsaved reloads are confirmed; generated references are hidden. AI connection setup
+now works before enabling AI; analysis/chat stay disabled while AI is off.
+
+The October 17 hardening and earlier October 18 usability work are retained. This
+pass did not change pollers, normalization, rule evaluation, RBAC or ingest behavior.
+Direct Projects baseline on this Windows host: 306 PASS / 47 FAIL / 3 SKIP; final:
+323 PASS / identical 47 FAIL / 3 SKIP, 17 new product-language tests PASS. Three
+static wording assertions updated without relaxing their security assertions.
+Python 145 / static JS 5 / inline JS 7 syntax, 11 rendered routes and truth gate
+PASS. Browser checks used only synthetic localhost state; no captured JS errors.
+This does not reproduce the historical Linux/other-environment 38-failure result,
+qualify PostgreSQL/NXLog/systemd, or resolve existing non-UX test debt.
+
+Next UX priorities: guided provider connection/test workflow, role-aware advanced
+settings, visual field/time-zone choices, compact mobile Settings navigation and
+consistent request recovery. Technical values required to connect products and
+support diagnostics must remain exact. Local manifest refreshed for current safe
+source; original October 15 ZIP untouched, no new release/package claimed.
+
 Continue from this context.
 
 ## Critical Architecture Rules

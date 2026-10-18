@@ -1,6 +1,6 @@
 {% extends "base.html" %}
-{% block title %}Health — mini-SIEM{% endblock %}
-{% block page_title %}Health{% endblock %}
+{% block title %}System Health — mini-SIEM{% endblock %}
+{% block page_title %}System Health{% endblock %}
 {% block head %}
 <style>
   .wrap { max-width:1100px; margin:24px auto; padding:0 20px; }
@@ -38,13 +38,13 @@
   <div class="section-title">System</div>
   <div class="grid" id="sysGrid"></div>
 
-  <div class="section-title">SIEM data plane</div>
+  <div class="section-title">Collected logs and alerts</div>
   <div class="grid" id="siemGrid"></div>
 
-  <div class="section-title">Runtime health</div>
+  <div class="section-title">Service health</div>
   <div class="grid" id="runtimeGrid"></div>
 
-  <div class="section-title">PostgreSQL security &amp; schema readiness</div>
+  <div class="section-title">Database access and upgrade checks</div>
   <div class="grid" id="postgresSecurityGrid">
     <div class="card"><div class="note">Loading PostgreSQL security status…</div></div>
   </div>
@@ -63,9 +63,9 @@
     <div class="card"><div class="note">Loading operational diagnostics…</div></div>
   </div>
 
-  <div class="section-title">Dependencies</div>
+  <div class="section-title">Connected services</div>
   <div class="grid" id="dependencyGrid">
-    <div class="card"><div class="note">Loading dependency state…</div></div>
+    <div class="card"><div class="note">Checking connected services…</div></div>
   </div>
 
   <div class="section-title">Database integrity</div>
@@ -98,7 +98,7 @@ function bytes(n){ if(n==null) return '—'; const u=['B','KB','MB','GB','TB']; 
 function bps(n){ return n==null?'—':bytes(n)+'/s'; }
 function cls(p,a,w){ return p>=w?'warn':p>=a?'amber':'ok'; }
 function esc(v){ return String(v==null?'—':v).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
-function pill(v, good){ return `<span class="pill ${good?'ok':'warn'}">${esc(v)}</span>`; }
+function pill(v, good){ return `<span class="pill ${good?'ok':'warn'}">${esc(MS.label(v))}</span>`; }
 function statusPill(v){ const x=String(v||'UNKNOWN').toUpperCase(); return pill(x, x==='HEALTHY'||x==='PASS'); }
 function yesNo(v, invert=false){ const good=invert?!v:!!v; return pill(v?'YES':'NO',good); }
 function fmtTime(v){ if(!v) return '—'; const d=new Date(v); return Number.isNaN(d.getTime())?esc(v):MS.fmtTime(v); }
@@ -135,19 +135,19 @@ async function load(){
   }
   if(d.load && d.load.available){
     const pct = d.load.cores? (d.load.one/d.load.cores*100):0;
-    sys.push(gauge('Load average', pct, d.load.one+'<span class="unit"> (1m)</span>',
+    sys.push(gauge('System workload', pct, d.load.one+'<span class="unit"> (1m)</span>',
       d.load.five+' (5m) · '+d.load.fifteen+' (15m) · '+d.load.cores+' cores', 70, 100));
   }
   if(d.io){
     if(d.io.available && !d.io.warming_up){
-      sys.push(kvCard('Disk / Net I/O', [
+      sys.push(kvCard('Disk and network activity', [
         ['Disk read', bps(d.io.disk_read_bps)],
         ['Disk write', bps(d.io.disk_write_bps)],
-        ['Net recv', bps(d.io.net_recv_bps)],
-        ['Net sent', bps(d.io.net_sent_bps)],
+        ['Network received', bps(d.io.net_recv_bps)],
+        ['Network sent', bps(d.io.net_sent_bps)],
       ]));
     } else {
-      sys.push(`<div class="card"><h3>Disk / Net I/O</h3><div class="note">${d.io.reason||'warming up…'}</div></div>`);
+      sys.push(`<div class="card"><h3>Disk and network activity</h3><div class="note">${esc(d.io.reason||'Waiting for the first measurement…')}</div></div>`);
     }
   }
   if(d.udp && d.udp.available){
@@ -155,20 +155,20 @@ async function load(){
     sys.push(`<div class="card"><h3>UDP receive</h3>
       <div class="metric">${drops} <span class="unit">drops</span> ${drops>0?'<span class="pill warn">check</span>':'<span class="pill ok">clean</span>'}</div>
       <div class="sub">datagrams in: ${d.udp.in_datagrams.toLocaleString()} · buffer errors: ${d.udp.rcvbuf_errors}</div>
-      <div class="note" style="margin-top:6px">Rising drops = packets lost before storage (listener can't keep up).</div></div>`);
+      <div class="note" style="margin-top:6px">An increasing loss count means some network messages did not reach storage. Ask your administrator to check collection capacity and network settings.</div></div>`);
   }
   $('sysGrid').innerHTML = sys.join('') || '<div class="card"><div class="note">No system metrics available on this host.</div></div>';
 
   // ---- siem ----
   const s = d.siem || {};
   const siem = [];
-  siem.push(`<div class="card"><h3>Ingest rate</h3>
+  siem.push(`<div class="card"><h3>Log collection rate</h3>
     <div class="metric">${s.events_per_sec_1m ?? '—'} <span class="unit">ev/s</span></div>
     <div class="sub">${(s.events_last_min ?? 0).toLocaleString()} in last min · ${(s.events_last_hour ?? 0).toLocaleString()} in last hour</div></div>`);
   siem.push(kvCard('Stored', [
     ['Total events', (s.total_logs ?? 0).toLocaleString()],
     ['Total alerts', (s.total_alerts ?? 0).toLocaleString()],
-    ['Backend', s.backend || '—'],
+    ['Database type', s.backend || '—'],
     ['Database size', bytes(s.db_size_bytes)],
   ]));
   $('siemGrid').innerHTML = siem.join('');
@@ -180,20 +180,20 @@ async function load(){
   $('runtimeGrid').innerHTML =
     kvCard('Service state', [
       ['Database', pill(r.database||'UNKNOWN', dbGood)],
-      ['Listener', pill(r.listener||'UNKNOWN', listenerGood)],
-      ['Ingest', pill(r.ingest||'UNKNOWN', r.ingest==='RUNNING')],
-      ['Worker', esc(r.worker||'UNKNOWN')],
-      ['Heartbeat age', r.heartbeat_age_seconds==null?'—':esc(r.heartbeat_age_seconds)+'s'],
+      ['Log collection service', pill(r.listener||'UNKNOWN', listenerGood)],
+      ['Event processing', pill(r.ingest||'UNKNOWN', r.ingest==='RUNNING')],
+      ['Background tasks', esc(MS.label(r.worker||'UNKNOWN'))],
+      ['Time since service update', r.heartbeat_age_seconds==null?'—':esc(r.heartbeat_age_seconds)+'s'],
     ]) +
-    kvCard('Listener counters', [
+    kvCard('Log collection activity', [
       ['Processed', (r.processed_events||0).toLocaleString()],
       ['Failed', (r.failed_events||0).toLocaleString()],
       ['Dropped', (r.dropped_events||0).toLocaleString()],
       ['UDP dropped', (r.dropped_udp||0).toLocaleString()],
-      ['Queue depth', (r.queue_depth||0).toLocaleString()],
+      ['Waiting to be processed', (r.queue_depth||0).toLocaleString()],
       ['Last event', fmtTime(r.last_event_at)],
     ]) +
-    `<div class="card"><h3>Runtime detail</h3><div class="sub">${esc(r.detail||'No runtime warning.')}</div><div class="note" style="margin-top:8px;">Listener health is a DB-backed heartbeat from the separate listener process. Stale heartbeat is reported as STALE; the Web Console does not restart services automatically.</div></div>`;
+    `<div class="card"><h3>Service details</h3><div class="sub">${esc(r.detail||'No service warning reported.')}</div><div class="note" style="margin-top:8px;">The log collection service regularly reports its status. An overdue update means its current health cannot be confirmed. Ask your administrator to check the service; this page cannot restart it.</div></div>`;
 
   $('updated').textContent = 'Updated ' + MS.fmtTime(new Date().toISOString()).slice(11);
 }
@@ -215,33 +215,33 @@ async function loadPostgresSecurity(){
     if(resp.status===403){ grid.innerHTML='<div class="card"><div class="note">Administrator access is required for database privilege details.</div></div>'; return; }
     const d = await resp.json();
     if(d.backend !== 'postgres' || d.applicable === false){
-      grid.innerHTML='<div class="card"><h3>Not applicable</h3><div class="note">SQLite backend selected. PostgreSQL privilege-boundary checks are not applicable.</div></div>'; return;
+      grid.innerHTML='<div class="card"><h3>Not applicable</h3><div class="note">This installation uses SQLite. PostgreSQL access checks do not apply.</div></div>'; return;
     }
     if(d.error){ grid.innerHTML=`<div class="card"><h3>Status</h3>${pill('ERROR',false)}<div class="sub">${esc(d.error)}</div></div>`; return; }
     const sc=d.schema||{};
     grid.innerHTML =
-      kvCard('Runtime DB identity', [
+      kvCard('Application database account', [
         ['Status', pill(d.status||'UNKNOWN', d.healthy===true)],
         ['Current role', esc(d.role)],
-        ['Boundary enabled', yesNo(d.boundary_enabled)],
-        ['Runtime DDL', pill(String(d.runtime_schema_management||'unknown').toUpperCase(), d.runtime_schema_management==='disabled')],
-        ['Maintenance inherited', yesNo(d.dashboard_inherits_maintenance,true)],
+        ['Separate service permissions', yesNo(d.boundary_enabled)],
+        ['Application can change table structure', pill(String(d.runtime_schema_management||'unknown').toUpperCase(), d.runtime_schema_management==='disabled')],
+        ['Application has maintenance permissions', yesNo(d.dashboard_inherits_maintenance,true)],
       ]) +
       kvCard('Raw log protections', [
-        ['SELECT logs', yesNo(d.can_select_logs)],
-        ['INSERT logs', yesNo(d.can_insert_logs)],
-        ['DELETE logs', yesNo(d.can_delete_logs,true)],
-        ['UPDATE raw', yesNo(d.can_update_logs,true)],
-        ['TRUNCATE logs', yesNo(d.can_truncate_logs,true)],
-        ['Guard triggers', pill(String(d.guard_triggers??0), Number(d.guard_triggers)===2)],
+        ['Read original logs', yesNo(d.can_select_logs)],
+        ['Add new logs', yesNo(d.can_insert_logs)],
+        ['Delete original logs', yesNo(d.can_delete_logs,true)],
+        ['Change original logs', yesNo(d.can_update_logs,true)],
+        ['Clear all original logs', yesNo(d.can_truncate_logs,true)],
+        ['Evidence protection checks', pill(String(d.guard_triggers??0), Number(d.guard_triggers)===2)],
       ]) +
-      kvCard('Schema readiness', [
-        ['Current migration', esc(sc.current_version??0)],
-        ['Expected migration', esc(sc.expected_version??0)],
+      kvCard('Database upgrade status', [
+        ['Installed database version', esc(sc.current_version??0)],
+        ['Required database version', esc(sc.expected_version??0)],
         ['Pending', sc.pending_versions&&sc.pending_versions.length?pill(sc.pending_versions.join(', '),false):pill('none',true)],
-        ['Migration write', yesNo(d.can_write_migrations,true)],
-        ['Archive catalog write', yesNo(d.can_write_archive_catalog,true)],
-        ['Owner action', sc.ready?pill('not required',true):pill('required',false)],
+        ['Application can change upgrade records', yesNo(d.can_write_migrations,true)],
+        ['Application can change archive records', yesNo(d.can_write_archive_catalog,true)],
+        ['Administrator action', sc.ready?pill('not required',true):pill('required',false)],
       ]);
   } catch(e){ grid.innerHTML='<div class="card"><h3>Status</h3><span class="pill warn">unavailable</span></div>'; }
 }
@@ -260,19 +260,19 @@ async function loadArchiveStatus(){
         ['Status', pill(d.status||'UNKNOWN', d.status==='HEALTHY')],
         ['Enabled', yesNo(p.enabled)],
         ['Mode', esc(p.mode||'copy')],
-        ['Hot window', esc(p.hot_days)+' days'],
+        ['Keep readily available for', esc(p.hot_days)+' days'],
         ['Verify on create', yesNo(p.verify_on_create)],
       ]) +
       kvCard('Archive evidence', [
-        ['Sealed segments', (s.segments||0).toLocaleString()],
+        ['Protected archive files', (s.segments||0).toLocaleString()],
         ['Archived events', (s.archived_events||0).toLocaleString()],
         ['Archive bytes', bytes(s.bytes||0)],
-        ['Latest segment', esc(l.segment_id||'—')],
+        ['Latest archive', esc(l.segment_id||'—')],
         ['Latest end', fmtTime(l.end_at)],
-        ['Seal verification', pill(v.status||'UNKNOWN', v.status==='VERIFIED'||v.status==='VERIFIED_ON_CREATE'||v.status==='NO_SEGMENTS')],
+        ['Archive integrity check', pill(v.status||'UNKNOWN', v.status==='VERIFIED'||v.status==='VERIFIED_ON_CREATE'||v.status==='NO_SEGMENTS')],
         ['Verified at', fmtTime(v.verified_at)],
       ]) +
-      kvCard('Maintenance boundary', [
+      kvCard('Maintenance access', [
         ['Last run', fmtTime(d.last_maintenance_at)],
         ['Next run', fmtTime(m.next_run_at)],
         ['Maintenance role', esc(b.maintenance_role||'n/a')],
@@ -280,7 +280,7 @@ async function loadArchiveStatus(){
         ['Web can write archive catalog', yesNo(b.dashboard_can_write_archive_catalog,true)],
         ['Archive execution from Web', yesNo(b.archive_execution_from_web,true)],
       ]) +
-      `<div class="card"><h3>Maintenance errors</h3><div class="sub">${errs.maintenance?esc(errs.maintenance):'No maintenance error recorded.'}</div><div class="sub">${errs.archive?esc(errs.archive):'No archive error recorded.'}</div><div class="note" style="margin-top:8px;">Archive execution remains CLI/maintenance-only. This page is observation-only.</div></div>`;
+      `<div class="card"><h3>Maintenance errors</h3><div class="sub">${errs.maintenance?esc(errs.maintenance):'No maintenance error recorded.'}</div><div class="sub">${errs.archive?esc(errs.archive):'No archive error recorded.'}</div><div class="note" style="margin-top:8px;">Archives are managed by the scheduled maintenance service or your administrator. This page shows their status and does not run archiving.</div></div>`;
   } catch(e){ grid.innerHTML='<div class="card"><h3>Archive status</h3><span class="pill warn">unavailable</span></div>'; }
 }
 
@@ -295,7 +295,7 @@ async function loadDiagnostics(explicitRun){
     const d=await resp.json();
     if(d.error){ throw new Error(d.error); }
     const comps=Array.isArray(d.components)?d.components:[];
-    grid.innerHTML = `<div class="card"><h3>Overall</h3><div class="metric">${statusPill(d.overall)}</div><div class="sub">${fmtTime(d.timestamp)}</div><div class="note" style="margin-top:8px;">Diagnostics are observation-only. Recommended actions never grant runtime DDL or maintenance privileges.</div></div>` +
+    grid.innerHTML = `<div class="card"><h3>Overall</h3><div class="metric">${statusPill(d.overall)}</div><div class="sub">${fmtTime(d.timestamp)}</div><div class="note" style="margin-top:8px;">These checks do not change settings or repair services. Share any recommended action with your administrator.</div></div>` +
       comps.map(c=>`<div class="card"><h3>${esc(c.name)}</h3><div>${statusPill(c.status)}</div><div class="sub" style="margin-top:7px;">${esc(c.reason||'')}</div>${c.recommended_action?`<div class="note" style="margin-top:8px;"><strong>Action:</strong> ${esc(c.recommended_action)}</div>`:''}</div>`).join('');
     const deps=Array.isArray(d.dependencies)?d.dependencies:[];
     dep.innerHTML = deps.map(x=>kvCard(x.name,[['Status',statusPill(x.status)],['Depends on',esc((x.depends_on||[]).join(' → ')||'none')]])).join('') || '<div class="card"><div class="note">No dependency data.</div></div>';
@@ -312,7 +312,7 @@ async function loadDbFile(){
     const d = await (await fetch('/api/db/integrity')).json();
     const f = d.file || {};
     if (f.backend === 'postgres') {
-      document.getElementById('dbFileInfo').innerHTML = 'Backend: <strong>PostgreSQL</strong> — integrity managed by the server.';
+      document.getElementById('dbFileInfo').innerHTML = 'Database: <strong>PostgreSQL</strong> — integrity managed by the server.';
       document.getElementById('dbIntegrity').textContent = 'n/a';
       document.getElementById('dbIntegrityDetail').textContent = d.detail || '';
       return;
@@ -320,7 +320,7 @@ async function loadDbFile(){
     document.getElementById('dbFileInfo').innerHTML =
       `<div class="kv"><span>Path</span><span class="v" style="font-size:11px;">${f.path||'—'}</span></div>`
       + `<div class="kv"><span>Size</span><span class="v">${fmtBytes(f.size_bytes)}</span></div>`
-      + `<div class="kv"><span>WAL</span><span class="v">${fmtBytes(f.wal_bytes)}</span></div>`;
+      + `<div class="kv"><span>Recent database changes</span><span class="v">${fmtBytes(f.wal_bytes)}</span></div>`;
   } catch(e){}
 }
 function paintIntegrity(d){

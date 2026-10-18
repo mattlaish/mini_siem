@@ -1,6 +1,6 @@
 {% extends "base.html" %}
-{% block title %}Correlate — mini-SIEM{% endblock %}
-{% block page_title %}Correlate{% endblock %}
+{% block title %}Investigations — mini-SIEM{% endblock %}
+{% block page_title %}Investigations{% endblock %}
 {% block head %}
 <style>
   .wrap { max-width: 1200px; margin: 24px auto; padding: 0 20px; }
@@ -70,7 +70,7 @@
 
   <div class="panel">
     <h2>Playbook reports</h2>
-    <p class="sub">Run every playbook over a window and save the results as a report — on demand here, or automatically on a schedule. Scheduled reports run inside the SIEM process (no cron needed) as long as it's running.</p>
+    <p class="sub">Run the security checks over a selected period and save the findings as a report. Run once or set a weekly or monthly schedule. Scheduled reports require mini-SIEM to stay running.</p>
     <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;">
       <div><label style="font-size:12px;font-weight:600;display:block;margin-bottom:4px;">Window</label>
         <select id="repDays"><option value="1">Last 24 hours</option><option value="7" selected>Last 7 days</option><option value="30">Last 30 days</option><option value="90">Last 90 days</option></select></div>
@@ -92,13 +92,13 @@
 
   <div class="panel">
     <h2>Playbooks</h2>
-    <p class="sub">Pre-built correlations for common investigation scenarios. Pick a lookback window and run — results and suggested response steps appear below.</p>
+    <p class="sub">Ready-to-run checks for common security concerns. Choose how far back to look, then run a check to see findings and suggested response steps.</p>
     <div class="pb-grid" id="pbGrid"><div class="muted">Loading playbooks…</div></div>
   </div>
 
   <div class="panel" id="investigatePanel">
     <h2>Investigate</h2>
-    <p class="sub">Start from an IP and make the investigation scope explicit. The time slider controls the retrospective window; the hop slider controls how far confirmed destination→later-source pivots may expand. Evidence still matches admitted IPs whether they appear as source, destination, peer, or indexed endpoint fields.</p>
+    <p class="sub">Enter an IP address, choose the time period, and decide how many related connection steps to follow. Results include activity involving that address as a sender, receiver or endpoint.</p>
     <div class="investigate-grid">
       <div class="fld full">
         <label>IP to investigate</label>
@@ -113,14 +113,14 @@
       </div>
 
       <div class="fld">
-        <label>Entity expansion <span class="hint">(confirmed hops)</span></label>
+        <label>Follow related connections <span class="hint">(number of steps)</span></label>
         <input type="range" id="iHops" min="0" max="4" step="1" value="1" class="scope-slider">
         <div class="slider-labels five"><span>0</span><span>1</span><span>2</span><span>3</span><span>4</span></div>
         <div class="scope-readout" id="iHopReadout"></div>
       </div>
 
       <div class="fld full">
-        <div class="pivot-rule"><strong>Pivot rule:</strong> A → B does not automatically promote B. B is promoted only if B later appears as a source inside this investigation window. A second hop requires B → C and then C later becoming a source.</div>
+        <div class="pivot-rule"><strong>How connections are followed:</strong> A → B alone is not enough. B is included only when it later sends traffic during the selected period. Another step requires B → C followed by C sending traffic too.</div>
       </div>
 
       <div class="fld full">
@@ -196,7 +196,7 @@ function syncInvestigateScope() {
   const w = INVESTIGATION_WINDOWS[parseInt($('iStage').value, 10) || 0];
   const hops = parseInt($('iHops').value, 10) || 0;
   $('iStageReadout').innerHTML = `<strong>${w.label}</strong> · ${w.text} · ends now`;
-  $('iHopReadout').innerHTML = `<strong>${hops} hop${hops === 1 ? '' : 's'}</strong> · ${esc(hopExample(hops))} · destination→later-source confirmation required at every hop`;
+  $('iHopReadout').innerHTML = `<strong>${hops} hop${hops === 1 ? '' : 's'}</strong> · ${esc(hopExample(hops))} · each connected address must later send traffic during this period`;
 }
 $('iStage').addEventListener('input', syncInvestigateScope);
 $('iHops').addEventListener('input', syncInvestigateScope);
@@ -240,8 +240,8 @@ function renderInvestigation(data) {
   let html = `<p class="muted"><strong>IP investigation:</strong> ${esc(data.root_entity)}</p>`;
   html += `<div class="scope-summary">
     <div class="scope-stat"><strong>WINDOW</strong>${esc(data.stage_label)} · ${span}</div>
-    <div class="scope-stat"><strong>HOP BOUND</strong>${data.entity_expansion_max_depth}</div>
-    <div class="scope-stat"><strong>ENTITIES</strong>${(data.investigation_entities || []).length} / ${data.entity_expansion_max_entities}</div>
+    <div class="scope-stat"><strong>CONNECTION STEPS</strong>${data.entity_expansion_max_depth}</div>
+    <div class="scope-stat"><strong>ADDRESSES</strong>${(data.investigation_entities || []).length} / ${data.entity_expansion_max_entities}</div>
     <div class="scope-stat"><strong>EVIDENCE</strong>${data.evidence_count} shown · ${data.candidate_count} matched</div>
   </div>`;
 
@@ -252,15 +252,15 @@ function renderInvestigation(data) {
     + '</div>';
 
   if (hops.length) {
-    html += '<h3 style="font-size:13px;margin:14px 0 6px;">Confirmed pivots</h3>';
-    html += tableWrap(['Depth', 'Transition', 'Relationship event', 'Later-source proof'], hops.map(h => row([
+    html += '<h3 style="font-size:13px;margin:14px 0 6px;">Confirmed related connections</h3>';
+    html += tableWrap(['Step', 'Connection', 'First connection event', 'Later outgoing event'], hops.map(h => row([
       h.depth,
       mono(`${h.parent} → ${h.entity}`),
       `<a href="/?ids=${h.relationship_event_id}" target="_blank">#${h.relationship_event_id}</a><div class="sample">${esc(short(h.relationship_seen_at))}</div>`,
       `<a href="/?ids=${h.source_proof_event_id}" target="_blank">#${h.source_proof_event_id}</a><div class="sample">${esc(short(h.source_proof_seen_at))}</div>`
     ])));
   } else {
-    html += '<p class="muted">No destination→later-source pivot was confirmed at the selected depth/window.</p>';
+    html += '<p class="muted">No additional connections met the follow-up requirement. Try a longer time period or review the original address activity.</p>';
   }
 
   const events = data.events || [];
@@ -271,7 +271,7 @@ function renderInvestigation(data) {
       esc(e.severity || '—'), esc(e.app_name || '—'), `<div class="sample">${esc(e.message || '')}</div>`
     ])));
   } else {
-    html += '<div class="empty">No matching evidence in the selected scope.</div>';
+    html += '<div class="empty">No matching events. Check the IP address or choose a longer time period.</div>';
   }
   setResults(html, `investigate · ${data.stage_label.toLowerCase()} · ${data.requested_hops} hop(s)`);
 }

@@ -1,5 +1,23 @@
 # mini-SIEM
 
+## Daily use
+
+- **Live logs & alerts:** confirm incoming activity, search events and open their
+  original evidence. Expand a row to add useful fields as filters or columns.
+- **Alerts:** review open alerts, assign an owner, record findings and update status.
+- **Investigations:** run a security playbook or follow related activity from an IP.
+- **Detection Rules / Approved Hours:** tune alerts, test a sample and manage
+  host-specific allowed times. Choose **Save changes** to activate edits.
+- **Settings:** connect devices or cloud services. Use **Check log delivery** and
+  **System Health** when an expected source stops reporting.
+- **Help:** task-based guidance is available from every page. Administrators manage
+  connections and settings; analysts handle alerts; viewers have read-only access.
+
+The interface uses operator-facing labels; vendor protocol names, field names and
+original evidence remain unchanged. [UX_REVIEW.md](UX_REVIEW.md) records the
+2026-10-18 language pass, validation and next usability improvements. Installation
+and administration details follow below.
+
 ## Design and operating documents
 
 - `DETECTION_RULE_MANAGEMENT.md` — managed rules, Windows process/script fields,
