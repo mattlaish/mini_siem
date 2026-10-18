@@ -232,3 +232,43 @@ pre-existing failures; live PostgreSQL integration 5 PASS plus a PostgreSQL
 end-to-end detection run (stream aggregation, Tomcat9 -> whoami on an FQDN host);
 truth gate PASS; static scan clean for detection files; browser check of scope
 selector, raw-syslog simulation and unprofiled-host Add profile with no JS errors.
+
+## Web UI usability pass — 2026-10-18
+
+Found by walking the app with seeded data in a browser; all verified there.
+
+- Smart refresh (dashboard): the 5s poll no longer redraws under the analyst. The
+  log table holds while a row is expanded, the search is being edited, text is
+  selected, the list is scrolled or a dialog is open; new rows are counted in a
+  "N new events ↑" pill. The alerts panel holds while a group is expanded or a
+  control is focused ("N new alerts ↑"). Stats keep updating. Polls never overlap
+  and pause while the tab is hidden.
+- One alert queue: /security-alerts (sidebar "Alerts") now lists every alert with
+  filters (status default Open, severity, rule, assignee incl. me/unassigned, text),
+  a detail drawer (status limited to valid transitions, assignee, note, history,
+  key evidence fields, original events), j/k/Enter/a/Esc keys, filters in the URL,
+  and a read-only drawer for viewers. `/api/alerts` gained optional filters
+  (no params = unchanged) and `/api/alerts/rules`. The dashboard status menu only
+  offers valid transitions.
+- Live ingestion status on every page (`GET /api/ingest-status`: receiving /
+  quiet / listener_down / no_data from last stored event + listener heartbeat),
+  replacing the static "syslog listener" text; plus a first-run checklist on the
+  dashboard while no event has ever been received.
+- Readable events: `/api/logs` adds a display-only `summary` for Windows
+  process/script events (e.g. "w3wp.exe → update.exe · <cmdline> · as <user>");
+  stored messages are unchanged. Expanded rows show key fields first and tuck
+  source keys that duplicate normalized values into a collapsed section.
+- No native prompt()/alert(): MS.form dialog and MS.toast (static/app.js);
+  confirm() kept for destructive actions. A test guards against regressions.
+- Log-search filters live in the URL (bookmark/share/reload). One time format
+  everywhere (local 24h, UTC on hover, relative in queues). Sidebar grouped into
+  Investigate / Detection / Admin. Links follow the theme (were default blue in
+  dark mode). "/" focuses search.
+
+Validation: tests/test_ux_improvements.py 8 PASS; full suite 324 PASS / same 38
+pre-existing failures (test_dashboard_live_refresh asserts literal strings of an
+earlier unimplemented design — never polling alerts, a timeline button — and is
+unchanged); truth gate PASS; static scan unchanged (8 pre-existing); 28 browser
+checks (refresh hold + pills, dialogs/toasts, URL round-trip, queue keyboard and
+drawer, viewer read-only, first-run, grouped nav, live status) PASS with no JS
+errors or native dialogs.

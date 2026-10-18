@@ -49,6 +49,12 @@
 html, body { height: 100%; }
 body { font-family: var(--sans); margin: 0; background: var(--canvas); color: var(--ink); }
 
+/* Links follow the theme (browser-default blue is unreadable in dark mode). */
+a { color: var(--accent); }
+a:visited { color: var(--accent); }
+a:hover { color: var(--accent-dark); }
+.sidebar a, .sidebar a:visited { color: var(--sidebar-ink); }
+
 /* Accessible focus ring for keyboard users */
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
 
@@ -173,3 +179,48 @@ tbody tr:hover { background: var(--accent-soft); }
 .auth-card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); padding: 28px; width: 100%; max-width: 380px; }
 
 @media print { .sidebar, .topbar .right, .hamburger { display: none; } .app { grid-template-columns: 1fr; } }
+
+/* ---------------------------------------------------------------- live ingestion status */
+.ingest-status { display: inline-flex; align-items: center; gap: 6px; font-family: var(--mono); font-size: 11.5px;
+  color: var(--ink-soft); text-decoration: none; padding: 3px 9px; border: 1px solid var(--line); border-radius: 20px; }
+.ingest-status:hover { color: var(--ink); border-color: var(--ink-soft); }
+.ingest-status .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--line); flex: none; }
+.ingest-status[data-state="receiving"] .dot { background: var(--ok); box-shadow: 0 0 0 3px var(--ok-soft); }
+.ingest-status[data-state="quiet"] .dot, .ingest-status[data-state="no_data"] .dot { background: var(--caution-line); }
+.ingest-status[data-state="listener_down"] { color: var(--warn); border-color: var(--warn); background: var(--warn-soft); }
+.ingest-status[data-state="listener_down"] .dot { background: var(--warn); }
+
+/* ---------------------------------------------------------------- grouped sidebar */
+.sidebar .nav-group { font-family: var(--mono); font-size: 10px; letter-spacing: .6px; text-transform: uppercase;
+  color: #6f8295; padding: 12px 12px 4px; }
+.sidebar .nav-group:first-child { padding-top: 2px; }
+
+/* ---------------------------------------------------------------- toasts */
+#toastBox { position: fixed; right: 18px; bottom: 18px; z-index: 200; display: flex; flex-direction: column; gap: 8px; max-width: min(420px, calc(100vw - 36px)); }
+.toast { background: var(--elev); color: var(--ink); border: 1px solid var(--line); border-left: 4px solid var(--accent);
+  border-radius: 8px; padding: 10px 34px 10px 12px; font-size: 13px; box-shadow: var(--shadow); position: relative; line-height: 1.4; }
+.toast-success { border-left-color: var(--ok); }
+.toast-error { border-left-color: var(--warn); }
+.toast-close { position: absolute; top: 4px; right: 6px; border: none; background: none; color: var(--ink-soft); font-size: 16px; padding: 2px 6px; cursor: pointer; }
+
+/* ---------------------------------------------------------------- form dialog */
+.ms-dialog { border: 1px solid var(--line); border-radius: 10px; padding: 0; background: var(--panel); color: var(--ink);
+  width: min(440px, calc(100vw - 32px)); box-shadow: 0 10px 40px rgba(0,0,0,.25); }
+.ms-dialog::backdrop { background: rgba(10, 16, 22, .45); }
+.ms-dialog form { padding: 18px; display: flex; flex-direction: column; gap: 12px; }
+.ms-dialog h2 { margin: 0; font-size: 15px; }
+.ms-dialog label { display: flex; flex-direction: column; gap: 5px; font-size: 12.5px; font-weight: 600; }
+.ms-dialog input, .ms-dialog textarea, .ms-dialog select { font: inherit; font-weight: 400; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; }
+.ms-dialog-actions { display: flex; justify-content: flex-end; gap: 8px; }
+
+/* ---------------------------------------------------------------- "new items" pill */
+.new-pill { display: none; align-items: center; gap: 6px; border: 1px solid var(--accent); background: var(--accent);
+  color: var(--accent-ink); border-radius: 20px; padding: 3px 12px; font-size: 12px; font-weight: 600; cursor: pointer; }
+.new-pill.show { display: inline-flex; }
+.held-note { font-size: 11.5px; color: var(--ink-soft); }
+.ago { font-size: 11px; }
+
+/* ---------------------------------------------------------------- pinned event fields */
+.field-section { font-family: var(--mono); font-size: 10px; text-transform: uppercase; letter-spacing: .4px; color: var(--ink-soft); padding: 8px 4px 2px; }
+.event-summary { font-weight: 600; }
+.event-summary + .event-raw { display: block; color: var(--ink-soft); font-size: 11px; }

@@ -11,6 +11,19 @@
     <span class="muted" id="lastUpdated" style="color:var(--ink-soft);font-size:12px;"></span>
   </div>
 
+  <div class="panel" id="firstRun" hidden>
+    <h2>Waiting for your first event</h2>
+    <p class="muted" style="margin:0 0 10px;">Nothing has been received yet. Point a device at this server, or send a test event; this panel disappears as soon as the first event arrives.</p>
+    <ol style="margin:0;padding-left:20px;font-size:13px;line-height:1.7;">
+      <li><strong>Syslog</strong> (UDP/TCP) to <code id="frTarget">this host</code>. Quick test from a Linux host:
+        <code id="frLogger" style="display:block;margin:4px 0 8px;"></code></li>
+      <li><strong>HTTP/JSON</strong>: create a key in <a href="/setup#api">Setup → API log receiver</a>, then
+        <code id="frCurl" style="display:block;margin:4px 0 8px;white-space:pre-wrap;word-break:break-all;"></code></li>
+      <li><strong>Windows</strong>: forward Security 4688, Sysmon 1 and PowerShell 4104 with NXLog (see <a href="/help">Help</a>), then add the host on <a href="/execution-windows">Execution Windows</a>.</li>
+      <li>Not arriving? Use <a href="/setup">Setup → Troubleshoot</a> to capture what reaches the listener.</li>
+    </ol>
+  </div>
+
   <div class="stats" id="stats">
     <div class="stat-card"><div class="num" id="statLogs">–</div><div class="label">Total events</div></div>
     <div class="stat-card" id="cardAlerts" style="cursor:pointer;" title="Click to jump to the Alerts list. The breakdown counts alerts at warning severity and above.">
@@ -25,6 +38,8 @@
 
   <div class="panel">
     <h2 id="alertsSection" style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;">Alerts
+      <button type="button" class="new-pill" id="alertsNewPill"></button>
+      <a href="/security-alerts" style="font-size:12px;font-weight:600;margin-left:auto;order:9;">Open alert queue →</a>
       <label style="font-size:12px;font-weight:400;color:var(--ink-soft);cursor:pointer;">
         <input type="checkbox" id="groupToggle" checked style="vertical-align:middle;"> Group similar
       </label>
@@ -42,10 +57,13 @@
     </div>
   </div>
 
-  <div class="panel">
-    <h2>Log search</h2>
+  <div class="panel" id="logPanel">
+    <h2 style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">Log search
+      <button type="button" class="new-pill" id="logsNewPill" title="Show the newest events"></button>
+      <span class="held-note" id="logsHeldNote"></span>
+    </h2>
     <div class="toolbar">
-      <input type="text" id="qBox" aria-label="Search message text" placeholder="Search message… (use !term to exclude, comma-separate)" title="Examples:&#10;  error           contains 'error'&#10;  !tasklist       excludes 'tasklist'&#10;  error, !debug   contains 'error' and not 'debug'&#10;  !tasklist, !conhost   excludes both">
+      <input type="text" id="qBox" data-hotkey="search" aria-label="Search message text (press / to focus)" placeholder="Search message… (use !term to exclude, comma-separate)" title="Examples:&#10;  error           contains 'error'&#10;  !tasklist       excludes 'tasklist'&#10;  error, !debug   contains 'error' and not 'debug'&#10;  !tasklist, !conhost   excludes both">
       <input list="srcList" type="text" id="ipBox" aria-label="Filter by source" placeholder="Source…">
       <datalist id="srcList"></datalist>
       <input list="hostList" type="text" id="hostBox" aria-label="Filter by host" placeholder="Host…">
@@ -139,10 +157,16 @@ async function loadStats() {
   const d = await r.json();
   document.getElementById('statLogs').textContent = d.total_logs;
   document.getElementById('statAlerts').textContent = d.total_alerts;
-  // header: reflect the configured syslog listen port(s)
+  // First-run checklist: only while nothing has ever been received.
   const lp = d.listen_ports || [514];
-  const el = document.getElementById('listenerLine');
-  if (el) el.textContent = 'syslog listener on port' + (lp.length > 1 ? 's ' : ' ') + lp.join(', ');
+  const fr = document.getElementById('firstRun');
+  fr.hidden = d.total_logs > 0;
+  if (!fr.hidden) {
+    const host = window.location.hostname;
+    document.getElementById('frTarget').textContent = host + ' port' + (lp.length > 1 ? 's ' : ' ') + lp.join(', ');
+    document.getElementById('frLogger').textContent = `logger -n ${host} -P ${lp[0]} -d "mini-SIEM test event"`;
+    document.getElementById('frCurl').textContent = `curl -X POST ${window.location.origin}/api/ingest -H "X-API-Key: <key>" -H "Content-Type: application/json" -d '{"message":"mini-SIEM test event"}'`;
+  }
   // Total alerts: show actionable (warning+) breakdown, color if any exist
   const ab = d.alerts_breakdown || {actionable:0, critical:0, error:0, warning:0};
   const alLabel = document.getElementById('statAlertsLabel');
@@ -225,14 +249,16 @@ function _groupAiBadge(g) {
   return `${done}<span class="muted" style="font-size:10px;">${bits.join(', ')}</span>`;
 }
 
+// Mirrors alert_workflow.TRANSITIONS so the menu only offers moves the server accepts.
+const WF_NEXT = {new:['acknowledged','investigating','resolved'], acknowledged:['investigating','resolved'],
+                 investigating:['resolved'], resolved:['closed','investigating'], closed:['investigating']};
 function _workflowControl(a) {
-  const states = ['new','acknowledged','investigating','resolved','closed'];
   const current = (a.workflow_status || 'new').toLowerCase();
-  const options = states.map(st => `<option value="${st}" ${st===current?'selected':''}>${st}</option>`).join('');
+  const options = [current, ...(WF_NEXT[current] || [])].map(st => `<option value="${st}" ${st===current?'selected':''}>${st}</option>`).join('');
   const owner = a.workflow_assignee || '';
   return `<div style="display:flex;gap:5px;align-items:center;white-space:nowrap;">
     <select class="alert-workflow" data-id="${a.id}" data-current="${current}" style="font-size:10px;padding:2px 4px;">${options}</select>
-    <button class="alert-assign" data-id="${a.id}" title="${owner ? 'Assigned to '+owner : 'Assign alert'}" style="font-size:10px;padding:2px 6px;border:1px solid var(--line);background:#fff;border-radius:5px;cursor:pointer;">${owner || 'assign'}</button>
+    <button class="alert-assign" data-id="${a.id}" title="${owner ? 'Assigned to '+escapeAlert(owner) : 'Assign alert'}" style="font-size:10px;padding:2px 6px;border:1px solid var(--line);background:var(--elev);border-radius:5px;cursor:pointer;">${owner ? escapeAlert(owner) : 'assign'}</button>
   </div>`;
 }
 
@@ -249,10 +275,36 @@ function escapeAlert(value) {
   return String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
 
-async function loadAlerts() {
+// The 5s refresh must not redraw under the analyst: hold the alert table
+// while they interact with it and count new alerts in a pill instead.
+function alertsHeld() {
+  const body = document.getElementById('alertsBody');
+  const sel = window.getSelection && window.getSelection();
+  return body.contains(document.activeElement)
+    || !!document.querySelector('dialog[open]')
+    || [...document.querySelectorAll('.grp-toggle')].some(el => el.textContent.startsWith('▾'))
+    || (sel && !sel.isCollapsed && body.contains(sel.anchorNode));
+}
+function _alertIds(data) {
+  if (data && data.grouped) return (data.groups || []).flatMap(g => g.members.map(m => m.id));
+  return (Array.isArray(data) ? data : []).map(a => a.id);
+}
+let _alertsMaxId = 0;
+async function loadAlerts(opts) {
+  const background = !!(opts && opts.background === true);
   const grouped = document.getElementById('groupToggle').checked;
   const r = await fetch('/api/alerts?limit=200' + (grouped ? '&group=1' : ''));
   const data = await r.json();
+  const ids = _alertIds(data);
+  const pill = document.getElementById('alertsNewPill');
+  if (background && alertsHeld()) {
+    const fresh = ids.filter(id => id > _alertsMaxId).length;
+    pill.textContent = fresh ? `${fresh} new alert${fresh > 1 ? 's' : ''} ↑` : '';
+    pill.classList.toggle('show', fresh > 0);
+    return;
+  }
+  _alertsMaxId = Math.max(0, ...ids);
+  pill.classList.remove('show');
   const body = document.getElementById('alertsBody');
   window._alertCache = {};
 
@@ -267,12 +319,12 @@ async function loadAlerts() {
         ? `<span class="grp-toggle" data-gi="${gi}" title="Click to expand ${g.count} alerts" style="cursor:pointer;display:inline-block;min-width:26px;text-align:center;background:var(--accent);color:#fff;border-radius:20px;font-size:10px;font-weight:700;padding:1px 7px;margin-right:6px;">▸${g.count}</span>`
         : '';
       const timespan = multi
-        ? `${new Date(g.latest).toLocaleString()} <span class="muted" style="font-size:11px;">(${g.count} over ${_span(g.earliest, g.latest)})</span>`
-        : new Date(g.latest).toLocaleString();
+        ? `${MS.timeHTML(g.latest, true)} <span class="muted" style="font-size:11px;">(${g.count} over ${_span(g.earliest, g.latest)})</span>`
+        : MS.timeHTML(g.latest, true);
       const head = `
         <tr class="alert-row grp-head" data-gi="${gi}" data-logids="${rep.log_ids||''}" title="${multi?'Click ▸ to expand. ':''}Double-click to open related logs">
           <td class="msg-cell">${countBadge}${timespan}</td>
-          <td>${g.rule_name}</td>
+          <td>${escapeAlert(g.rule_name)}</td>
           <td><span class="badge sev-${g.severity}">${g.severity}</span></td>
           <td class="msg-cell">${escapeAlert(g.source_ip || '—')}</td>
           <td>${escapeAlert(g.description)}</td>
@@ -281,8 +333,8 @@ async function loadAlerts() {
         </tr>`;
       const children = multi ? g.members.map(m => `
         <tr class="alert-row grp-child grp-child-${gi}" data-logids="${m.log_ids||''}" style="display:none;background:var(--canvas);" title="Double-click to open related logs">
-          <td class="msg-cell" style="padding-left:34px;">${new Date(m.created_at).toLocaleString()}</td>
-          <td class="muted">${m.rule_name}</td>
+          <td class="msg-cell" style="padding-left:34px;">${MS.timeHTML(m.created_at)}</td>
+          <td class="muted">${escapeAlert(m.rule_name)}</td>
           <td><span class="badge sev-${m.severity}">${m.severity}</span></td>
           <td class="msg-cell">${escapeAlert(m.source_ip || '—')}</td>
           <td>${escapeAlert(m.description)}</td>
@@ -306,8 +358,8 @@ async function loadAlerts() {
     if (!rows.length) { body.innerHTML = '<tr><td colspan="7" class="muted">No alerts yet.</td></tr>'; return; }
     body.innerHTML = rows.map(a => `
       <tr class="alert-row" data-logids="${a.log_ids||''}" title="Double-click to open the related logs in log search">
-        <td class="msg-cell">${new Date(a.created_at).toLocaleString()}</td>
-        <td>${a.rule_name}</td>
+        <td class="msg-cell">${MS.timeHTML(a.created_at, true)}</td>
+        <td>${escapeAlert(a.rule_name)}</td>
         <td><span class="badge sev-${a.severity}">${a.severity}</span></td>
         <td class="msg-cell">${escapeAlert(a.source_ip || '—')}</td>
         <td>${escapeAlert(a.description)}</td>
@@ -323,15 +375,19 @@ async function loadAlerts() {
     const next = sel.value;
     let note = '';
     if (next === 'resolved' || next === 'closed') {
-      note = prompt('Resolution/closure note (optional):', '') || '';
+      const form = await MS.form({title: `Mark alert #${id} ${next}`, submit: `Mark ${next}`,
+        fields: [{name: 'note', label: 'Resolution / closure note (optional)', type: 'textarea'}]});
+      if (!form) { sel.value = prior; return; }
+      note = form.note;
     }
     try {
       const updated = await _updateAlertWorkflow(id, {status: next, note});
       window._alertCache[id] = updated;
       sel.dataset.current = updated.workflow_status || next;
-      loadStats();
+      MS.toast(`Alert #${id} is now ${updated.workflow_status || next}.`, 'success');
+      loadStats(); loadAlerts();
     } catch (err) {
-      alert(err.message);
+      MS.toast(err.message, 'error');
       sel.value = prior;
     }
   }));
@@ -339,14 +395,16 @@ async function loadAlerts() {
     e.stopPropagation();
     const id = btn.dataset.id;
     const a = (window._alertCache || {})[id] || {};
-    const assignee = prompt('Assign alert to (blank = unassigned):', a.workflow_assignee || '');
-    if (assignee === null) return;
+    const form = await MS.form({title: `Assign alert #${id}`, submit: 'Assign',
+      fields: [{name: 'assignee', label: 'Assignee (blank = unassigned)', value: a.workflow_assignee || ''}]});
+    if (!form) return;
     try {
-      const updated = await _updateAlertWorkflow(id, {assignee});
+      const updated = await _updateAlertWorkflow(id, {assignee: form.assignee.trim()});
       window._alertCache[id] = updated;
       btn.textContent = updated.workflow_assignee || 'assign';
       btn.title = updated.workflow_assignee ? 'Assigned to '+updated.workflow_assignee : 'Assign alert';
-    } catch (err) { alert(err.message); }
+      MS.toast(updated.workflow_assignee ? `Alert #${id} assigned to ${updated.workflow_assignee}.` : `Alert #${id} unassigned.`, 'success');
+    } catch (err) { MS.toast(err.message, 'error'); }
   }));
 
   document.querySelectorAll('.ai-view').forEach(b => b.addEventListener('click', (e) => {
@@ -375,9 +433,9 @@ function openAiModal(id) {
   document.getElementById('aiModalTitle').textContent = a.rule_name;
   document.getElementById('aiModalMeta').innerHTML =
     `<span class="badge sev-${a.severity}">${a.severity}</span>
-     &nbsp;·&nbsp; source: <span style="font-family:var(--mono);">${a.source_ip || '—'}</span>
-     &nbsp;·&nbsp; ${new Date(a.created_at).toLocaleString()}
-     ${a.ai_triaged_at ? '&nbsp;·&nbsp; analyzed ' + new Date(a.ai_triaged_at).toLocaleString() : ''}`;
+     &nbsp;·&nbsp; source: <span style="font-family:var(--mono);">${escapeAlert(a.source_ip || '—')}</span>
+     &nbsp;·&nbsp; ${MS.timeHTML(a.created_at)}
+     ${a.ai_triaged_at ? '&nbsp;·&nbsp; analyzed ' + MS.timeHTML(a.ai_triaged_at) : ''}`;
   document.getElementById('aiModalBody').textContent = a.ai_analysis || '(no analysis text)';
   const logsBtn = document.getElementById('aiModalLogs');
   if (a.log_ids) { logsBtn.style.display = 'inline-block'; logsBtn.onclick = () => window.location = '/?ids=' + a.log_ids; }
@@ -494,7 +552,7 @@ async function addXColumn(name, value) {
   if (!name) return;
   const alreadyCol = xCols.includes(name);
   if (!alreadyCol) {
-    if (xCols.length >= 8) { alert('Maximum of 8 extracted columns. Remove one first.'); return; }
+    if (xCols.length >= 8) { MS.toast('Maximum of 8 extracted columns. Remove one first.', 'error'); return; }
     xCols.push(name);
     await saveXColumns();
   }
@@ -635,12 +693,69 @@ async function loadFacets() {
   } catch (e) { /* non-fatal */ }
 }
 
-async function loadLogs() {
-  renderXColumns();  // redraw header so the active-sort triangle reflects current sort
+// Hold the log table while the analyst reads it: an expanded row, typing in
+// the search bar, a text selection, or a scrolled list. New rows are counted
+// in a pill instead of reshuffling the table.
+function logsHeldReason() {
+  const panel = document.getElementById('logPanel');
+  const body = document.getElementById('logsBody');
+  const ae = document.activeElement;
+  const sel = window.getSelection && window.getSelection();
+  if (body.querySelector('tr[id^="norm-row-"]:not([style*="display:none"]):not([style*="display: none"])')) return 'a row is expanded';
+  if (ae && panel.contains(ae) && MS.isTyping(ae)) return 'you are editing the search';
+  if (sel && !sel.isCollapsed && body.contains(sel.anchorNode)) return 'text is selected';
+  const scroller = body.closest('.table-scroll');
+  if (scroller && scroller.scrollTop > 8) return 'the list is scrolled';
+  if (document.querySelector('dialog[open]')) return 'a dialog is open';
+  return '';
+}
+let _logsMaxId = 0;
+function _esc(v) { return String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function _syncUrl() {
+  // Bookmarkable/shareable search: mirror the visible filters in the URL.
+  const u = new URLSearchParams();
+  const val = id => document.getElementById(id).value.trim();
+  [['q','qBox'],['src','ipBox'],['host','hostBox'],['dest','destBox'],['sev','sevBox'],['from','fromBox'],['to','toBox']]
+    .forEach(([k, id]) => { if (val(id)) u.set(k, val(id)); });
+  fieldChips.forEach(c => u.append('f', c.field + '=' + c.value));
+  if (fieldChips.length > 1 && fieldChipOp === 'or') u.set('op', 'or');
+  if (xSort) { u.set('sort', xSort); u.set('dir', xDir); } else if (baseSort) { u.set('sort', baseSort); u.set('dir', baseDir); }
+  if (urlIds && ![...u.keys()].length) u.set('ids', urlIds);
+  const qs = u.toString();
+  history.replaceState({}, '', window.location.pathname + (qs ? '?' + qs : ''));
+}
+function _restoreFromUrl() {
+  const u = new URLSearchParams(window.location.search);
+  [['q','qBox'],['src','ipBox'],['host','hostBox'],['dest','destBox'],['sev','sevBox'],['from','fromBox'],['to','toBox']]
+    .forEach(([k, id]) => { if (u.get(k)) document.getElementById(id).value = u.get(k); });
+  u.getAll('f').forEach(raw => {
+    const i = raw.indexOf('=');
+    if (i > 0) fieldChips.push({field: raw.slice(0, i).toLowerCase(), value: raw.slice(i + 1)});
+  });
+  if (u.get('op') === 'or') fieldChipOp = 'or';
+  const sort = u.get('sort');
+  if (sort) { if (sort.startsWith('x_')) { xSort = sort; xDir = u.get('dir') || 'asc'; } else { baseSort = sort; baseDir = u.get('dir') || 'desc'; } }
+}
+async function loadLogs(opts) {
+  const background = !!(opts && opts.background === true);
   const params = currentFilterParams();
   params.set('limit', 200);
+  const held = background ? logsHeldReason() : '';
   const r = await fetch('/api/logs?' + params.toString());
   const rows = await r.json();
+  const pill = document.getElementById('logsNewPill');
+  const note = document.getElementById('logsHeldNote');
+  if (held) {
+    const fresh = rows.filter(l => l.id > _logsMaxId).length;
+    pill.textContent = fresh ? `${fresh >= 200 ? '200+' : fresh} new event${fresh > 1 ? 's' : ''} ↑` : '';
+    pill.classList.toggle('show', fresh > 0);
+    note.textContent = `Live updates paused while ${held}.`;
+    return;
+  }
+  pill.classList.remove('show'); note.textContent = '';
+  if (!background) _syncUrl();
+  renderXColumns();  // redraw header so the active-sort triangle reflects current sort
+  _logsMaxId = Math.max(0, ...rows.map(l => l.id));
   const body = document.getElementById('logsBody');
   const ncols = 8 + xCols.length;
   if (!rows.length) { body.innerHTML = `<tr><td colspan="${ncols}" class="muted">No matching events.</td></tr>`; return; }
@@ -648,14 +763,14 @@ async function loadLogs() {
     `<td class="mono" style="font-size:12px;">${String((l.extracted||{})[c] ?? '').replace(/</g,'&lt;') || '—'}</td>`).join('');
   body.innerHTML = rows.map(l => `
     <tr class="log-row" data-id="${l.id}" title="Click to extract fields from this message">
-      <td class="msg-cell">${new Date(l.received_at).toLocaleString()}</td>
+      <td class="msg-cell">${MS.timeHTML(l.received_at)}</td>
       <td class="msg-cell">${l.peer_ip || l.source_ip || '—'}</td>
       <td class="msg-cell">${l.endpoint_ip ? l.endpoint_ip + ' <span style="color:var(--ink-soft);font-size:10px;">(endpoint)</span>' : (l.source_ip || '—')}</td>
       <td>${l.severity ? `<span class="badge sev-${l.severity}">${l.severity}</span>` : '—'}</td>
-      <td>${l.hostname || '—'}</td>
-      <td class="msg-cell">${l.destination || '—'}</td>
-      <td>${l.app_name || '—'}</td>
-      <td class="msg-cell">${(l.message || '').replace(/</g, '&lt;')}</td>
+      <td>${_esc(l.hostname) || '—'}</td>
+      <td class="msg-cell">${_esc(l.destination) || '—'}</td>
+      <td>${_esc(l.app_name) || '—'}</td>
+      <td class="msg-cell">${l.summary ? `<span class="event-summary">${_esc(l.summary)}</span><span class="event-raw">${_esc(l.message)}</span>` : _esc(l.message)}</td>
       ${xcells(l)}
     </tr>
     <tr id="norm-row-${l.id}" style="display:none;"><td colspan="${ncols}" style="background:var(--canvas);">
@@ -675,8 +790,24 @@ async function loadLogs() {
         body.innerHTML = '<span class="muted">No fields stored for this event.</span>';
         return;
       }
+      // Key facts first; normalized fields next; raw source keys that merely
+      // duplicate a normalized value are tucked away (still filterable).
+      const PINNED = ['host.name','user.name','process.parent.name','process.name','process.command_line',
+                      'process.parent.path','process.path','script.text','event.kind','event.id',
+                      'src','dst','srcip','dstip','src_ip','dst_ip','dport','action','user'];
+      const map = Object.fromEntries(entries);
+      const pinned = PINNED.filter(k => k in map).map(k => [k, map[k]]);
+      const rest = entries.filter(([k]) => !PINNED.includes(k)).sort(([a],[b]) => a.localeCompare(b));
+      const hasCanonical = entries.some(([k]) => k.includes('.'));
+      const canonicalValues = new Set(entries.filter(([k]) => k.includes('.')).map(([,v]) => String(v)));
+      const dup = ([k, v]) => hasCanonical && !k.includes('.') && canonicalValues.has(String(v));
+      const shown = rest.filter(e => !dup(e)), hidden = rest.filter(dup);
+      const table = list => '<table style="font-size:12px;border-collapse:collapse;">' + list.map(fieldRow).join('') + '</table>';
       body.innerHTML = '<div class="muted" style="margin-bottom:6px;font-size:11.5px;">Click a field name to add it as a column. Drag (or click +) to add it as a filter condition.</div>'
-        + '<table style="font-size:12px;border-collapse:collapse;">' + entries.map(([k,v]) => {
+        + (pinned.length ? '<div class="field-section">Key fields</div>' + table(pinned) : '')
+        + (shown.length ? '<div class="field-section">' + (pinned.length ? 'Other fields' : 'Fields') + '</div>' + table(shown) : '')
+        + (hidden.length ? `<details><summary class="field-section" style="cursor:pointer;">Source fields duplicating the above (${hidden.length})</summary>${table(hidden)}</details>` : '');
+      function fieldRow([k,v]) {
             const active = xCols.includes(k);
             const vEsc = String(v).replace(/"/g,'&quot;');
             return `<tr>`
@@ -686,7 +817,7 @@ async function loadLogs() {
               + `style="font-family:var(--mono);color:${active ? 'var(--ink-soft)' : 'var(--accent)'};cursor:pointer;text-decoration:${active ? 'none' : 'underline dotted'};">`
               + `${k}${active ? ' ✓' : ''}</span></td>`
               + `<td style="font-family:var(--mono);padding:2px 4px;">${String(v).replace(/</g,'&lt;')}</td></tr>`;
-          }).join('') + '</table>';
+      }
       body.querySelectorAll('.fieldpick').forEach(el => el.addEventListener('click', (e) => {
         e.stopPropagation();
         addXColumn(el.dataset.field, el.dataset.value);
@@ -796,15 +927,22 @@ window.fetch = function(url, opts) {
   return _origFetch(url, opts);
 };
 
+let _refreshBusy = false;
 function refreshAll(background) {
+  // Never stack polls: a slow server would otherwise queue overlapping refreshes.
+  if (background && _refreshBusy) return;
+  _refreshBusy = true;
   _bgPoll = !!background;
+  let pending;
   try {
-    loadStats(); loadAlerts(); loadLogs(); loadAiQueue();
-    document.getElementById('lastUpdated').textContent = 'Last updated: ' + new Date().toLocaleTimeString();
+    pending = Promise.allSettled([loadStats(), loadAlerts({background: !!background}),
+                                  loadLogs({background: !!background}), loadAiQueue()]);
+    document.getElementById('lastUpdated').textContent = 'Last updated: ' + MS.fmtTime(new Date().toISOString()).slice(11);
   } finally {
     // reset after the synchronous dispatch; the fetches captured the flag
     setTimeout(() => { _bgPoll = false; }, 0);
   }
+  pending.finally(() => { _refreshBusy = false; });
 }
 
 document.getElementById('refreshNowBtn').addEventListener('click', () => refreshAll(false));
@@ -828,9 +966,21 @@ document.getElementById('autoToggleBtn').addEventListener('click', () => {
   }
 });
 
+document.getElementById('logsNewPill').addEventListener('click', () => {
+  document.querySelectorAll('#logsBody tr[id^="norm-row-"]').forEach(r => r.style.display = 'none');
+  const sc = document.getElementById('logsBody').closest('.table-scroll'); if (sc) sc.scrollTop = 0;
+  if (document.activeElement) document.activeElement.blur();
+  loadLogs();
+});
+document.getElementById('alertsNewPill').addEventListener('click', () => loadAlerts());
+_restoreFromUrl();
 renderFieldChips();
 refreshAll(false);
-setInterval(() => { if (autoRefresh) refreshAll(true); }, 5000);
+setInterval(() => {
+  if (!autoRefresh || document.hidden) return;   // no polling in a background tab
+  refreshAll(true);
+}, 5000);
+document.addEventListener('visibilitychange', () => { if (!document.hidden && autoRefresh) refreshAll(true); });
 </script>
 
 {% endblock %}

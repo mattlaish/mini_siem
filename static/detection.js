@@ -79,24 +79,13 @@
     const box=$('unprofiledRows');if(!box)return;const rows=await api('/api/detection/unprofiled-hosts');box.replaceChildren();
     if(!rows.length){box.append(text('p','Every Windows host recently sending process/script events has a profile.'));return;}
     box.append(text('p',`${rows.length} Windows host(s) sent process/script events without a profile. Their timezone, roles, schedules and exceptions do not apply until one is added:`));
-    rows.forEach(h=>{const p=document.createElement('p');p.append(text('strong',h.hostname));p.append(document.createTextNode(` · last seen ${h.last_seen} · ${(h.sources||[]).join(', ')}`));
+    rows.forEach(h=>{const p=document.createElement('p');p.append(text('strong',h.hostname));p.append(document.createTextNode(` · last seen ${MS.fmtTime(h.last_seen)} (${MS.fmtAgo(h.last_seen)}) · ${(h.sources||[]).join(', ')}`));
       button('Add profile',()=>{config.hosts.push({hostname:h.hostname,timezone:'Asia/Taipei',groups:[],roles:[],telemetry_enabled:false,max_silence_seconds:3600,expected_sources:['security_4688']});draft();editObject('hosts',config.hosts.length-1,true);},p,true);box.append(p);});
   }
   async function telemetry(){
     const d=await api('/api/detection/telemetry');$('telemetryRows').replaceChildren();
     if(!Object.keys(d).length)$('telemetryRows').append(text('p','No monitor observations yet. Check configured expectations and listener status.'));
-    Object.entries(d).forEach(([key,v])=>$('telemetryRows').append(text('p',`${key}: ${v.status} · last receipt ${v.last_received_at||'not yet received'} · checked ${v.checked_at}`)));
-  }
-  async function alerts(){
-    const rows=await api('/api/detection/alerts'),body=$('detectionAlertRows');body.replaceChildren();
-    rows.forEach(a=>{
-      const tr=document.createElement('tr'),e=a.detection_evidence;
-      [a.created_at+' / '+(e?.fields?.['host.name']||a.source_ip),a.rule_name+' / '+a.severity,a.description,e?.occurrences||1].forEach(v=>tr.append(text('td',v)));
-      const flow=document.createElement('td');flow.append(text('span',a.workflow_status||'new'));
-      button('Update',async()=>{const next=prompt('State: acknowledged, investigating, resolved, closed, or new',a.workflow_status||'new');if(!next)return;const note=prompt('Resolution / investigation note','');if(note===null)return;try{await api(`/api/alerts/${a.id}/workflow`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({status:next,note})});await alerts();}catch(e){status(e.message,true);}},flow);
-      tr.append(flow);const control=document.createElement('td');button('Open',async()=>{try{const d=await api(`/api/detection/alerts/${a.id}/evidence`);$('evidencePanel').hidden=false;$('alertEvidence').textContent=JSON.stringify(d.alert,null,2);$('rawEvidence').textContent=d.events.map(e=>`#${e.id} · received ${e.received_at}\n${e.raw}`).join('\n\n');$('evidenceNote').textContent=d.note;$('evidencePanel').scrollIntoView({behavior:'smooth'});}catch(e){status(e.message,true);}},control);tr.append(control);body.append(tr);
-    });
-    if(!rows.length){const tr=document.createElement('tr'),td=text('td','No recent detection alerts.');td.colSpan=6;tr.append(td);body.append(tr);}
+    Object.entries(d).forEach(([key,v])=>$('telemetryRows').append(text('p',`${key}: ${v.status} · last receipt ${v.last_received_at?MS.fmtTime(v.last_received_at)+' ('+MS.fmtAgo(v.last_received_at)+')':'not yet received'} · checked ${MS.fmtTime(v.checked_at)}`)));
   }
   if($('saveDetection'))$('saveDetection').onclick=async()=>{try{config=await api('/api/detection/config',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(config)});render();status(`Saved revision ${config.revision}; active within five seconds.`);}catch(e){status(e.message,true);}};
   if($('reloadDetection'))$('reloadDetection').onclick=()=>load().catch(e=>status(e.message,true));
@@ -117,6 +106,5 @@
     $('objectForm').onsubmit=e=>{e.preventDefault();const {section,i}=editingObject,row=config[section][i];objectSchema[section].forEach(([k,label,type])=>{row[k]=type==='bool'?e.target.elements.namedItem(k).checked:type==='number'?Number(value(e.target,k)):type==='ints'?csv(value(e.target,k)).map(Number):type==='list'?csv(value(e.target,k)):value(e.target,k);});$('objectEditor').hidden=true;draft();};
     $('refreshTelemetry').onclick=()=>Promise.all([telemetry(),unprofiled()]).catch(e=>status(e.message,true));
   }
-  if($('refreshDetectionAlerts'))$('refreshDetectionAlerts').onclick=()=>alerts().catch(e=>status(e.message,true));
-  load().then(()=>{if($('telemetryRows'))return Promise.all([telemetry(),unprofiled()]);if($('detectionAlertRows'))return alerts();}).catch(e=>status(e.message,true));
+  load().then(()=>{if($('telemetryRows'))return Promise.all([telemetry(),unprofiled()]);}).catch(e=>status(e.message,true));
 })();

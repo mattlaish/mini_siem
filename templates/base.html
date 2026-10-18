@@ -13,18 +13,23 @@
 <body>
 <a href="#main" class="skip-link">Skip to main content</a>
 
-{% set nav_items = [
-  ('/',            'Live logs & alerts', '▤'),
-  ('/correlate',   'Correlate',          '⇄'),
-  ('/detection-rules', 'Detection Rules', '◇'),
-  ('/execution-windows', 'Execution Windows', '◷'),
-  ('/security-alerts', 'Security Alerts', '!'),
-  ('/threatintel', 'Threat Intel',       '◎'),
-  ('/health',      'Health',             '♥'),
-  ('/audit',       'Audit',              '✓'),
-  ('/setup',       'Setup',              '⚙'),
-  ('/ai',          'AI Analyst',         '✦'),
-  ('/help',        'Help',               '?'),
+{% set nav_groups = [
+  ('Investigate', [
+    ('/',                  'Live logs & alerts', '▤'),
+    ('/security-alerts',   'Alerts',             '!'),
+    ('/correlate',         'Correlate',          '⇄'),
+    ('/threatintel',       'Threat Intel',       '◎'),
+    ('/ai',                'AI Analyst',         '✦'),
+  ]),
+  ('Detection', [
+    ('/detection-rules',   'Detection Rules',    '◇'),
+    ('/execution-windows', 'Execution Windows',  '◷'),
+  ]),
+  ('Admin', [
+    ('/health',            'Health',             '♥'),
+    ('/audit',             'Audit',              '✓'),
+    ('/setup',             'Setup',              '⚙'),
+  ]),
 ] %}
 
 <div class="app" id="app">
@@ -33,13 +38,17 @@
   <aside class="sidebar">
     <div class="brand"><span class="dot" aria-hidden="true"></span> mini-SIEM</div>
     <nav id="primaryNav" aria-label="Primary">
-      {% for href, label, ico in nav_items %}
+      {% for group, items in nav_groups %}
+      <div class="nav-group" aria-hidden="true">{{ group }}</div>
+      {% for href, label, ico in items %}
       <a href="{{ href }}"{% if request.path == href %} aria-current="page"{% endif %}>
         <span class="ico" aria-hidden="true">{{ ico }}</span>{{ label }}
       </a>
       {% endfor %}
+      {% endfor %}
       <div class="spacer"></div>
       <div class="side-foot">
+        <a href="/help"{% if request.path == "/help" %} aria-current="page"{% endif %}><span class="ico" aria-hidden="true">?</span>Help</a>
         <a href="/logout"><span class="ico" aria-hidden="true">⍈</span>Log out</a>
       </div>
     </nav>
@@ -49,7 +58,7 @@
     <header class="topbar">
       <button class="hamburger" id="hamburger" aria-label="Open navigation" aria-expanded="false" aria-controls="primaryNav">☰</button>
       <h1>{% block page_title %}mini-SIEM{% endblock %}</h1>
-      <div class="status" id="listenerLine">{% block status %}syslog listener{% endblock %}</div>
+      <a class="ingest-status" id="ingestStatus" href="/health" data-state="unknown"><span class="dot" aria-hidden="true"></span><span class="txt">Checking ingestion…</span></a>
       <div class="right">
         <button class="theme-btn" id="themeToggle" type="button">☾ Dark</button>
       </div>

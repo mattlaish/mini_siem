@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+{% block title %}Alerts — mini-SIEM{% endblock %}
+{% block page_title %}Alerts{% endblock %}
+{% block head %}
+<style>
+.aq-wrap{display:grid;grid-template-columns:minmax(0,1fr);gap:16px}
+.aq-wrap.drawer-open{grid-template-columns:minmax(0,1fr) minmax(340px,440px)}
+.aq-filters{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px}
+.aq-filters select,.aq-filters input{padding:7px 9px;border:1px solid var(--line);border-radius:6px;font-size:13px}
+.aq-filters input[type=search]{flex:1;min-width:200px}
+.aq-count{font-size:12px;color:var(--ink-soft);margin-left:auto}
+#aqTable tbody tr{cursor:pointer}
+#aqTable tbody tr.sel{background:var(--accent-soft);box-shadow:inset 3px 0 0 var(--accent)}
+#aqTable td.desc{max-width:520px}
+#aqTable td.t{white-space:nowrap}
+#aqTable td.t .ago{display:block}
+/* With the drawer open the summary lives there; keep status/assignee visible. */
+.drawer-open #aqTable .c-desc,.drawer-open #aqTable .c-count{display:none}
+#aqTable td.desc .line{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.st{font-family:var(--mono);font-size:10px;padding:2px 7px;border-radius:20px;border:1px solid var(--line);white-space:nowrap}
+.st-new{border-color:var(--warn);color:var(--warn)}
+.st-acknowledged,.st-investigating{border-color:var(--accent);color:var(--accent)}
+.st-resolved,.st-closed{color:var(--ink-soft)}
+.aq-drawer{position:sticky;top:76px;align-self:start;max-height:calc(100vh - 96px);overflow:auto}
+.aq-drawer h2{display:flex;gap:8px;align-items:center;justify-content:space-between}
+.aq-drawer dl{display:grid;grid-template-columns:minmax(90px,max-content) 1fr;gap:4px 12px;font-size:12.5px;margin:10px 0}
+.aq-drawer dt{color:var(--ink-soft);font-family:var(--mono);font-size:11.5px}
+.aq-drawer dd{margin:0;font-family:var(--mono);word-break:break-word}
+.aq-drawer pre{white-space:pre-wrap;word-break:break-word;background:var(--canvas);border-radius:6px;padding:10px;font-size:11.5px;max-height:260px;overflow:auto}
+.aq-form{display:grid;gap:8px;margin:10px 0}
+.aq-form label{display:flex;flex-direction:column;gap:4px;font-size:12px;font-weight:600}
+.aq-form select,.aq-form input,.aq-form textarea{font:inherit;font-weight:400;padding:7px 9px;border:1px solid var(--line);border-radius:6px}
+.aq-hist{font-size:12px;border-left:2px solid var(--line);padding-left:10px;margin:8px 0}
+.aq-hist div{margin-bottom:6px}
+.kbd{font-family:var(--mono);font-size:10.5px;border:1px solid var(--line);border-bottom-width:2px;border-radius:4px;padding:0 5px}
+@media (max-width:1100px){.aq-wrap.drawer-open{grid-template-columns:1fr}.aq-drawer{position:static;max-height:none}}
+</style>
+{% endblock %}
+{% block content %}
+<div class="wrap" id="alertQueue" data-can-triage="{{ 'yes' if can_triage else 'no' }}">
+  <div class="aq-wrap" id="aqWrap">
+    <section class="panel">
+      <div class="aq-filters" role="search">
+        <select id="fStatus" aria-label="Status">
+          <option value="open">Open (new, acknowledged, investigating)</option>
+          <option value="new">New</option><option value="acknowledged">Acknowledged</option>
+          <option value="investigating">Investigating</option><option value="resolved">Resolved</option>
+          <option value="closed">Closed</option><option value="">All statuses</option>
+        </select>
+        <select id="fSeverity" aria-label="Severity">
+          <option value="">All severities</option><option value="critical,alert,emergency">Critical</option>
+          <option value="error">High (error)</option><option value="warning">Warning</option>
+          <option value="notice,informational,debug">Low / informational</option>
+        </select>
+        <select id="fRule" aria-label="Rule"><option value="">All rules</option></select>
+        <select id="fAssignee" aria-label="Assignee">
+          <option value="">Anyone</option><option value="me">Assigned to me</option><option value="unassigned">Unassigned</option>
+        </select>
+        <input type="search" id="fQuery" data-hotkey="search" placeholder="Search host, source, rule or description  (/)" aria-label="Search alerts">
+        <button type="button" class="new-pill" id="aqNewPill"></button>
+        <span class="aq-count" id="aqCount" aria-live="polite"></span>
+      </div>
+      <div class="table-scroll" style="max-height:calc(100vh - 230px);">
+        <table id="aqTable">
+          <thead><tr><th>Time</th><th>Severity</th><th>Rule</th><th>Host / source</th><th class="c-desc">Summary</th><th>Status</th><th>Assignee</th><th class="c-count">Count</th></tr></thead>
+          <tbody id="aqRows"><tr><td colspan="8" class="muted">Loading…</td></tr></tbody>
+        </table>
+      </div>
+      <p class="muted" style="margin:10px 0 0;font-size:11.5px;">Keyboard: <span class="kbd">j</span>/<span class="kbd">k</span> move · <span class="kbd">Enter</span> open · <span class="kbd">a</span> acknowledge · <span class="kbd">Esc</span> close · <span class="kbd">/</span> search</p>
+    </section>
+    <aside class="panel aq-drawer" id="aqDrawer" hidden aria-label="Alert detail"></aside>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='alerts.js') }}" defer></script>{% endblock %}

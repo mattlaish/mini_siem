@@ -18,9 +18,14 @@ def configure(services):
 
 @bp.get("/detection-rules")
 @bp.get("/execution-windows")
-@bp.get("/security-alerts")
 def page():
     return render_template("detection.html", mode=request.path.strip("/"), can_edit=auth.is_admin())
+
+
+@bp.get("/security-alerts")
+def alert_queue():
+    """Unified alert queue: every alert, not only detection-engine ones."""
+    return render_template("alerts.html", can_triage=auth.current_role() in ("admin", "analyst"))
 
 
 @bp.get("/api/detection/config")

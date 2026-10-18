@@ -1244,14 +1244,43 @@ def api_logs():
     if ids:
         conn = get_conn()
         ph = placeholders(len(ids))
-        eip_sql = ("SELECT log_id, value FROM log_fields "
-                   "WHERE field='endpoint_ip' AND log_id IN (" + ph + ")")
-        eip = {r["log_id"]: r["value"] for r in conn.execute(eip_sql, ids).fetchall()}
+        wanted = ("endpoint_ip",) + _SUMMARY_FIELDS
+        field_sql = ("SELECT log_id, field, value FROM log_fields "
+                     "WHERE field IN (" + placeholders(len(wanted)) + ") AND log_id IN (" + ph + ")")
+        per_log = {}
+        for f in conn.execute(field_sql, list(wanted) + ids).fetchall():
+            per_log.setdefault(f["log_id"], {})[f["field"]] = f["value"]
         conn.close()
         for r in rows:
-            if eip.get(r["id"]):
-                r["endpoint_ip"] = eip[r["id"]]
+            fields = per_log.get(r["id"], {})
+            if fields.get("endpoint_ip"):
+                r["endpoint_ip"] = fields["endpoint_ip"]
+            summary = _event_summary(fields)
+            if summary:
+                r["summary"] = summary
     return jsonify(rows)
+
+
+_SUMMARY_FIELDS = ("event.kind", "process.name", "process.parent.name", "process.command_line",
+                   "user.name", "script.text")
+
+
+def _event_summary(fields):
+    """One readable line for normalized Windows process/script events, whose
+    stored message is just 'EventID=4688'. Display only; nothing is rewritten."""
+    kind = fields.get("event.kind")
+    user = fields.get("user.name")
+    if kind == "process_creation" and fields.get("process.name"):
+        parts = [f"{fields.get('process.parent.name') or '?'} \u2192 {fields['process.name']}"]
+        if fields.get("process.command_line"):
+            parts.append(fields["process.command_line"][:240])
+        if user:
+            parts.append(f"as {user}")
+        return " \u00b7 ".join(parts)
+    if kind == "script_execution" and fields.get("script.text"):
+        text = " ".join(fields["script.text"].split())
+        return f"PowerShell script \u00b7 {text[:240]}" + (f" \u00b7 as {user}" if user else "")
+    return None
 
 
 @app.route("/api/logs/facets")
@@ -1320,10 +1349,13 @@ def _dt_stamp():
 def api_alerts():
     limit = min(int(request.args.get("limit", 100)), 1000)
     group = request.args.get("group", "").lower() in ("1", "true", "yes")
+    where, params = _alert_filters(request.args)
+    # `where` holds only fixed SQL fragments from _alert_filters; every
+    # user-supplied value is in `params` and bound as a parameter.
+    filter_sql = (" WHERE " + " AND ".join(where)) if where else ""
+    query = "SELECT * FROM alerts" + filter_sql + " ORDER BY id DESC LIMIT ?"
     conn = get_conn()
-    rows = [dict(r) for r in conn.execute(
-        "SELECT * FROM alerts ORDER BY id DESC LIMIT ?", (limit,)
-    ).fetchall()]
+    rows = [dict(r) for r in conn.execute(query, params + [limit]).fetchall()]
     conn.close()
     import detection
     rows = [detection.describe_alert(row) for row in rows]
@@ -1368,6 +1400,60 @@ def api_alerts():
         if (a.get("ticket_status") or "") == "created":
             g["ticketed"] += 1
     return jsonify({"grouped": True, "groups": [groups[k] for k in order]})
+
+
+_OPEN_ALERT_STATES = ("new", "acknowledged", "investigating")
+
+
+def _alert_filters(args):
+    """WHERE fragments for the alert queue. Every value is bound as a
+    parameter; only fixed SQL text is concatenated."""
+    where, params = [], []
+    status = (args.get("status") or "").strip().lower()
+    if status == "open":
+        where.append("(workflow_status IS NULL OR workflow_status='' OR workflow_status IN (?,?,?))")
+        params += list(_OPEN_ALERT_STATES)
+    elif status:
+        wanted = [s for s in status.split(",") if s in alert_workflow_mod.STATES]
+        if wanted:
+            clause = "workflow_status IN (" + placeholders(len(wanted)) + ")"
+            if "new" in wanted:
+                clause = "(" + clause + " OR workflow_status IS NULL OR workflow_status='')"
+            where.append(clause)
+            params += wanted
+    severity = [s for s in (args.get("severity") or "").lower().split(",") if s]
+    if severity:
+        where.append("severity IN (" + placeholders(len(severity)) + ")")
+        params += severity
+    if args.get("rule"):
+        where.append("rule_name=?")
+        params.append(args["rule"])
+    assignee = (args.get("assignee") or "").strip()
+    if assignee == "unassigned":
+        where.append("(workflow_assignee IS NULL OR workflow_assignee='')")
+    elif assignee == "me":
+        where.append("workflow_assignee=?")
+        params.append(auth.current_user() or "")
+    elif assignee:
+        where.append("workflow_assignee=?")
+        params.append(assignee)
+    q = (args.get("q") or "").strip().lower()
+    if q:
+        pattern = "%" + _like_escape(q) + "%"
+        where.append("(LOWER(COALESCE(description,'')) LIKE ? ESCAPE '\\' OR LOWER(COALESCE(source_ip,'')) LIKE ? ESCAPE '\\'"
+                     " OR LOWER(COALESCE(rule_name,'')) LIKE ? ESCAPE '\\')")
+        params += [pattern, pattern, pattern]
+    return where, params
+
+
+@app.route("/api/alerts/rules")
+def api_alert_rules():
+    """Distinct rule names, for the queue's rule filter."""
+    conn = get_conn()
+    names = [r["rule_name"] for r in conn.execute(
+        "SELECT DISTINCT rule_name FROM alerts WHERE rule_name IS NOT NULL ORDER BY rule_name").fetchall()]
+    conn.close()
+    return jsonify(names)
 
 
 ALERT_WORKFLOW_STATES = alert_workflow_mod.STATES
@@ -1438,6 +1524,49 @@ def api_alert_workflow_update(alert_id):
     audit("alert_workflow_updated", target=f"alert:{alert_id}",
           detail=f"{current}->{target}; assignee={new_assignee or '-'}")
     return jsonify(updated)
+
+
+@app.route("/api/ingest-status")
+def api_ingest_status():
+    """Live 'is data arriving?' signal for the header on every page.
+
+    Combines the stored event stream (covers syslog and HTTP/API ingest) with
+    the listener's cross-process heartbeat. Read-only; never starts or
+    repairs anything.
+    """
+    from datetime import datetime, timedelta, timezone
+    import runtime_health
+    now = datetime.now(timezone.utc)
+    conn = get_conn()
+    try:
+        last = conn.execute("SELECT MAX(received_at) AS t FROM logs").fetchone()["t"]
+        since = (now - timedelta(minutes=5)).isoformat()
+        recent = conn.execute("SELECT COUNT(*) AS n FROM logs WHERE received_at >= ?", (since,)).fetchone()["n"]
+        listener = runtime_health.listener_snapshot_from_db(conn)
+    finally:
+        conn.close()
+    age = None
+    if last:
+        try:
+            last_dt = datetime.fromisoformat(str(last).replace("Z", "+00:00"))
+            if last_dt.tzinfo is None:
+                last_dt = last_dt.replace(tzinfo=timezone.utc)
+            age = max(0, int((now - last_dt).total_seconds()))
+        except ValueError:
+            age = None
+    listener_state = str(listener.get("listener") or "UNKNOWN").upper()
+    listener_up = listener_state in ("READY", "DEGRADED", "STARTING")
+    if not last:
+        state = "no_data"
+    elif age is not None and age <= 300:
+        state = "receiving"
+    elif not listener_up:
+        state = "listener_down"
+    else:
+        state = "quiet"
+    return jsonify({"state": state, "last_event_at": last, "last_event_age_seconds": age,
+                    "events_last_5m": recent, "listener": listener_state,
+                    "listen_ports": _listen_ports_configured()})
 
 
 @app.route("/api/stats")

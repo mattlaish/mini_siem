@@ -32,7 +32,7 @@
     <div class="toolbar">
       <select id="fUser"><option value="">All users</option></select>
       <select id="fAction"><option value="">All actions</option></select>
-      <input type="text" id="fQ" placeholder="Search target/detail…">
+      <input type="text" id="fQ" data-hotkey="search" placeholder="Search target/detail…">
       <select id="fLimit"><option value="200">Last 200</option><option value="500">Last 500</option><option value="2000">Last 2000</option></select>
       <button id="applyBtn">Apply</button>
       <span class="muted" id="countLine" style="align-self:center;"></span>
@@ -78,7 +78,7 @@ async function load(){
   if (!rows.length){ b.innerHTML = '<tr><td colspan="6" class="muted">No audit entries match.</td></tr>'; return; }
   b.innerHTML = rows.map(e => `
     <tr>
-      <td class="mono">${new Date(e.at).toLocaleString()}</td>
+      <td class="mono">${MS.fmtTime(e.at)}</td>
       <td><strong>${esc(e.username)}</strong></td>
       <td class="mono">${esc(e.source_ip||'—')}</td>
       <td><span class="badge ${badgeClass(e.action)}">${esc(e.action)}</span></td>

@@ -344,7 +344,7 @@ async function loadReports(){
   b.innerHTML = rows.map(r => `
     <tr>
       <td>#${r.id}</td>
-      <td>${new Date(r.created_at).toLocaleString()}</td>
+      <td>${MS.fmtTime(r.created_at)}</td>
       <td>${esc(r.trigger)}</td>
       <td>${r.window_days}d</td>
       <td>${r.findings>0? '<strong style="color:var(--warn)">'+esc(r.summary)+'</strong>' : esc(r.summary)}</td>

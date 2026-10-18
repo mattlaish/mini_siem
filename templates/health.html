@@ -101,7 +101,7 @@ function esc(v){ return String(v==null?'—':v).replace(/[&<>"']/g,c=>({'&':'&am
 function pill(v, good){ return `<span class="pill ${good?'ok':'warn'}">${esc(v)}</span>`; }
 function statusPill(v){ const x=String(v||'UNKNOWN').toUpperCase(); return pill(x, x==='HEALTHY'||x==='PASS'); }
 function yesNo(v, invert=false){ const good=invert?!v:!!v; return pill(v?'YES':'NO',good); }
-function fmtTime(v){ if(!v) return '—'; const d=new Date(v); return Number.isNaN(d.getTime())?esc(v):d.toLocaleString(); }
+function fmtTime(v){ if(!v) return '—'; const d=new Date(v); return Number.isNaN(d.getTime())?esc(v):MS.fmtTime(v); }
 
 function gauge(title, pct, big, sub, a, w){
   const c = cls(pct,a,w);
@@ -195,7 +195,7 @@ async function load(){
     ]) +
     `<div class="card"><h3>Runtime detail</h3><div class="sub">${esc(r.detail||'No runtime warning.')}</div><div class="note" style="margin-top:8px;">Listener health is a DB-backed heartbeat from the separate listener process. Stale heartbeat is reported as STALE; the Web Console does not restart services automatically.</div></div>`;
 
-  $('updated').textContent = 'Updated ' + new Date().toLocaleTimeString();
+  $('updated').textContent = 'Updated ' + MS.fmtTime(new Date().toISOString()).slice(11);
 }
 
 $('refreshNow').addEventListener('click', () => { load(); loadPostgresSecurity(); loadArchiveStatus(); loadDiagnostics(false); });$('autoToggle').addEventListener('click', () => {
@@ -299,7 +299,7 @@ async function loadDiagnostics(explicitRun){
       comps.map(c=>`<div class="card"><h3>${esc(c.name)}</h3><div>${statusPill(c.status)}</div><div class="sub" style="margin-top:7px;">${esc(c.reason||'')}</div>${c.recommended_action?`<div class="note" style="margin-top:8px;"><strong>Action:</strong> ${esc(c.recommended_action)}</div>`:''}</div>`).join('');
     const deps=Array.isArray(d.dependencies)?d.dependencies:[];
     dep.innerHTML = deps.map(x=>kvCard(x.name,[['Status',statusPill(x.status)],['Depends on',esc((x.depends_on||[]).join(' → ')||'none')]])).join('') || '<div class="card"><div class="note">No dependency data.</div></div>';
-    $('diagnosticsUpdated').textContent = (explicitRun?'Diagnostic run completed ':'Updated ') + new Date().toLocaleTimeString();
+    $('diagnosticsUpdated').textContent = (explicitRun?'Diagnostic run completed ':'Updated ') + MS.fmtTime(new Date().toISOString()).slice(11);
   } catch(e){
     grid.innerHTML='<div class="card"><h3>Diagnostics</h3><span class="pill warn">unavailable</span><div class="sub">'+esc(e.message||'')+'</div></div>';
   }

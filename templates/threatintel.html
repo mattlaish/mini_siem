@@ -178,7 +178,7 @@ async function loadMatches(){
   if(!rows.length){ b.innerHTML = '<tr><td colspan="7" class="muted">No matches yet — that\'s a good thing.</td></tr>'; return; }
   b.innerHTML = rows.map(m => `
     <tr>
-      <td class="mono">${new Date(m.matched_at).toLocaleString()}</td>
+      <td class="mono">${MS.fmtTime(m.matched_at)}</td>
       <td><span class="badge b-${m.ioc_type}">${m.ioc_type}</span></td>
       <td class="mono">${esc(m.ioc_value)}</td>
       <td><span class="badge b-hit">${esc(m.threat||'IOC hit')}</span></td>
@@ -199,7 +199,7 @@ async function loadIocs(){
       <td>${esc(i.threat||'—')}</td>
       <td>${esc(i.severity)}</td>
       <td class="mono">${esc(i.source||'—')}</td>
-      <td class="mono">${i.created_at? new Date(i.created_at).toLocaleDateString():'—'}</td>
+      <td class="mono">${i.created_at? MS.fmtTime(i.created_at).slice(0, 10):'—'}</td>
       <td style="text-align:right;white-space:nowrap;">
         <button class="secondary small" onclick="toggleIoc(${i.id}, ${i.enabled?0:1})">${i.enabled?'Disable':'Enable'}</button>
         <button class="danger small" onclick="delIoc(${i.id})">Delete</button>
@@ -237,7 +237,7 @@ $('importBtn').addEventListener('click', async () => {
 
 $('clearSrcBtn').addEventListener('click', async () => {
   const src = $('fSource').value.trim();
-  if(!src){ alert('Enter the feed name to delete in the "Feed name / source" box.'); return; }
+  if(!src){ MS.toast('Enter the feed name to delete in the "Feed name / source" box.', 'error'); return; }
   if(!confirm(`Delete ALL indicators from feed "${src}"?`)) return;
   await fetch('/api/iocs/clear', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source:src})});
   $('importStatus').textContent = `Feed "${src}" deleted.`; $('importStatus').className='status-line ok';
@@ -256,7 +256,7 @@ async function loadFeeds(){
       <td><strong>${esc(f.name)}</strong>${f.has_key?' <span class="mono" title="authenticated feed" style="font-size:11px;color:var(--ink-soft);">🔒</span>':''}</td>
       <td class="mono" style="max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(f.url)}</td>
       <td>${f.refresh_hours>0? 'every '+f.refresh_hours+'h' : 'manual'}</td>
-      <td class="mono">${f.last_fetch_at? new Date(f.last_fetch_at).toLocaleString():'never'}</td>
+      <td class="mono">${f.last_fetch_at? MS.fmtTime(f.last_fetch_at):'never'}</td>
       <td class="mono" style="font-size:11px;">${esc(f.last_status||'—')}</td>
       <td style="white-space:nowrap;text-align:right;">
         <button class="secondary small" onclick="fetchFeed(${f.id})">Fetch now</button>

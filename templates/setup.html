@@ -720,7 +720,7 @@ async function testFw(id, btn) {
   try {
     const r = await fetch(`/api/forwarders/${id}/test`, { method: 'POST' });
     const data = await r.json();
-    alert(data.ok ? 'Test message ' + data.note : 'Test failed: ' + data.error);
+    MS.toast(data.ok ? 'Test message ' + data.note : 'Test failed: ' + data.error, data.ok ? 'success' : 'error');
   } finally {
     btn.disabled = false; btn.textContent = 'Test';
   }
@@ -740,7 +740,7 @@ async function loadApiKeys() {
       <td style="padding:6px;"><strong>${esc(k.name)}</strong></td>
       <td style="padding:6px;" class="mono">${esc(k.key_prefix||'')}…</td>
       <td style="padding:6px;">${k.enabled ? '<span class="badge b-on">enabled</span>' : '<span class="badge b-err">disabled</span>'}</td>
-      <td style="padding:6px;">${k.last_used ? new Date(k.last_used).toLocaleString() : '<span class="muted">never</span>'}</td>
+      <td style="padding:6px;">${k.last_used ? MS.fmtTime(k.last_used) : '<span class="muted">never</span>'}</td>
       <td style="padding:6px;">${k.use_count||0}</td>
       <td style="padding:6px;text-align:right;white-space:nowrap;">
         <button class="secondary small" onclick="toggleApiKey(${k.id})">${k.enabled?'Disable':'Enable'}</button>
@@ -750,10 +750,10 @@ async function loadApiKeys() {
 }
 async function createApiKey() {
   const name = document.getElementById('akName').value.trim();
-  if (!name) { alert('Give the key a name (which product it is for).'); return; }
+  if (!name) { MS.toast('Give the key a name (which product it is for).', 'error'); return; }
   const r = await fetch('/api/ingest/keys', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({name})});
   const d = await r.json();
-  if (d.error) { alert(d.error); return; }
+  if (d.error) { MS.toast(d.error, 'error'); return; }
   document.getElementById('akName').value = '';
   document.getElementById('apiKeyNewName').textContent = d.name;
   document.getElementById('apiKeyNewVal').textContent = d.api_key;
@@ -904,7 +904,7 @@ document.getElementById('savePortsBtn').addEventListener('click', async () => {
 loadListenPorts();
 
 // ---- API poller connectors ----
-function pFmtTime(s){ if(!s) return '—'; try{ return new Date(s).toLocaleString(); }catch(e){ return s; } }
+function pFmtTime(s){ if(!s) return '—'; try{ return MS.fmtTime(s); }catch(e){ return s; } }
 async function loadPollers(){
   let rows=[];
   try{ rows = await (await fetch('/api/pollers')).json(); }catch(e){ return; }
@@ -1121,7 +1121,7 @@ async function delUser(name) {
   if (!confirm('Delete user "' + name + '"?')) return;
   const r = await fetch('/api/users/' + encodeURIComponent(name), {method:'DELETE'});
   const d = await r.json();
-  if (d.error) alert(d.error); else loadUsers();
+  if (d.error) MS.toast(d.error, 'error'); else { MS.toast('User deleted.', 'success'); loadUsers(); }
 }
 document.getElementById('addUserBtn').addEventListener('click', async () => {
   const body = {
