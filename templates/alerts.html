@@ -12,6 +12,11 @@
 #aqTable tbody tr{cursor:pointer}
 #aqTable tbody tr.sel{background:var(--accent-soft);box-shadow:inset 3px 0 0 var(--accent)}
 #aqTable td.desc{max-width:520px}
+#aqTable .c-sel{width:28px}
+.aq-bulk[hidden]{display:none}
+.aq-bulk{display:flex;gap:6px;align-items:center;flex-wrap:wrap;padding:8px 10px;margin-bottom:10px;border:1px solid var(--accent);background:var(--accent-soft);border-radius:8px;font-size:12.5px}
+.aq-bulk strong{margin-right:6px}
+.aq-bulk button{padding:4px 10px;font-size:12px}
 #aqTable td.t{white-space:nowrap}
 #aqTable td.t .ago{display:block}
 /* With the drawer open the summary lives there; keep status/assignee visible. */
@@ -60,13 +65,22 @@
         <button type="button" class="new-pill" id="aqNewPill"></button>
         <span class="aq-count" id="aqCount" aria-live="polite"></span>
       </div>
+      <div class="aq-bulk" id="aqBulk" hidden role="region" aria-label="Bulk actions">
+        <strong id="aqBulkCount"></strong>
+        <button type="button" data-bulk="acknowledged">Acknowledge</button>
+        <button type="button" data-bulk="investigating">Investigating</button>
+        <button type="button" data-bulk="resolved">Resolve…</button>
+        <button type="button" data-bulk="closed">Close…</button>
+        <button type="button" id="aqBulkAssign">Assign…</button>
+        <button type="button" id="aqBulkClear">Clear selection</button>
+      </div>
       <div class="table-scroll" style="max-height:calc(100vh - 230px);">
         <table id="aqTable">
-          <thead><tr><th>Time</th><th>Severity</th><th>Rule</th><th>Host / source</th><th class="c-desc">Summary</th><th>Status</th><th>Assignee</th><th class="c-count">Count</th></tr></thead>
-          <tbody id="aqRows"><tr><td colspan="8" class="muted">Loading…</td></tr></tbody>
+          <thead><tr>{% if can_triage %}<th class="c-sel"><input type="checkbox" id="aqSelectAll" aria-label="Select every alert shown"></th>{% endif %}<th>Time</th><th>Severity</th><th>Rule</th><th>Host / source</th><th class="c-desc">Summary</th><th>Status</th><th>Assignee</th><th class="c-count">Count</th></tr></thead>
+          <tbody id="aqRows"><tr><td colspan="9" class="muted">Loading…</td></tr></tbody>
         </table>
       </div>
-      <p class="muted" style="margin:10px 0 0;font-size:11.5px;">Keyboard: <span class="kbd">j</span>/<span class="kbd">k</span> move · <span class="kbd">Enter</span> open · <span class="kbd">a</span> acknowledge · <span class="kbd">Esc</span> close · <span class="kbd">/</span> search</p>
+      <p class="muted" style="margin:10px 0 0;font-size:11.5px;">Keyboard: <span class="kbd">j</span>/<span class="kbd">k</span> move · <span class="kbd">Enter</span> open · <span class="kbd">a</span> acknowledge · <span class="kbd">x</span> select · <span class="kbd">Esc</span> close · <span class="kbd">/</span> search</p>
     </section>
     <aside class="panel aq-drawer" id="aqDrawer" hidden aria-label="Alert detail"></aside>
   </div>

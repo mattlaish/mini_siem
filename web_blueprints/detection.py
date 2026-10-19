@@ -120,6 +120,41 @@ def telemetry():
         conn.close()
 
 
+_NEAR_MISS_MAX_EVENTS = 20000
+
+
+@bp.get("/api/detection/near-misses")
+def near_misses():
+    """"Why didn't this fire?" for repeated-activity (threshold) rules.
+
+    Replays the live rule logic over recently stored events with the saved
+    thresholds; read-only. Reports, per rule, each source's peak count inside
+    the rule window against its threshold, including disabled rules.
+    """
+    from datetime import timedelta
+    import rules as rules_mod
+    try:
+        minutes = max(5, min(1440, int(request.args.get("minutes", 60))))
+    except ValueError:
+        return jsonify(error="minutes must be a number from 5 to 1440"), 400
+    since = (datetime.now(timezone.utc) - timedelta(minutes=minutes)).isoformat()
+    conn = _svc.get_conn()
+    try:
+        config = detection.load_config_or_fallback(conn)[0]
+        # Newest events win when the window holds more than we replay.
+        rows = [dict(r) for r in conn.execute(
+            "SELECT id, received_at, source_ip, message FROM logs WHERE received_at >= ? ORDER BY id DESC LIMIT ?",
+            (since, _NEAR_MISS_MAX_EVENTS + 1)).fetchall()]
+    finally:
+        conn.close()
+    truncated = len(rows) > _NEAR_MISS_MAX_EVENTS
+    rows = rows[:_NEAR_MISS_MAX_EVENTS]
+    rows.sort(key=lambda r: (r["received_at"] or "", r["id"]))
+    return jsonify(window_minutes=minutes, scanned=len(rows), truncated=truncated,
+                   oldest_scanned=rows[0]["received_at"] if rows else None,
+                   rules=rules_mod.replay_threshold_rules(rows, config["rules"]))
+
+
 @bp.get("/api/detection/unprofiled-hosts")
 def unprofiled_hosts():
     """Windows hosts recently sending process/script events with no host

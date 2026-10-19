@@ -262,6 +262,36 @@ function _workflowControl(a) {
   </div>`;
 }
 
+// A collapsed group row acts on EVERY alert in the group (not just the newest).
+function _groupWorkflowControl(g) {
+  const ids = g.members.map(m => m.id).join(',');
+  const counts = {};
+  g.members.forEach(m => { const st = (m.workflow_status || 'new').toLowerCase(); counts[st] = (counts[st] || 0) + 1; });
+  const summary = Object.entries(counts).map(([st, n]) => `${n} ${escapeAlert(MS.label(st).toLowerCase())}`).join(' · ');
+  const opts = ['acknowledged', 'investigating', 'resolved', 'closed']
+    .map(st => `<option value="${st}">Mark all ${escapeAlert(MS.label(st).toLowerCase())}</option>`).join('');
+  return `<div style="display:flex;gap:5px;align-items:center;white-space:nowrap;" title="Applies to all ${g.count} alerts in this group">
+    <select class="alert-group-workflow" data-ids="${ids}" aria-label="Change status of all ${g.count} alerts" style="font-size:10px;padding:2px 4px;">
+      <option value="">${summary}</option>${opts}</select>
+    <button class="alert-group-assign" data-ids="${ids}" style="font-size:10px;padding:2px 6px;border:1px solid var(--line);background:var(--elev);border-radius:5px;cursor:pointer;">assign all</button>
+  </div>`;
+}
+
+async function _bulkWorkflow(ids, payload) {
+  const r = await fetch('/api/alerts/workflow/bulk', {
+    method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ids, ...payload})
+  });
+  const d = await r.json();
+  if (!r.ok) throw new Error(d.error || `HTTP ${r.status}`);
+  return d;
+}
+function _bulkSummary(d, verb) {
+  const parts = [`${d.updated.length} ${verb}`];
+  if (d.unchanged.length) parts.push(`${d.unchanged.length} already set`);
+  if (d.skipped.length) parts.push(`${d.skipped.length} skipped (${d.skipped[0].reason}${d.skipped.length > 1 ? ', …' : ''})`);
+  return parts.join(' · ');
+}
+
 async function _updateAlertWorkflow(id, payload) {
   const r = await fetch(`/api/alerts/${id}/workflow`, {
     method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)
@@ -325,17 +355,17 @@ async function loadAlerts(opts) {
         <tr class="alert-row grp-head" data-gi="${gi}" data-logids="${rep.log_ids||''}" title="${multi?'Click ▸ to expand. ':''}Double-click to open related logs">
           <td class="msg-cell">${countBadge}${timespan}</td>
           <td>${escapeAlert(g.rule_name)}</td>
-          <td><span class="badge sev-${g.severity}">${g.severity}</span></td>
+          <td><span class="badge sev-${g.severity}">${escapeAlert(MS.alertSeverity(g.severity))}</span></td>
           <td class="msg-cell">${escapeAlert(g.source_ip || '—')}</td>
           <td>${escapeAlert(g.description)}</td>
-          <td>${_workflowControl(rep)}</td>
+          <td>${multi ? _groupWorkflowControl(g) : _workflowControl(rep)}</td>
           <td>${multi ? _groupAiBadge(g) : _aiBadge(rep.ai_status)}</td>
         </tr>`;
       const children = multi ? g.members.map(m => `
         <tr class="alert-row grp-child grp-child-${gi}" data-logids="${m.log_ids||''}" style="display:none;background:var(--canvas);" title="Double-click to open related logs">
           <td class="msg-cell" style="padding-left:34px;">${MS.timeHTML(m.created_at)}</td>
           <td class="muted">${escapeAlert(m.rule_name)}</td>
-          <td><span class="badge sev-${m.severity}">${m.severity}</span></td>
+          <td><span class="badge sev-${m.severity}">${escapeAlert(MS.alertSeverity(m.severity))}</span></td>
           <td class="msg-cell">${escapeAlert(m.source_ip || '—')}</td>
           <td>${escapeAlert(m.description)}</td>
           <td>${_workflowControl(m)}</td>
@@ -360,7 +390,7 @@ async function loadAlerts(opts) {
       <tr class="alert-row" data-logids="${a.log_ids||''}" title="Double-click to open the related logs in log search">
         <td class="msg-cell">${MS.timeHTML(a.created_at, true)}</td>
         <td>${escapeAlert(a.rule_name)}</td>
-        <td><span class="badge sev-${a.severity}">${a.severity}</span></td>
+        <td><span class="badge sev-${a.severity}">${escapeAlert(MS.alertSeverity(a.severity))}</span></td>
         <td class="msg-cell">${escapeAlert(a.source_ip || '—')}</td>
         <td>${escapeAlert(a.description)}</td>
         <td>${_workflowControl(a)}</td>
@@ -390,6 +420,35 @@ async function loadAlerts(opts) {
       MS.toast(err.message, 'error');
       sel.value = prior;
     }
+  }));
+  document.querySelectorAll('.alert-group-workflow').forEach(sel => sel.addEventListener('change', async (e) => {
+    e.stopPropagation();
+    const next = sel.value; if (!next) return;
+    const ids = sel.dataset.ids.split(',').map(Number);
+    let note = '';
+    if (next === 'resolved' || next === 'closed') {
+      const form = await MS.form({title: `Mark ${ids.length} alerts ${MS.label(next).toLowerCase()}`, submit: `Mark all ${MS.label(next).toLowerCase()}`,
+        fields: [{name: 'note', label: 'Resolution / closure note (applies to every alert in the group)', type: 'textarea'}]});
+      if (!form) { sel.value = ''; return; }
+      note = form.note;
+    }
+    try {
+      const d = await _bulkWorkflow(ids, {status: next, note});
+      MS.toast(_bulkSummary(d, MS.label(next).toLowerCase()), d.skipped.length ? 'info' : 'success');
+    } catch (err) { MS.toast(err.message, 'error'); }
+    loadStats(); loadAlerts();
+  }));
+  document.querySelectorAll('.alert-group-assign').forEach(btn => btn.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    const ids = btn.dataset.ids.split(',').map(Number);
+    const form = await MS.form({title: `Assign ${ids.length} alerts`, submit: 'Assign all',
+      fields: [{name: 'assignee', label: 'Assignee (blank = unassigned)'}]});
+    if (!form) return;
+    try {
+      const d = await _bulkWorkflow(ids, {assignee: form.assignee.trim()});
+      MS.toast(_bulkSummary(d, form.assignee.trim() ? 'assigned' : 'unassigned'), 'success');
+    } catch (err) { MS.toast(err.message, 'error'); }
+    loadAlerts();
   }));
   document.querySelectorAll('.alert-assign').forEach(btn => btn.addEventListener('click', async (e) => {
     e.stopPropagation();
@@ -432,7 +491,7 @@ function openAiModal(id) {
   if (!a) return;
   document.getElementById('aiModalTitle').textContent = a.rule_name;
   document.getElementById('aiModalMeta').innerHTML =
-    `<span class="badge sev-${a.severity}">${a.severity}</span>
+    `<span class="badge sev-${a.severity}">${escapeAlert(MS.alertSeverity(a.severity))}</span>
      &nbsp;·&nbsp; source: <span style="font-family:var(--mono);">${escapeAlert(a.source_ip || '—')}</span>
      &nbsp;·&nbsp; ${MS.timeHTML(a.created_at)}
      ${a.ai_triaged_at ? '&nbsp;·&nbsp; analyzed ' + MS.timeHTML(a.ai_triaged_at) : ''}`;

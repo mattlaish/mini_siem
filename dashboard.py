@@ -1437,6 +1437,10 @@ def _alert_filters(args):
     elif assignee:
         where.append("workflow_assignee=?")
         params.append(assignee)
+    after_id = args.get("after_id")
+    if after_id is not None and str(after_id).isdigit():
+        where.append("id > ?")
+        params.append(int(after_id))
     q = (args.get("q") or "").strip().lower()
     if q:
         pattern = "%" + _like_escape(q) + "%"
@@ -1473,57 +1477,126 @@ def api_alert_workflow_history(alert_id):
     return jsonify({"alert": dict(alert), "events": events})
 
 
-@app.route("/api/alerts/<int:alert_id>/workflow", methods=["POST"])
-@analyst_required
-def api_alert_workflow_update(alert_id):
-    from datetime import datetime, timezone
-    body = request.get_json(force=True, silent=True) or {}
+def _workflow_request(body):
+    """Validate the common workflow fields; returns (fields, error_response)."""
     requested = str(body.get("status") or "").strip().lower()
-    assignee_supplied = "assignee" in body
-    assignee = str(body.get("assignee") or "").strip()[:120]
-    note = str(body.get("note") or "").strip()[:2000]
     if requested and requested not in ALERT_WORKFLOW_STATES:
-        return jsonify({"error": "invalid alert workflow status", "allowed": ALERT_WORKFLOW_STATES}), 400
+        return None, (jsonify({"error": "invalid alert workflow status", "allowed": ALERT_WORKFLOW_STATES}), 400)
+    return {"requested": requested, "assignee_supplied": "assignee" in body,
+            "assignee": str(body.get("assignee") or "").strip()[:120],
+            "note": str(body.get("note") or "").strip()[:2000]}, None
 
-    conn = get_conn()
-    row = conn.execute("SELECT * FROM alerts WHERE id=?", (alert_id,)).fetchone()
-    if not row:
-        conn.close()
-        return jsonify({"error": "alert not found"}), 404
+
+def _apply_alert_workflow(conn, row, req, actor, updated_at):
+    """Apply one workflow change inside the caller's transaction.
+
+    Raises ValueError for a transition the workflow does not allow. Returns
+    (from_status, to_status, assignee).
+    """
     current = alert_workflow_mod.normalize(row["workflow_status"])
-    target = requested or current
-    try:
-        current, target = alert_workflow_mod.validate_transition(current, target)
-    except ValueError as exc:
-        conn.close()
-        return jsonify({
-            "error": str(exc),
-            "allowed_next": sorted(ALERT_WORKFLOW_TRANSITIONS.get(current, set())),
-        }), 409
-    actor = auth.current_user() or "unknown"
-    updated_at = datetime.now(timezone.utc).isoformat()
-    new_assignee = assignee if assignee_supplied else (row["workflow_assignee"] or "")
-    resolution_note = note if note else (row["workflow_resolution_note"] or "")
+    current, target = alert_workflow_mod.validate_transition(current, req["requested"] or current)
+    new_assignee = req["assignee"] if req["assignee_supplied"] else (row["workflow_assignee"] or "")
+    resolution_note = req["note"] if req["note"] else (row["workflow_resolution_note"] or "")
     conn.execute(
         """UPDATE alerts
            SET workflow_status=?, workflow_assignee=?, workflow_updated_at=?,
                workflow_updated_by=?, workflow_resolution_note=?
            WHERE id=?""",
-        (target, new_assignee, updated_at, actor, resolution_note, alert_id),
+        (target, new_assignee, updated_at, actor, resolution_note, row["id"]),
     )
-    if target != current or assignee_supplied or note:
+    if target != current or req["assignee_supplied"] or req["note"]:
         conn.execute(
             """INSERT INTO alert_workflow_events
                (alert_id,at,actor,from_status,to_status,assignee,note)
                VALUES (?,?,?,?,?,?,?)""",
-            (alert_id, updated_at, actor, current, target, new_assignee, note),
+            (row["id"], updated_at, actor, current, target, new_assignee, req["note"]),
         )
+    return current, target, new_assignee
+
+
+@app.route("/api/alerts/<int:alert_id>/workflow", methods=["POST"])
+@analyst_required
+def api_alert_workflow_update(alert_id):
+    from datetime import datetime, timezone
+    req, error = _workflow_request(request.get_json(force=True, silent=True) or {})
+    if error:
+        return error
+    conn = get_conn()
+    row = conn.execute("SELECT * FROM alerts WHERE id=?", (alert_id,)).fetchone()
+    if not row:
+        conn.close()
+        return jsonify({"error": "alert not found"}), 404
+    try:
+        current, target, new_assignee = _apply_alert_workflow(
+            conn, row, req, auth.current_user() or "unknown", datetime.now(timezone.utc).isoformat())
+    except ValueError as exc:
+        conn.rollback()
+        allowed = sorted(ALERT_WORKFLOW_TRANSITIONS.get(alert_workflow_mod.normalize(row["workflow_status"]), set()))
+        conn.close()
+        return jsonify({"error": str(exc), "allowed_next": allowed}), 409
     conn.commit()
     updated = dict(conn.execute("SELECT * FROM alerts WHERE id=?", (alert_id,)).fetchone())
     conn.close()
     audit("alert_workflow_updated", target=f"alert:{alert_id}",
           detail=f"{current}->{target}; assignee={new_assignee or '-'}")
     return jsonify(updated)
+
+
+_BULK_WORKFLOW_MAX = 500
+
+
+@app.route("/api/alerts/workflow/bulk", methods=["POST"])
+@analyst_required
+def api_alert_workflow_bulk():
+    """Apply one status/assignee/note change to many alerts in one transaction.
+
+    Each alert keeps its own transition rules: alerts that cannot make the
+    requested move are skipped and reported, not forced. Used by the alert
+    queue's bulk bar and by dashboard alert groups.
+    """
+    from datetime import datetime, timezone
+    body = request.get_json(force=True, silent=True) or {}
+    req, error = _workflow_request(body)
+    if error:
+        return error
+    raw_ids = body.get("ids")
+    if not isinstance(raw_ids, list) or not raw_ids or len(raw_ids) > _BULK_WORKFLOW_MAX:
+        return jsonify({"error": f"ids must be a list of 1 to {_BULK_WORKFLOW_MAX} alert ids"}), 400
+    try:
+        ids = list(dict.fromkeys(int(i) for i in raw_ids))
+    except (TypeError, ValueError):
+        return jsonify({"error": "ids must be integers"}), 400
+    if not (req["requested"] or req["assignee_supplied"] or req["note"]):
+        return jsonify({"error": "nothing to change: supply status, assignee or note"}), 400
+    actor = auth.current_user() or "unknown"
+    updated_at = datetime.now(timezone.utc).isoformat()
+    conn = get_conn()
+    try:
+        # Only "?" placeholders are interpolated; the ids are bound parameters.
+        query = "SELECT * FROM alerts WHERE id IN (" + placeholders(len(ids)) + ")"
+        rows = {r["id"]: r for r in conn.execute(query, ids).fetchall()}
+        updated, unchanged, skipped = [], [], []
+        for alert_id in ids:
+            row = rows.get(alert_id)
+            if row is None:
+                skipped.append({"id": alert_id, "reason": "alert not found"})
+                continue
+            try:
+                current, target, _ = _apply_alert_workflow(conn, row, req, actor, updated_at)
+            except ValueError:
+                current = alert_workflow_mod.normalize(row["workflow_status"])
+                skipped.append({"id": alert_id, "reason": f"is {current}; cannot move to {req['requested']}"})
+                continue
+            (updated if (target != current or req["assignee_supplied"] or req["note"]) else unchanged).append(alert_id)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+    audit("alert_workflow_bulk", target=f"alerts:{len(ids)}",
+          detail=f"status={req['requested'] or '-'}; updated={len(updated)}; unchanged={len(unchanged)}; skipped={len(skipped)}")
+    return jsonify({"updated": updated, "unchanged": unchanged, "skipped": skipped})
 
 
 @app.route("/api/ingest-status")

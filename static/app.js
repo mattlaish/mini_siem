@@ -229,8 +229,57 @@
     }
   }
 
+  // ---- background-tab awareness --------------------------------------------
+  // Full polling pauses in a hidden tab; this light check (once a minute)
+  // still counts new high/critical alerts in the tab title and, if the user
+  // opted in, raises one desktop notification. Signed-in pages only.
+  var HIGH_SEVERITIES = 'critical,alert,emergency,error';
+  var BG = { headers: { 'X-Background-Poll': '1' } };
+  var baseTitle = document.title, baselineId = null, notifiedCount = 0;
+  function notifyOn() { try { return localStorage.getItem('mini-siem-notify') === 'on'; } catch (e) { return false; } }
+  function setNotify(on) { try { localStorage.setItem('mini-siem-notify', on ? 'on' : 'off'); } catch (e) {} paintNotify(); }
+  function paintNotify() {
+    var b = document.getElementById('notifyToggle');
+    if (!b || !('Notification' in window)) return;
+    var on = notifyOn() && Notification.permission === 'granted';
+    b.hidden = false;
+    b.textContent = on ? '🔔 Notify: on' : '🔕 Notify: off';
+    b.setAttribute('aria-pressed', on ? 'true' : 'false');
+    b.title = on ? 'Desktop notification for new high/critical alerts while this tab is in the background'
+                 : 'Turn on desktop notifications for new high/critical alerts';
+  }
+  async function resetBaseline() {
+    try {
+      var r = await fetch('/api/alerts?limit=1', BG);
+      if (r.ok) { var d = await r.json(); baselineId = d.length ? d[0].id : 0; }
+    } catch (e) { /* keep the previous baseline */ }
+    notifiedCount = 0;
+  }
+  async function checkHiddenTab() {
+    if (!document.hidden || baselineId === null) return;
+    try {
+      var r = await fetch('/api/alerts?after_id=' + baselineId + '&severity=' + HIGH_SEVERITIES + '&limit=100', BG);
+      if (!r.ok) return;
+      var fresh = await r.json();
+      document.title = fresh.length ? '(' + fresh.length + (fresh.length >= 100 ? '+' : '') + ') ' + baseTitle : baseTitle;
+      if (fresh.length > notifiedCount && notifyOn() && 'Notification' in window && Notification.permission === 'granted') {
+        var newest = fresh[0];
+        var n = new Notification(fresh.length + ' new high/critical alert' + (fresh.length > 1 ? 's' : ''), {
+          body: MS.label(newest.rule_name) + (newest.source_ip ? ' · ' + newest.source_ip : ''), tag: 'mini-siem-alerts' });
+        n.onclick = function () { window.focus(); window.location.href = '/security-alerts'; n.close(); };
+      }
+      notifiedCount = fresh.length;
+    } catch (e) { /* next check retries */ }
+  }
+
   // ---- keyboard: "/" focuses the page's search box ------------------------
-  function typing(t) { return t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName)); }
+  // Text entry only: a focused checkbox/radio/button must not swallow shortcuts.
+  var NON_TEXT_INPUTS = { checkbox: 1, radio: 1, button: 1, submit: 1, reset: 1, range: 1, color: 1, file: 1 };
+  function typing(t) {
+    if (!t) return false;
+    if (t.isContentEditable || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT') return true;
+    return t.tagName === 'INPUT' && !NON_TEXT_INPUTS[(t.type || 'text').toLowerCase()];
+  }
   MS.isTyping = typing;
   document.addEventListener('keydown', function (e) {
     if (e.key === '/' && !e.ctrlKey && !e.metaKey && !e.altKey && !typing(e.target)) {
@@ -242,6 +291,22 @@
   document.addEventListener('DOMContentLoaded', function () {
     pollIngest();
     setInterval(function () { if (!document.hidden) pollIngest(); }, 15000);
+    if (document.getElementById('ingestStatus')) {           // signed-in shell only
+      resetBaseline();
+      setInterval(checkHiddenTab, 60000);
+      document.addEventListener('visibilitychange', function () {
+        if (document.hidden) { resetBaseline(); }             // count only what arrives while away
+        else { document.title = baseTitle; notifiedCount = 0; }
+      });
+      paintNotify();
+      var nb = document.getElementById('notifyToggle');
+      if (nb) nb.addEventListener('click', async function () {
+        if (notifyOn() && Notification.permission === 'granted') { setNotify(false); return; }
+        var perm = Notification.permission === 'default' ? await Notification.requestPermission() : Notification.permission;
+        if (perm === 'granted') { setNotify(true); MS.toast('Desktop notifications on for new high/critical alerts while this tab is in the background.', 'success'); }
+        else { setNotify(false); MS.toast('Notifications are blocked for this site. Allow them in your browser settings to use this.', 'error'); }
+      });
+    }
     document.addEventListener('visibilitychange', function () { if (!document.hidden) pollIngest(); });
   });
 }());

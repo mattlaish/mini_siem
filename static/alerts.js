@@ -10,6 +10,7 @@
   const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
   const status = a => (a.workflow_status || 'new').toLowerCase();
   let rows = [], selected = -1, openId = null, maxId = 0;
+  const picked = new Set();   // bulk selection, by alert id
 
   async function api(url, options) {
     const r = await fetch(url, options);
@@ -67,6 +68,9 @@
     $('aqNewPill').classList.remove('show');
     const keep = rows[selected] && rows[selected].id;
     rows = data;
+    // Bulk actions only ever target alerts that are still shown.
+    const shown = new Set(rows.map(a => a.id));
+    [...picked].forEach(id => { if (!shown.has(id)) picked.delete(id); });
     maxId = Math.max(maxId, 0, ...rows.map(a => a.id));
     selected = keep ? rows.findIndex(a => a.id === keep) : (rows.length ? 0 : -1);
     render();
@@ -76,13 +80,15 @@
     const body = $('aqRows');
     $('aqCount').textContent = `${rows.length}${rows.length >= 500 ? '+' : ''} alert${rows.length === 1 ? '' : 's'}`;
     if (!rows.length) {
-      body.innerHTML = `<tr><td colspan="8" class="muted">No alerts match these filters.${$('fStatus').value === 'open' ? ' There are no open alerts in this view.' : ''}</td></tr>`;
+      updateBulk();
+      body.innerHTML = `<tr><td colspan="9" class="muted">No alerts match these filters.${$('fStatus').value === 'open' ? ' There are no open alerts in this view.' : ''}</td></tr>`;
       return;
     }
     body.innerHTML = rows.map((a, i) => `
       <tr data-i="${i}" class="${i === selected ? 'sel' : ''}" aria-selected="${i === selected}">
+        ${canTriage ? `<td class="c-sel"><input type="checkbox" class="aq-pick" data-id="${a.id}"${picked.has(a.id) ? ' checked' : ''} aria-label="Select alert #${a.id}"></td>` : ''}
         <td class="msg-cell t">${MS.timeHTML(a.created_at, true)}</td>
-        <td><span class="badge sev-${esc(a.severity)}">${esc(MS.label(a.severity))}</span></td>
+        <td><span class="badge sev-${esc(a.severity)}">${esc(MS.alertSeverity(a.severity))}</span></td>
         <td>${esc(MS.label(a.rule_name))}</td>
         <td class="msg-cell">${esc(host(a))}</td>
         <td class="desc c-desc"><div class="line">${esc(a.description)}</div></td>
@@ -91,6 +97,40 @@
         <td class="c-count">${occurrences(a)}</td>
       </tr>`).join('');
     body.querySelectorAll('tr[data-i]').forEach(tr => tr.addEventListener('click', () => { select(+tr.dataset.i); open(rows[+tr.dataset.i].id); }));
+    body.querySelectorAll('.aq-pick').forEach(cb => cb.addEventListener('click', e => {
+      e.stopPropagation();
+      const id = +cb.dataset.id;
+      cb.checked ? picked.add(id) : picked.delete(id);
+      updateBulk();
+    }));
+    updateBulk();
+  }
+  function updateBulk() {
+    if (!canTriage) return;
+    $('aqBulk').hidden = picked.size === 0;
+    $('aqBulkCount').textContent = `${picked.size} selected`;
+    const all = $('aqSelectAll');
+    if (all) { all.checked = rows.length > 0 && picked.size === rows.length; all.indeterminate = picked.size > 0 && picked.size < rows.length; }
+  }
+  function togglePick(i) {
+    const a = rows[i]; if (!a || !canTriage) return;
+    picked.has(a.id) ? picked.delete(a.id) : picked.add(a.id);
+    const cb = $('aqRows').querySelector(`.aq-pick[data-id="${a.id}"]`); if (cb) cb.checked = picked.has(a.id);
+    updateBulk();
+  }
+  async function bulk(payload, verb) {
+    const ids = [...picked];
+    if (!ids.length) return;
+    try {
+      const d = await api('/api/alerts/workflow/bulk', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ids, ...payload})});
+      const parts = [`${d.updated.length} ${verb}`];
+      if (d.unchanged.length) parts.push(`${d.unchanged.length} already set`);
+      if (d.skipped.length) parts.push(`${d.skipped.length} skipped (${d.skipped[0].reason}${d.skipped.length > 1 ? ', …' : ''})`);
+      MS.toast(parts.join(' · '), d.skipped.length ? 'info' : 'success');
+      picked.clear();
+      await load();
+      if (openId) open(openId);
+    } catch (err) { MS.toast(err.message, 'error'); }
   }
   function select(i) {
     if (!rows.length) return;
@@ -123,7 +163,7 @@
       const events = (ev.events || []).map(e => `#${e.id} · received ${MS.fmtTime(e.received_at)}\n${e.raw}`).join('\n\n');
       drawer.innerHTML = `
         <h2><span>Alert #${a.id}</span><button type="button" id="aqClose" aria-label="Close detail">Close</button></h2>
-        <div><span class="badge sev-${esc(a.severity)}">${esc(MS.label(a.severity))}</span> <strong>${esc(MS.label(a.rule_name))}</strong></div>
+        <div><span class="badge sev-${esc(a.severity)}">${esc(MS.alertSeverity(a.severity))}</span> <strong>${esc(MS.label(a.rule_name))}</strong></div>
         <p style="font-size:13px;line-height:1.5;">${esc(a.description)}</p>
         <dl><dt>Created</dt><dd>${MS.timeHTML(a.created_at, true)}</dd><dt>Source</dt><dd>${esc(a.source_ip || '—')}</dd>
             <dt>Occurrences</dt><dd>${occurrences(a)}</dd>${keyFields}</dl>
@@ -181,6 +221,7 @@
     else if (e.key === 'k') { select(selected - 1); e.preventDefault(); }
     else if (e.key === 'Enter' && rows[selected]) { open(rows[selected].id); e.preventDefault(); }
     else if (e.key === 'a') { acknowledge(); e.preventDefault(); }
+    else if (e.key === 'x') { togglePick(selected); e.preventDefault(); }
     else if (e.key === 'Escape' && openId) { close(); }
   });
 
@@ -188,6 +229,30 @@
   ['fStatus', 'fSeverity', 'fRule', 'fAssignee'].forEach(id => $(id).addEventListener('change', () => load()));
   let t;
   $('fQuery').addEventListener('input', () => { clearTimeout(t); t = setTimeout(() => load(), 250); });
+  if (canTriage) {
+    $('aqSelectAll').addEventListener('click', e => {
+      e.stopPropagation();
+      if (e.target.checked) rows.forEach(a => picked.add(a.id)); else picked.clear();
+      render();
+    });
+    document.querySelectorAll('#aqBulk [data-bulk]').forEach(btn => btn.addEventListener('click', async () => {
+      const next = btn.dataset.bulk, word = MS.label(next).toLowerCase();
+      let note = '';
+      if (next === 'resolved' || next === 'closed') {
+        const form = await MS.form({title: `Mark ${picked.size} alerts ${word}`, submit: `Mark ${word}`,
+          fields: [{name: 'note', label: 'Note (added to every selected alert)', type: 'textarea'}]});
+        if (!form) return;
+        note = form.note.trim();
+      }
+      bulk({status: next, note}, word);
+    }));
+    $('aqBulkAssign').addEventListener('click', async () => {
+      const form = await MS.form({title: `Assign ${picked.size} alerts`, submit: 'Assign',
+        fields: [{name: 'assignee', label: 'Assignee (blank = unassigned)'}]});
+      if (form) bulk({assignee: form.assignee.trim()}, form.assignee.trim() ? 'assigned' : 'unassigned');
+    });
+    $('aqBulkClear').addEventListener('click', () => { picked.clear(); render(); });
+  }
   $('aqNewPill').addEventListener('click', () => { const sc = $('aqRows').closest('.table-scroll'); if (sc) sc.scrollTop = 0; pointerInList = false; load(); });
   const list = $('aqRows').closest('.table-scroll');
   list.addEventListener('mouseenter', () => { pointerInList = true; });

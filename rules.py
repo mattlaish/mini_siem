@@ -76,6 +76,67 @@ class ThresholdRule(Rule):
         return None
 
 
+# Threshold rules are defined once and shared by the live engine and the
+# read-only near-miss replay, so "why didn't this fire?" can never drift from
+# what actually runs. Thresholds/windows come from the detection config.
+THRESHOLD_RULE_SPECS = [
+    {"name": "ssh_bruteforce", "pattern": r"failed password|authentication failure|invalid user",
+     "description": "Possible SSH brute-force attempt"},
+    {"name": "firewall_deny_burst", "pattern": r"\b(deny|denied|block|blocked|drop|dropped)\b",
+     "description": "Burst of firewall denies (possible scan)"},
+    {"name": "repeated_login_failures", "pattern": r"login failed|access denied|unauthorized",
+     "description": "Repeated login/access failures"},
+]
+
+
+def replay_threshold_rules(rows, config_rules, top=10):
+    """Replay threshold rules over stored events, oldest first. Read-only.
+
+    ``rows`` yields dicts with received_at (ISO), source_ip and message. Uses
+    the same key and sliding-window logic as ThresholdRule, with received_at
+    as the clock. Live counters are in memory and reset when the collector
+    restarts or a threshold changes, so a replay can show a fire the live
+    engine missed across a restart; that difference is itself the answer.
+    Returns per-rule peaks per key against the configured threshold.
+    """
+    from datetime import datetime
+    by_id = {r["id"]: r for r in config_rules}
+    specs = []
+    for spec in THRESHOLD_RULE_SPECS:
+        cfg = by_id.get(spec["name"], {})
+        specs.append({**spec, "regex": re.compile(spec["pattern"], re.IGNORECASE),
+                      "threshold": int(cfg.get("threshold") or 1), "window": int(cfg.get("window_seconds") or 60),
+                      "enabled": bool(cfg.get("enabled", True)), "hits": defaultdict(deque), "keys": {}})
+    for row in rows:
+        text = row.get("message") or ""
+        try:
+            ts = datetime.fromisoformat(str(row.get("received_at")).replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            continue
+        for spec in specs:
+            if not spec["regex"].search(text):
+                continue
+            key = extract_ip(text) or row.get("source_ip") or "unknown"
+            dq = spec["hits"][key]
+            dq.append(ts)
+            while dq and dq[0] < ts - spec["window"]:
+                dq.popleft()
+            stat = spec["keys"].setdefault(key, {"key": key, "matches": 0, "peak": 0, "fires": 0, "last_at": None})
+            stat["matches"] += 1
+            stat["peak"] = max(stat["peak"], len(dq))
+            stat["last_at"] = row.get("received_at")
+            if len(dq) >= spec["threshold"]:
+                stat["fires"] += 1
+                dq.clear()
+    out = []
+    for spec in specs:
+        keys = sorted(spec["keys"].values(), key=lambda k: (k["fires"] > 0, k["peak"], k["last_at"] or ""), reverse=True)
+        out.append({"id": spec["name"], "description": spec["description"], "enabled": spec["enabled"],
+                    "threshold": spec["threshold"], "window_seconds": spec["window"],
+                    "fires": sum(k["fires"] for k in keys), "sources": len(keys), "top": keys[:top]})
+    return out
+
+
 def _is_nxlog_windows_event(event: dict) -> bool:
     """Return True only for the Windows JSON shape emitted by nxlog.conf.
 
@@ -157,30 +218,11 @@ class RuleEngine:
         self.last_error = None
         self._last_error_logged = 0.0
         self.rules = [
-            ThresholdRule(
-                name="ssh_bruteforce",
-                pattern=r"failed password|authentication failure|invalid user",
-                threshold=5,
-                window_seconds=60,
-                severity="critical",
-                description="Possible SSH brute-force attempt",
-            ),
-            ThresholdRule(
-                name="firewall_deny_burst",
-                pattern=r"\b(deny|denied|block|blocked|drop|dropped)\b",
-                threshold=20,
-                window_seconds=60,
-                severity="warning",
-                description="Burst of firewall denies (possible scan)",
-            ),
-            ThresholdRule(
-                name="repeated_login_failures",
-                pattern=r"login failed|access denied|unauthorized",
-                threshold=8,
-                window_seconds=120,
-                severity="warning",
-                description="Repeated login/access failures",
-            ),
+            *[ThresholdRule(name=spec["name"], pattern=spec["pattern"],
+                            threshold=detection.BUILTINS[spec["name"]]["threshold"],
+                            window_seconds=detection.BUILTINS[spec["name"]]["window_seconds"],
+                            severity=detection.BUILTINS[spec["name"]]["severity"],
+                            description=spec["description"]) for spec in THRESHOLD_RULE_SPECS],
             NxlogSeverityRule(name="nxlog_severity_event", severity="warning"),
             SeverityRule(name="high_severity_event", severity="critical"),
         ]

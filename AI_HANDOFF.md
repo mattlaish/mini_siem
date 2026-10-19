@@ -303,3 +303,48 @@ unchanged); truth gate PASS; static scan unchanged (8 pre-existing); 28 browser
 checks (refresh hold + pills, dialogs/toasts, URL round-trip, queue keyboard and
 drawer, viewer read-only, first-run, grouped nav, live status) PASS with no JS
 errors or native dialogs.
+
+## Triage at scale + near-miss replay — 2026-10-19
+
+Follow-up review of the user's upload (4d2de4a): nothing from the earlier passes
+was overridden. Fixed three small flaws it left, then added four UX features.
+
+- Fixes: one alert-severity label everywhere (`MS.alertSeverity`; stored "error"
+  shows as "High" on the dashboard and in the queue, too); unsaved detection drafts
+  warn on navigation (`beforeunload`); the Threat Intel page title matches the
+  sidebar ("Threat Intelligence"); `MS.isTyping` ignores checkboxes/buttons so
+  the queue keys keep working after a click.
+- Bulk triage: `POST /api/alerts/workflow/bulk` (analyst/admin, CSRF, 1–500 ids,
+  status and/or assignee and/or note, one transaction). Each alert follows its
+  own workflow rules: invalid moves are reported in `skipped` with a reason and
+  are never forced; returns `updated`/`unchanged`/`skipped`; one
+  `alert_workflow_bulk` audit entry plus per-alert workflow events. The single-alert
+  endpoint shares the same helpers (`_workflow_request`, `_apply_alert_workflow`);
+  its 409/404 behaviour is unchanged.
+- Dashboard groups: a collapsed group (same rule + source) shows a member status
+  summary ("2 new · 1 resolved") and "Mark all …" / "Assign all" act on every
+  member through the bulk endpoint (before, only the newest member changed).
+- Alerts queue: checkbox column, select-all, `x` key, and a bulk bar
+  (Acknowledge / Investigating / Resolve… / Close… / Assign…). Selection is pruned
+  to alerts still shown. Viewers get no checkboxes.
+- Background tab: while a signed-in tab is hidden, a 60s background check
+  (`/api/alerts?after_id=…`, new optional filter; sends X-Background-Poll) puts
+  "(N)" new high/critical alerts in the tab title, and raises a desktop
+  notification only if the user switched on "🔔 Notify" (opt-in,
+  localStorage `mini-siem-notify`, browser permission). Title resets on return.
+- "Why didn't a rule fire?": `GET /api/detection/near-misses?minutes=5..1440`
+  (any signed-in user, read-only) replays the newest ≤20000 stored events through
+  the three threshold rules with the saved threshold/window (disabled rules too)
+  and reports fires plus the closest sources ("closest was 4 of 5"). The replay
+  and the live `RuleEngine` share `rules.THRESHOLD_RULE_SPECS` and
+  `detection.BUILTINS`; a test proves they agree. The replay uses received_at; the
+  live counters are in-memory and reset on restart, so the two can differ across
+  a restart.
+
+Validation: tests/test_triage_and_near_miss.py 13 PASS; full suite 354 PASS /
+same 38 pre-existing failures; static scan unchanged (8 pre-existing HIGH); 16
+browser checks (group resolve-all, queue bulk with skips, select-all, keyboard after
+a checkbox click, bar hides after an action, near-miss panel, draft guard, viewer
+read-only, notify toggle, hidden-tab title + one notification, title restore) PASS
+with no JS errors; earlier UX browser checks still PASS. The browser run found
+and fixed one bug: `.aq-bulk{display:flex}` overrode `[hidden]`.

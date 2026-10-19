@@ -133,5 +133,28 @@
     $('objectForm').onsubmit=e=>{e.preventDefault();const {section,i}=editingObject,row=config[section][i];objectSchema[section].forEach(([k,label,type])=>{row[k]=objectValue(e.target,k,type);});$('objectEditor').hidden=true;draft();};
     $('refreshTelemetry').onclick=()=>Promise.all([telemetry(),unprofiled()]).catch(e=>status(e.message,true));
   }
-  load().then(()=>{if($('telemetryRows'))return Promise.all([telemetry(),unprofiled()]);}).catch(e=>status(e.message,true));
+  // Leaving the page (sidebar link, close, reload) must not silently drop a draft.
+  window.addEventListener('beforeunload',e=>{if(dirty){e.preventDefault();e.returnValue='';}});
+  // "Why didn't this fire?": replay repeated-activity rules over stored events.
+  async function nearMisses(){
+    const box=$('nearMissRows');if(!box)return;
+    const minutes=$('nearMissWindow').value;box.replaceChildren(text('p','Checking recent events…'));
+    const d=await api('/api/detection/near-misses?minutes='+encodeURIComponent(minutes));box.replaceChildren();
+    const table=document.createElement('table'),head=document.createElement('tr');
+    ['Rule','Alerts when','Result','Closest sources'].forEach(h=>head.append(text('th',h)));
+    const thead=document.createElement('thead');thead.append(head);table.append(thead);const body=document.createElement('tbody');
+    d.rules.forEach(r=>{
+      const tr=document.createElement('tr');
+      tr.append(text('td',MS.label(r.id)),text('td',`${r.threshold} matching events within ${r.window_seconds}s from one source`));
+      const peak=r.top.length?Math.max(...r.top.map(k=>k.peak)):0;
+      const result=!r.enabled&&r.fires?`Turned off — would have alerted ${r.fires}×`:r.fires?`Alerted ${r.fires}×`:!r.sources?'No matching events':`Not triggered — closest was ${peak} of ${r.threshold}`;
+      const cell=text('td',result);if(!r.enabled&&r.fires||(!r.fires&&peak>=Math.max(1,r.threshold-1)))cell.className='detect-error';tr.append(cell);
+      tr.append(text('td',r.top.slice(0,3).map(k=>`${k.key}: peak ${k.peak} of ${r.threshold}${k.fires?` (alerted ${k.fires}×)`:''}, last ${MS.fmtTime(k.last_at)}`).join('\n')||'—'));
+      body.append(tr);
+    });
+    table.append(body);box.append(table);
+    box.append(text('p',`Replayed ${d.scanned} stored event${d.scanned===1?'':'s'} from the last ${d.window_minutes} min${d.truncated?' (newest events only — narrow the window to cover all)':''} with the saved thresholds. Live counts reset when the collection service restarts, so a replayed alert can differ from what was raised.`));
+  }
+  if($('nearMissRefresh')){$('nearMissRefresh').onclick=()=>nearMisses().catch(e=>status(e.message,true));$('nearMissWindow').onchange=()=>nearMisses().catch(e=>status(e.message,true));}
+  load().then(()=>{if($('telemetryRows'))return Promise.all([telemetry(),unprofiled()]);if($('nearMissRows'))return nearMisses();}).catch(e=>status(e.message,true));
 })();

@@ -60,6 +60,7 @@
       <h1>{% block page_title %}mini-SIEM{% endblock %}</h1>
       <a class="ingest-status" id="ingestStatus" href="/health" data-state="unknown"><span class="dot" aria-hidden="true"></span><span class="txt">Checking log collection…</span></a>
       <div class="right">
+        <button class="theme-btn" id="notifyToggle" type="button" hidden aria-pressed="false">🔔 Notify: off</button>
         <button class="theme-btn" id="themeToggle" type="button">☾ Dark</button>
       </div>
     </header>
