@@ -14,6 +14,8 @@
     await load();
   }
   async function load() {
+    // Usage is administrator-only; say so up front rather than ask and be refused (audited).
+    if (document.body.dataset.role !== 'admin') { el('usageSummary').textContent = 'Usage is available to administrators.'; return; }
     try {
       const r = await fetch('/api/ai/usage?limit=30');
       const d = await r.json();

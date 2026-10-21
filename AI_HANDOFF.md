@@ -348,3 +348,66 @@ a checkbox click, bar hides after an action, near-miss panel, draft guard, viewe
 read-only, notify toggle, hidden-tab title + one notification, title restore) PASS
 with no JS errors; earlier UX browser checks still PASS. The browser run found
 and fixed one bug: `.aq-bulk{display:flex}` overrode `[hidden]`.
+
+## UX_REVIEW next improvements 1–5 + permission gaps — 2026-10-21
+
+Implemented the five "Next experience improvements" listed in UX_REVIEW.md, and
+closed the permission gaps found while making Settings role-aware.
+
+- Guided cloud setup (Settings → Cloud log connections): provider presets
+  (Sophos Central / other OAuth2 / other API key) fill only blank fields; "Save
+  and test connection" creates the connector (off by default) and runs
+  `POST /api/pollers/<id>/test` (admin, CSRF, audited `poller_tested`). The test
+  is a dry run through `api_poller.test_connection`: sign-in → Sophos account
+  discovery → one events read over the last hour; it never advances the cursor
+  or stores events, reports each step with the provider's own error text, and
+  returns one sample event (≤4000 chars) to the admin only. "Turn on collection"
+  follows a passing test. The table now says Off / Waiting for the first check /
+  Connected · no events yet / Receiving / Not receiving instead of "Collecting
+  logs" for never-checked connectors. `POST /api/pollers` now also returns `id`.
+- Role-aware settings: Settings nav grouped (My account, Log collection, Search &
+  fields, Integrations, Administration); new "Your account" section (role
+  explanation + change password) is the landing section for non-admins.
+  Admin-only sections show a read-only explanation and hide their controls, and
+  their loaders are skipped for non-admins (no more 403s, and no audited
+  `permission_denied` flood from System Health/AI usage left open by viewers).
+  Threat Intelligence, dashboard pattern/column controls, AI queue buttons,
+  report schedule and Health backup/diagnostics buttons follow the role. Global
+  template flags `user_role`/`is_admin`/`can_triage` and `body[data-role]`.
+- Permission gaps fixed (were callable by any signed-in user): admin —
+  norm-patterns POST, norm-reindex, forwarders/<id>/test, tickets/test,
+  ioc-feeds POST/PUT, reports/schedule, ai/test, ai/queue/retry, ai/queue/clear;
+  analyst — norm-columns POST, iocs POST/import/PUT, ioc-feeds/<id>/fetch,
+  reports/run, ai/triage. Blueprints use `_svc.require_analyst()` (new).
+- Pickers: rule-condition field list with a description per field plus
+  extracted field names seen in recent logs (`GET /api/detection/fields`), and an
+  inline warning that blocks unsupported fields before Apply; time-zone list from
+  the browser (`Intl.supportedValuesOf`) with typo warning, new hosts/windows
+  default to the browser's zone (was hard-coded Asia/Taipei); host roles and the
+  web-server rule's required role are choices (custom roles still allowed).
+- Small screens: Settings uses a compact section picker (≤760px), forms stack to
+  one column (≤560px), focus moves to the opened section heading and the page
+  scrolls only if the heading is hidden by the top bar.
+- Uniform recovery: `MS.getJSON` (operator message + technical detail),
+  `MS.loading`, `MS.failed` (message · Retry/Sign in · Technical detail) used by
+  Settings, Threat Intelligence, Investigations, Activity History, System Health
+  and the dashboard. Failed timed refreshes keep the data shown and label it
+  ("Refresh failed at … — showing data from …") instead of updating "Last
+  updated". `MS.background(fn)` marks timed refreshes with X-Background-Poll;
+  Health, Activity History, Threat Intelligence and Settings forwarding polls
+  previously kept idle sessions alive.
+- Also fixed: the ticket template hint rendered its {{placeholders}} empty (Jinja).
+
+Validation: tests/test_guided_setup_and_roles.py 27 PASS (fake local provider for
+the connection test); full suite 381 PASS / same 38 pre-existing failures (diffed
+against the pre-change baseline in the same environment; one literal-source
+assertion in test_syslog_troubleshoot updated to the generated nav); static scan
+unchanged (8 HIGH); placeholder truth gate PASS; 26 browser checks (preset, test
+pass/fail, turn on, load failure + retry, stale dashboard/health, background
+header, field/time-zone/role pickers, 390px settings, viewer/analyst views with
+zero permission_denied entries, no JS errors) PASS.
+
+Not done / next: the connection test needs the connector saved first (the secret
+is never sent back to the browser, so testing an unsaved form would need a
+separate endpoint); no live Sophos tenant was used. The audit log
+(/api/audit) remains readable by every signed-in role, as before.

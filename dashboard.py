@@ -80,6 +80,15 @@ def _csrf_template_context():
     return {"csrf_token": _csrf_token}
 
 
+@app.context_processor
+def _role_template_context():
+    """Role flags so pages can explain read-only areas before a save is
+    rejected. The API decorators stay the authoritative permission check."""
+    role = auth.current_role() if auth.current_user() else ""
+    return {"user_role": role, "is_admin": role == "admin",
+            "can_triage": role in ("admin", "analyst")}
+
+
 @app.before_request
 def _csrf_guard():
     """Protect state-changing requests authenticated by a browser session."""
@@ -1898,6 +1907,7 @@ def api_forwarders_delete(fw_id):
 
 
 @app.route("/api/forwarders/<int:fw_id>/test", methods=["POST"])
+@admin_required
 def api_forwarders_test(fw_id):
     """Sends one test syslog message to the destination from the
     dashboard process. Note: a UDP 'success' only means the packet was
@@ -2037,6 +2047,7 @@ def api_iocs_list():
 
 
 @app.route("/api/iocs", methods=["POST"])
+@analyst_required
 def api_iocs_create():
     import threatintel as ti
     body = request.get_json(force=True, silent=True) or {}
@@ -2068,6 +2079,7 @@ def api_iocs_create():
 
 
 @app.route("/api/iocs/import", methods=["POST"])
+@analyst_required
 def api_iocs_import():
     """Bulk import from pasted feed text: one indicator per line, # for
     comments, optional CSV form value,type,threat per line."""
@@ -2107,6 +2119,7 @@ def api_iocs_import():
 
 
 @app.route("/api/iocs/<int:ioc_id>", methods=["PUT"])
+@analyst_required
 def api_iocs_update(ioc_id):
     body = request.get_json(force=True, silent=True) or {}
     conn = get_conn()
@@ -2578,7 +2591,7 @@ def api_pollers_create():
     if cfg["secret_mode"] == "encrypted" and secret_plain:
         enc = _secretbox.encrypt(secret_plain, _secretbox_master())
     conn = get_conn()
-    conn.execute(
+    new_id = conn.insert_returning_id(
         """INSERT INTO api_pollers
            (name, auth_scheme, token_url, events_url, whoami_url, tenant_header,
             api_key_header, client_id, client_secret, secret_mode, scope,
@@ -2590,7 +2603,7 @@ def api_pollers_create():
          cfg["interval_seconds"], cfg["initial_lookback_seconds"], cfg["enabled"]))
     conn.commit(); conn.close()
     audit("poller_created", target=cfg["name"], detail=f"mode={cfg['secret_mode']}")
-    return jsonify({"ok": True})
+    return jsonify({"ok": True, "id": new_id})
 
 
 @app.route("/api/pollers/<int:pid>", methods=["PUT"])
@@ -2629,6 +2642,28 @@ def api_pollers_update(pid):
     return jsonify({"ok": True})
 
 
+_POLLER_TEST_LOOKBACK = 3600
+
+
+@app.route("/api/pollers/<int:pid>/test", methods=["POST"])
+@admin_required
+def api_pollers_test(pid):
+    """Dry-run one connection: sign-in, account discovery (Sophos) and one
+    events request over the last hour. Never advances the saved position and
+    never stores the events; one sample is returned for the operator."""
+    conn = get_conn()
+    row = conn.execute("SELECT * FROM api_pollers WHERE id=?", (pid,)).fetchone()
+    conn.close()
+    if not row:
+        return jsonify({"error": "not found"}), 404
+    result = _api_poller.test_connection(dict(row), _resolve_poller_secret,
+                                         lookback_seconds=_POLLER_TEST_LOOKBACK)
+    failed = next((s["step"] for s in result["steps"] if not s["ok"]), "")
+    audit("poller_tested", target=row["name"],
+          detail="ok; events=%d" % result["events"] if result["ok"] else f"failed at {failed}")
+    return jsonify(result)
+
+
 @app.route("/api/pollers/<int:pid>", methods=["DELETE"])
 @admin_required
 def api_pollers_delete(pid):
@@ -2655,6 +2690,7 @@ def api_norm_patterns_get():
 
 
 @app.route("/api/norm-patterns", methods=["POST"])
+@admin_required
 def api_norm_patterns_set():
     import json as _json, re as _re
     body = request.get_json(force=True, silent=True) or {}
@@ -2689,6 +2725,7 @@ _reindex_state = {"running": False, "done_logs": 0, "max_id": 0, "last_result": 
 
 
 @app.route("/api/norm-reindex", methods=["POST"])
+@admin_required
 def api_norm_reindex():
     """Backfill log_fields for all existing logs with current patterns.
     Runs in a background thread; poll /api/norm-reindex/status."""
@@ -2754,6 +2791,7 @@ def api_norm_columns_get():
 
 
 @app.route("/api/norm-columns", methods=["POST"])
+@analyst_required
 def api_norm_columns_set():
     body = request.get_json(force=True, silent=True) or {}
     raw = body.get("columns")
@@ -3145,6 +3183,15 @@ def _require_admin_now():
     return None
 
 
+def _require_analyst_now():
+    role = auth.current_role()
+    if role not in ("admin", "analyst"):
+        audit("permission_denied", target=request.endpoint or request.path,
+              detail=f"role={role}")
+        return jsonify({"error": "analyst or administrator role required for this action"}), 403
+    return None
+
+
 def _register_split_blueprints():
     """Register the deliberately limited dashboard split.
 
@@ -3162,6 +3209,7 @@ def _register_split_blueprints():
 
     services = SimpleNamespace(
         get_conn=get_conn, audit=audit, require_admin=_require_admin_now,
+        require_analyst=_require_analyst_now,
         db_config=_db_config, cfg_get=cfg_get, cfg_set=cfg_set,
         get_ai_config=get_ai_config, save_ai_config=save_ai_config,
         llm_from_config=_llm_from_config, secretbox_master=_secretbox_master,

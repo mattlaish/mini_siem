@@ -15,6 +15,8 @@ def list_feeds():
     return jsonify(rows)
 @bp.post("/api/ioc-feeds")
 def create_feed():
+    denied=_svc.require_admin()
+    if denied is not None:return denied
     body=request.get_json(force=True,silent=True) or {}; name=(body.get("name") or "").strip(); url=(body.get("url") or "").strip()
     if not name or not url:return jsonify({"error":"name and url are required"}),400
     if not url.lower().startswith(("http://","https://")):return jsonify({"error":"url must start with http:// or https://"}),400
@@ -23,11 +25,15 @@ def create_feed():
     key=(body.get("key") or "").strip(); enc=secretbox.encrypt(key,_svc.secretbox_master()) if key else ""; c=_svc.get_conn(); new_id=c.insert_returning_id("INSERT INTO ioc_feeds (name, url, severity, threat, default_type, refresh_hours, enabled, auth_scheme, header_name, header_prefix, query_param, basic_user, key_encrypted) VALUES (?,?,?,?,?,?,1,?,?,?,?,?,?)",(name,url,sev,(body.get("threat") or "").strip(),(body.get("default_type") or "").strip().lower(),refresh,scheme,(body.get("header_name") or "").strip(),(body.get("header_prefix") or "").strip(),(body.get("query_param") or "").strip(),(body.get("basic_user") or "").strip(),enc)); c.commit(); _svc.audit("ioc_feed_added",target=name,detail=url); return jsonify({"id":new_id,"ok":True})
 @bp.post("/api/ioc-feeds/<int:fid>/fetch")
 def fetch_feed(fid):
+    denied=_svc.require_analyst()
+    if denied is not None:return denied
     c=_svc.get_conn(); row=c.execute("SELECT * FROM ioc_feeds WHERE id=?",(fid,)).fetchone()
     if not row:return jsonify({"error":"feed not found"}),404
     result=workers.fetch_feed(c,dict(row),resolve_key_fn=resolve_feed_key); return jsonify(result) if result.get("ok") else (jsonify(result),502)
 @bp.put("/api/ioc-feeds/<int:fid>")
 def update_feed(fid):
+    denied=_svc.require_admin()
+    if denied is not None:return denied
     body=request.get_json(force=True,silent=True) or {}; c=_svc.get_conn()
     if "enabled" in body:c.execute("UPDATE ioc_feeds SET enabled=? WHERE id=?",(1 if body["enabled"] else 0,fid))
     if "refresh_hours" in body:c.execute("UPDATE ioc_feeds SET refresh_hours=? WHERE id=?",(max(0,min(int(body["refresh_hours"] or 0),720)),fid))

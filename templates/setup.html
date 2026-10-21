@@ -6,14 +6,47 @@
   .wrap { max-width: 1100px; margin: 24px auto; padding: 0 20px; }
   /* Setup left-submenu layout */
   .setup-layout { display: flex; gap: 20px; align-items: flex-start; }
-  .setup-nav { flex: 0 0 200px; position: sticky; top: 24px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 8px; }
-  .setup-nav a { display: block; padding: 8px 12px; font-size: 13px; color: var(--ink-soft); text-decoration: none; border-radius: 6px; cursor: pointer; }
+  .setup-nav { flex: 0 0 220px; position: sticky; top: 24px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 8px; }
+  .setup-nav a { display: block; padding: 7px 12px; font-size: 13px; color: var(--ink-soft); text-decoration: none; border-radius: 6px; cursor: pointer; }
   .setup-nav a:hover { background: var(--canvas); }
   .setup-nav a.active { background: var(--accent); color: #fff; font-weight: 600; }
+  .setup-nav a[data-locked] .lock { font-size: 10px; opacity: .7; }
+  .setup-group { font-family: var(--mono); font-size: 10px; text-transform: uppercase; letter-spacing: .04em; color: var(--ink-soft); padding: 10px 12px 3px; }
+  .setup-group:first-child { padding-top: 4px; }
+  .setup-pick { display: none; }
   .setup-content { flex: 1; min-width: 0; }
-  .setup-content .panel[data-section] { display: none; }
+  .setup-content .panel[data-section] { display: none; overflow-x: auto; }
   .setup-content .panel[data-section].shown { display: block; }
-  @media (max-width: 760px) { .setup-layout { flex-direction: column; } .setup-nav { position: static; width: 100%; flex-basis: auto; } }
+  .setup-content .panel h2:focus { outline: none; }
+  /* Read-only roles: keep the explanation, hide controls they cannot use. */
+  .panel.locked > :not(h2):not(.sub):not(.ro-note) { display: none !important; }
+  .guide-steps { margin: 0 0 14px; padding-left: 20px; font-size: 12.5px; line-height: 1.6; color: var(--ink-soft); }
+  .guide-steps strong { color: var(--ink); }
+  .preset-help { margin: 6px 0 0; font-size: 12px; color: var(--ink-soft); line-height: 1.5; }
+  .conn-test { margin-top: 14px; border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; font-size: 12.5px; }
+  .conn-test.ok { border-color: var(--ok); background: var(--ok-soft); }
+  .conn-test.fail { border-color: var(--warn); background: var(--warn-soft); }
+  .conn-test h3 { margin: 0 0 8px; font-size: 13px; }
+  .conn-test ol { margin: 0 0 8px; padding-left: 20px; }
+  .conn-test li { margin-bottom: 4px; }
+  .conn-test .why { color: var(--ink-soft); }
+  .conn-test pre { white-space: pre-wrap; word-break: break-word; background: var(--canvas); border-radius: 6px; padding: 8px; max-height: 240px; overflow: auto; font-size: 11px; }
+  .ro-note { background: var(--accent-soft); border: 1px solid var(--accent); border-radius: 8px; padding: 10px 14px; font-size: 12.5px; line-height: 1.5; }
+  /* Small screens: a compact section picker instead of the long link list. */
+  @media (max-width: 760px) {
+    .setup-layout { flex-direction: column; gap: 12px; }
+    .setup-nav { position: static; width: 100%; flex-basis: auto; display: flex; align-items: center; gap: 8px; padding: 8px 10px; }
+    .setup-links { display: none; }
+    label.setup-pick { display: block; font-size: 12px; font-weight: 600; white-space: nowrap; }
+    select.setup-pick { display: block; flex: 1; min-width: 0; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; font-size: 14px; background: var(--panel); color: var(--ink); }
+    .wrap { margin: 12px auto; padding: 0 12px; }
+    .panel { padding: 14px; }
+  }
+  @media (max-width: 560px) {
+    .form-grid { grid-template-columns: 1fr !important; }
+    .form-grid > * { grid-column: 1 / -1 !important; }
+    .fld-row { flex-direction: column; align-items: stretch !important; }
+  }
   .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 18px; margin-bottom: 20px; }
   .panel h2 { margin: 0 0 4px; font-size: 15px; }
   .panel .sub { color: var(--ink-soft); font-size: 12.5px; margin: 0 0 14px; line-height: 1.5; }
@@ -57,20 +90,42 @@
 {% block content %}
 <div class="wrap">
  <div class="setup-layout">
-  <nav class="setup-nav" id="setupNav">
-    <a data-target="sec-listen" class="active">Receive device logs</a>
-    <a data-target="sec-troubleshoot">Check log delivery</a>
-    <a data-target="sec-support">Support report</a>
-    <a data-target="sec-selfmon">Monitor this host</a>
-    <a data-target="sec-pollers">Cloud log connections</a>
-    <a data-target="sec-mapping">Log field mapping</a>
-    <a data-target="sec-aliases">Search across log sources</a>
-    <a data-target="sec-receiver">Receive logs by API</a>
-    <a data-target="sec-ticket">Ticketing connection</a>
-    <a data-target="sec-users">Users &amp; access</a>
-    <a data-target="sec-forwarding">Syslog forwarding</a>
+  {% set setup_groups = [
+    ('My account', [('sec-account', 'Your account &amp; password', False)]),
+    ('Log collection', [('sec-listen', 'Receive device logs', True), ('sec-pollers', 'Cloud log connections', True),
+                        ('sec-receiver', 'Receive logs by API', True), ('sec-selfmon', 'Monitor this host', True),
+                        ('sec-troubleshoot', 'Check log delivery', True)]),
+    ('Search &amp; fields', [('sec-mapping', 'Log field mapping', True), ('sec-aliases', 'Search across log sources', True)]),
+    ('Integrations', [('sec-ticket', 'Ticketing connection', True), ('sec-forwarding', 'Syslog forwarding', True)]),
+    ('Administration', [('sec-users', 'Users &amp; access', True), ('sec-support', 'Support report', True)]),
+  ] %}
+  <nav class="setup-nav" id="setupNav" aria-label="Settings sections">
+    <label class="setup-pick" for="setupNavSelect">Settings section</label>
+    <select class="setup-pick" id="setupNavSelect">
+      {% for group, items in setup_groups %}<optgroup label="{{ group|safe }}">{% for target, label, admin_only in items %}<option value="{{ target }}">{{ label|safe }}{% if admin_only and not is_admin %} (administrators)
+      {%- endif %}</option>{% endfor %}</optgroup>{% endfor %}
+    </select>
+    <div class="setup-links">
+      {% for group, items in setup_groups %}
+      <div class="setup-group" aria-hidden="true">{{ group|safe }}</div>
+      {% for target, label, admin_only in items %}<a href="#{{ target }}" data-target="{{ target }}"{% if admin_only and not is_admin %} data-locked="yes" title="Administrators manage this section"{% endif %}>{{ label|safe }}{% if admin_only and not is_admin %} <span class="lock" aria-label="administrators only">🔒</span>{% endif %}</a>
+      {% endfor %}{% endfor %}
+    </div>
   </nav>
   <div class="setup-content" id="setupContent">
+
+  <div class="panel" data-section="sec-account">
+    <h2>Your account</h2>
+    <p class="sub">You are signed in as <strong>{{ session.get('user', '') }}</strong> with the <strong>{{ {'admin': 'Administrator', 'analyst': 'Analyst', 'viewer': 'Read-only viewer'}.get(user_role, user_role) }}</strong> role.
+      {% if is_admin %}You can change every setting on this page.{% elif user_role == 'analyst' %}You can triage alerts, run investigations and manage threat indicators. The other settings sections are managed by administrators; you can open them to see what they do.{% else %}You can view logs, alerts and investigations. Changes are made by analysts and administrators; you can open the settings sections to see what they do.{% endif %}</p>
+    <h3 style="font-size:13px;margin:14px 0 8px;">Change my password</h3>
+    <div class="form-grid" style="grid-template-columns:1fr 1fr 1fr;">
+      <div class="fld"><label>Current</label><input type="password" id="pwCur" class="mono"></div>
+      <div class="fld"><label>New <span class="hint">(min 8)</span></label><input type="password" id="pwNew" class="mono"></div>
+      <div class="fld"><label>Confirm</label><input type="password" id="pwConf" class="mono"></div>
+      <div class="fld full"><button id="pwBtn" class="secondary">Update password</button><span class="status-line" id="pwStatus"></span></div>
+    </div>
+  </div>
 
   <div class="panel" data-section="sec-listen">
     <h2>Receive device logs</h2>
@@ -184,9 +239,24 @@ sudo systemctl restart auditd</pre>
 
   <div class="panel" data-section="sec-pollers">
     <h2>Cloud log connections</h2>
-    <p class="sub">Collect logs automatically from a cloud service such as Sophos Central. Choose the sign-in method specified by your provider and enter its connection details. mini-SIEM saves its collection position so later checks can continue from there; provider behavior and delivery failures can still affect completeness.</p>
+    <p class="sub">Collect logs automatically from a cloud service such as Sophos Central. mini-SIEM saves its collection position so later checks can continue from there; provider behavior and delivery failures can still affect completeness.</p>
+    <ol class="guide-steps" aria-label="Setup steps">
+      <li><strong>Choose your provider</strong> to fill in its standard addresses.</li>
+      <li><strong>Enter the credential</strong> your provider issued.</li>
+      <li><strong>Save and test.</strong> mini-SIEM signs in and reads the last hour once, without storing anything.</li>
+      <li><strong>Turn on collection</strong> once the test works.</li>
+    </ol>
 
     <div class="form-grid" style="grid-template-columns:1fr 1fr;">
+      <div class="fld full"><label for="pPreset">Provider</label>
+        <select id="pPreset">
+          <option value="">Choose your provider…</option>
+          <option value="sophos">Sophos Central</option>
+          <option value="oauth2">Another service — OAuth2 client ID and secret</option>
+          <option value="apikey">Another service — API key</option>
+        </select>
+        <p class="preset-help" id="pPresetHelp" hidden></p>
+      </div>
       <div class="fld"><label>Name</label><input type="text" id="pName" class="mono" placeholder="sophos-central"></div>
       <div class="fld"><label>Sign-in method</label>
         <select id="pScheme">
@@ -223,14 +293,15 @@ sudo systemctl restart auditd</pre>
       <div class="fld"><label>Enabled</label>
         <select id="pEnabled"><option value="1">Yes — collect logs automatically</option><option value="0" selected>No — save without collecting logs</option></select>
       </div>
-      <div class="fld full"><button id="addPollerBtn">Add connector</button><span class="status-line" id="pollerStatus"></span></div>
+      <div class="fld full"><button id="addPollerBtn">Save and test connection</button><span class="status-line" id="pollerStatus"></span></div>
     </div>
+    <div class="conn-test" id="pTestResult" hidden aria-live="polite"></div>
 
     <div style="margin-top:6px;font-size:12px;color:var(--ink-soft);" id="pSecretModeNote"></div>
 
     <h3 style="font-size:13px;margin:18px 0 8px;">Configured connectors</h3>
     <table class="tbl" id="pollersTable"><thead><tr>
-      <th>Name</th><th>Sign-in method</th><th>Events URL</th><th>Every</th><th>Status</th><th>Last check</th><th></th>
+      <th>Name</th><th>Sign-in method</th><th>Events URL</th><th>Every</th><th>Collection</th><th>Last check</th><th></th>
     </tr></thead><tbody></tbody></table>
     <p class="sub" id="noPollers" style="display:none;">No cloud connections yet. Add your provider details above to start collecting logs.</p>
   </div>
@@ -381,7 +452,7 @@ sudo systemctl restart auditd</pre>
         <select id="tkSev"><option>critical</option><option>error</option><option selected>warning</option><option>notice</option></select></div>
       <div class="fld"><label>Authentication headers (JSON) <span class="hint">(auth token etc. — write-only, not echoed back)</span></label>
         <input type="text" id="tkHeaders" class="mono" placeholder='{"Authorization": "Bearer YOUR-TOKEN"}'></div>
-      <div class="fld full"><label>Ticket content template <span class="hint">(JSON sent per alert; placeholders: {{id}} {{rule_name}} {{severity}} {{source_ip}} {{description}} {{created_at}} {{log_ids}} {{ai_analysis}})</span></label>
+      <div class="fld full"><label>Ticket content template <span class="hint">(JSON sent per alert; placeholders: {% raw %}{{id}} {{rule_name}} {{severity}} {{source_ip}} {{description}} {{created_at}} {{log_ids}} {{ai_analysis}}{% endraw %})</span></label>
         <textarea id="tkTemplate" style="min-height:120px;"></textarea></div>
       <div class="fld full">
         <button id="tkSaveBtn">Save</button>
@@ -430,13 +501,6 @@ sudo systemctl restart auditd</pre>
       <span class="status-line" id="idleStatus" style="align-self:center;"></span>
     </div>
 
-    <h3 style="font-size:13px;margin:18px 0 8px;">Change my password</h3>
-    <div class="form-grid" style="grid-template-columns:1fr 1fr 1fr;">
-      <div class="fld"><label>Current</label><input type="password" id="pwCur" class="mono"></div>
-      <div class="fld"><label>New <span class="hint">(min 8)</span></label><input type="password" id="pwNew" class="mono"></div>
-      <div class="fld"><label>Confirm</label><input type="password" id="pwConf" class="mono"></div>
-      <div class="fld full"><button id="pwBtn" class="secondary">Update password</button><span class="status-line" id="pwStatus"></span></div>
-    </div>
   </div>
 
   <div class="panel" data-section="sec-forwarding">
@@ -528,30 +592,67 @@ sudo systemctl restart auditd</pre>
 const $ = id => document.getElementById(id);
 function esc(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;'); }
 
-// ---- Setup left-submenu: show one section at a time ----
+// Role flags only shape the page; every API call is still checked server-side.
+const IS_ADMIN = document.body.dataset.role === 'admin';
+// Run a change request; report failures instead of silently reloading.
+async function act(url, opts) {
+  try { return await MS.getJSON(url, opts); }
+  catch (e) { MS.toast(e.message, 'error'); return null; }
+}
+
+// ---- Settings sections: grouped links, or a compact picker on small screens ----
 (function(){
   const nav = document.getElementById('setupNav');
   if (!nav) return;
+  const pick = document.getElementById('setupNavSelect');
+  const links = Array.from(nav.querySelectorAll('a[data-target]'));
   let _aliasesLoaded = false;
   let _selfmonLoaded = false;
-  function showSection(target){
+  // Explain read-only sections up front instead of letting a save be rejected.
+  if (!IS_ADMIN) {
+    document.querySelectorAll('.setup-content .panel[data-section]').forEach(p => {
+      if (p.dataset.section === 'sec-account') return;
+      p.classList.add('locked');
+      const note = document.createElement('p');
+      note.className = 'ro-note';
+      note.textContent = 'Administrators manage this section. You can read what it does here; ask an administrator if something needs to change.';
+      const sub = p.querySelector('.sub');
+      (sub || p.querySelector('h2')).after(note);
+    });
+  }
+  function showSection(target, fromUser){
     document.querySelectorAll('.setup-content .panel[data-section]').forEach(p=>{
       p.classList.toggle('shown', p.getAttribute('data-section')===target);
     });
-    nav.querySelectorAll('a').forEach(a=>{
-      a.classList.toggle('active', a.getAttribute('data-target')===target);
+    links.forEach(a=>{
+      const on = a.getAttribute('data-target')===target;
+      a.classList.toggle('active', on);
+      if (on) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
     });
+    if (pick) pick.value = target;
     if (history.replaceState) history.replaceState(null,'','#'+target);
+    if (fromUser) {   // move keyboard/screen-reader focus to the section opened
+      const h = document.querySelector(`.panel[data-section="${target}"] h2`);
+      if (h) {
+        h.tabIndex = -1; h.focus({preventScroll: true});
+        // keep the heading clear of the sticky top bar; scroll only when it is hidden
+        const bar = document.querySelector('.topbar'), off = (bar ? bar.offsetHeight : 0) + 12;
+        const top = h.getBoundingClientRect().top;
+        if (top < off || top > window.innerHeight - 120) window.scrollTo({top: window.scrollY + top - off});
+      }
+    }
+    if (!IS_ADMIN) return;
     if (target==='sec-aliases' && !_aliasesLoaded){ _aliasesLoaded=true; loadAliases(); }
     if (target==='sec-selfmon' && !_selfmonLoaded){ _selfmonLoaded=true; initSelfmon(); }
   }
-  nav.querySelectorAll('a').forEach(a=>{
-    a.addEventListener('click', e=>{ e.preventDefault(); showSection(a.getAttribute('data-target')); });
+  links.forEach(a=>{
+    a.addEventListener('click', e=>{ e.preventDefault(); showSection(a.getAttribute('data-target'), true); });
   });
-  // open the section from the URL hash, or the first one
+  if (pick) pick.addEventListener('change', () => showSection(pick.value, true));
+  // open the section from the URL hash; otherwise the first useful one for this role
   const initial = (location.hash || '').replace('#','');
-  const valid = Array.from(nav.querySelectorAll('a')).some(a=>a.getAttribute('data-target')===initial);
-  showSection(valid ? initial : 'sec-listen');
+  const valid = links.some(a=>a.getAttribute('data-target')===initial);
+  showSection(valid ? initial : (IS_ADMIN ? 'sec-listen' : 'sec-account'));
 })();
 
 const ALIAS_DEFAULTS = {
@@ -610,13 +711,12 @@ async function initSelfmon() {
 }
 
 async function loadAliases() {  try {
-    const r = await fetch('/api/search-aliases');
-    const d = await r.json();
+    const d = await MS.getJSON('/api/search-aliases');
     $('aliasSource').value = (d.source || []).join(', ');
     $('aliasHost').value = (d.host || []).join(', ');
     $('aliasDest').value = (d.destination || []).join(', ');
   } catch (e) {
-    $('aliasStatus').textContent = 'Settings could not be loaded. Refresh the page and try again.'; $('aliasStatus').className = 'status-line err';
+    MS.failed('aliasStatus', e, loadAliases, 'search settings');
   }
 }
 
@@ -640,8 +740,10 @@ $('aliasResetBtn').addEventListener('click', () => {
 });
 
 async function loadForwarders() {
-  const r = await fetch('/api/forwarders');
-  const rows = await r.json();
+  if (!IS_ADMIN) return;
+  let rows;
+  try { rows = await MS.getJSON('/api/forwarders'); }
+  catch (e) { MS.failed('fwTableWrap', e, loadForwarders, 'delivery destinations'); return; }
   const wrap = $('fwTableWrap');
   if (!rows.length) {
     wrap.innerHTML = '<div class="muted">No delivery destinations yet. Add a destination above to share incoming logs with another system.</div>';
@@ -702,7 +804,7 @@ $('addBtn').addEventListener('click', async () => {
 });
 
 async function toggleFw(id, enabled) {
-  await fetch('/api/forwarders/' + id, {
+  await act('/api/forwarders/' + id, {
     method: 'PUT', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ enabled: !!enabled }),
   });
@@ -711,7 +813,7 @@ async function toggleFw(id, enabled) {
 
 async function deleteFw(id, name) {
   if (!confirm(`Remove destination "${name}"? New logs will stop being sent there within about five seconds. Stored logs will remain here.`)) return;
-  await fetch('/api/forwarders/' + id, { method: 'DELETE' });
+  await act('/api/forwarders/' + id, { method: 'DELETE' });
   loadForwarders();
 }
 
@@ -728,8 +830,10 @@ async function testFw(id, btn) {
 
 // ---- Receive logs by API ----
 async function loadApiKeys() {
+  if (!IS_ADMIN) return;
   let rows = [];
-  try { rows = await (await fetch('/api/ingest/keys')).json(); } catch(e) { return; }
+  try { rows = await MS.getJSON('/api/ingest/keys'); }
+  catch (e) { MS.failed('apiKeysBody', e, loadApiKeys, 'API keys'); return; }
   const b = document.getElementById('apiKeysBody');
   if (!Array.isArray(rows) || !rows.length) {
     b.innerHTML = '<tr><td colspan="6" class="muted" style="padding:8px;">No keys yet.</td></tr>';
@@ -761,12 +865,12 @@ async function createApiKey() {
   loadApiKeys();
 }
 async function toggleApiKey(id) {
-  await fetch('/api/ingest/keys/'+id+'/toggle', {method:'POST'});
+  await act('/api/ingest/keys/'+id+'/toggle', {method:'POST'});
   loadApiKeys();
 }
 async function delApiKey(id, name) {
   if (!confirm('Delete API key "'+name+'"? Any product using it will stop being able to send logs.')) return;
-  await fetch('/api/ingest/keys/'+id, {method:'DELETE'});
+  await act('/api/ingest/keys/'+id, {method:'DELETE'});
   loadApiKeys();
 }
 document.getElementById('akCreateBtn').addEventListener('click', createApiKey);
@@ -868,14 +972,15 @@ if (supportBundleBtn) supportBundleBtn.addEventListener('click', generateSupport
 
 // ---- Receive device logs ----
 async function loadListenPorts() {
+  if (!IS_ADMIN) return;
   try {
-    const d = await (await fetch('/api/listen-ports')).json();
+    const d = await MS.getJSON('/api/listen-ports');
     if (d.ports) document.getElementById('listenPorts').value = d.ports.join(',');
     if (d.config_writable === false) {
       document.getElementById('portsStatus').textContent =
         'Settings cannot be saved from this console. Ask your administrator to check the application settings-file permissions.';
     }
-  } catch(e) {}
+  } catch(e) { MS.failed('portsStatus', e, loadListenPorts, 'the receiving ports'); }
 }
 document.getElementById('savePortsBtn').addEventListener('click', async () => {
   const val = document.getElementById('listenPorts').value.trim();
@@ -905,35 +1010,97 @@ loadListenPorts();
 
 // ---- Cloud log connections ----
 function pFmtTime(s){ if(!s) return '—'; try{ return MS.fmtTime(s); }catch(e){ return s; } }
+const POLLER_PRESETS = {
+  sophos: {scheme: 'oauth2_sophos', name: 'sophos-central', token: 'https://id.sophos.com/api/v2/oauth2/token',
+           whoami: 'https://api.central.sophos.com/whoami/v1', events: '/siem/v1/events', scope: 'token',
+           help: 'In Sophos Central open Global Settings → API Credentials Management and add a credential with the Service Principal Read-Only role. Paste its client ID and client secret below. The account and data region are discovered automatically.'},
+  oauth2: {scheme: 'oauth2_client_credentials',
+           help: 'Enter the token URL, client ID, client secret and events URL from your provider\'s API documentation.'},
+  apikey: {scheme: 'api_key',
+           help: 'Enter the API key, the header your provider expects it in, and the events URL from your provider\'s API documentation.'}
+};
+const TEST_STEPS = {
+  sign_in: ['Sign in', 'Check the sign-in URL, client ID and client secret.'],
+  account_discovery: ['Find the Sophos account', 'Check the account discovery URL, and that this is a Sophos Central API credential.'],
+  events: ['Read events', 'Check the events URL, and that the credential is allowed to read SIEM events.']
+};
+// Plain-language collection state; never call an unchecked connection "collecting".
+function pollerState(p){
+  if (!p.enabled) return ['muted', 'Off — not collecting'];
+  if (p.last_error) return ['err', 'Not receiving'];
+  if (!p.last_poll_at) return ['muted', 'Waiting for the first check'];
+  if (!p.pulled_count) return ['ok', 'Connected · no events yet'];
+  return ['ok', 'Receiving'];
+}
+function renderTest(box, p, d){
+  box.hidden = false;
+  box.className = 'conn-test ' + (d.ok ? 'ok' : 'fail');
+  const failed = d.steps.find(st => !st.ok);
+  const title = !d.ok ? `${esc(p.name)}: stopped at “${esc((TEST_STEPS[failed.step] || [failed.step])[0])}”`
+    : d.events ? `${esc(p.name)}: connection works — ${d.events} event${d.events === 1 ? '' : 's'} available from the last hour`
+    : `${esc(p.name)}: connection works — no events in the last hour`;
+  let html = `<h3>${title}</h3><ol>` + d.steps.map(st => {
+    const [label, hint] = TEST_STEPS[st.step] || [st.step, ''];
+    return `<li>${st.ok ? '✓' : '✗'} <strong>${esc(label)}</strong> — ${esc(st.detail || '')}${st.ok ? '' : `<br><span class="why">${esc(hint)}</span>`}</li>`;
+  }).join('') + '</ol>';
+  if (d.ok && !d.events) html += '<p class="why">A quiet account can have no recent events. Once collection is on, it starts from the configured earlier-log period.</p>';
+  if (d.sample) html += `<details><summary>Example event (shown only here, not stored)</summary><pre>${esc(d.sample)}${d.sample_truncated ? '\n…' : ''}</pre></details>`;
+  html += '<p class="why">This test does not store events or move the collection position.</p>';
+  if (d.ok && !p.enabled) html += `<button type="button" id="pTurnOn" data-id="${p.id}">Turn on collection</button>`;
+  else if (!d.ok) html += `<button type="button" class="secondary" id="pRetest" data-id="${p.id}">Test again</button>`;
+  box.innerHTML = html;
+  const on = $('pTurnOn'), again = $('pRetest');
+  if (on) on.onclick = async () => {
+    on.disabled = true;
+    if (await act('/api/pollers/' + p.id, {method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify({enabled: true})})) {
+      box.innerHTML = `<h3>${esc(p.name)}: collection is on</h3><p class="why">The first check runs within about ten seconds. The Collection column below changes to “Receiving” once events arrive.</p>`;
+      loadPollers();
+    } else on.disabled = false;
+  };
+  if (again) again.onclick = () => testPoller(p);
+}
+async function testPoller(p, btn){
+  const box = $('pTestResult');
+  box.hidden = false; box.className = 'conn-test';
+  box.innerHTML = `<h3>Testing ${esc(p.name)}…</h3><p class="why">Signing in and reading the last hour once. This can take up to a minute.</p>`;
+  if (btn) btn.disabled = true;
+  try { renderTest(box, p, await MS.getJSON('/api/pollers/' + p.id + '/test', {method: 'POST'})); }
+  catch (e) { MS.failed(box, e, () => testPoller(p), 'the connection test'); }
+  finally { if (btn) btn.disabled = false; box.scrollIntoView({block: 'nearest'}); }
+}
 async function loadPollers(){
-  let rows=[];
-  try{ rows = await (await fetch('/api/pollers')).json(); }catch(e){ return; }
+  if(!IS_ADMIN) return;
   const tb=document.querySelector('#pollersTable tbody');
   const none=document.getElementById('noPollers');
   if(!tb) return;
+  let rows=[];
+  try{ rows = await MS.getJSON('/api/pollers'); }
+  catch(e){ none.style.display='none'; document.getElementById('pollersTable').style.display=''; MS.failed(tb, e, loadPollers, 'cloud connections'); return; }
   tb.innerHTML='';
   if(!rows.length){ none.style.display='block'; document.getElementById('pollersTable').style.display='none'; return; }
   none.style.display='none'; document.getElementById('pollersTable').style.display='';
   rows.forEach(p=>{
-    const status = p.enabled ? (p.last_error ? `<span style="color:var(--err);">error</span>` : `<span style="color:var(--ok);">Collecting logs</span>`) : `<span class="muted">disabled</span>`;
+    const [tone, state] = pollerState(p);
+    const color = tone === 'err' ? 'var(--warn)' : tone === 'ok' ? 'var(--ok)' : 'var(--ink-soft)';
     const schemeLabel = {oauth2_client_credentials:'OAuth2', oauth2_sophos:'Sophos', api_key:'API key'}[p.auth_scheme] || p.auth_scheme;
     const tr=document.createElement('tr');
     tr.innerHTML=`<td class="mono-cell">${esc(p.name)}</td>`+
       `<td>${schemeLabel}</td>`+
       `<td class="mono-cell" style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(p.events_url)}">${esc(p.events_url)}</td>`+
       `<td>${p.interval_seconds}s</td>`+
-      `<td>${status}${p.last_error?`<br><span style="font-size:11px;color:var(--err);word-break:break-word;white-space:normal;">${esc(p.last_error)}</span>`:''}</td>`+
+      `<td><span style="color:${color};">${state}</span>${p.last_error?`<br><span style="font-size:11px;color:var(--warn);word-break:break-word;white-space:normal;">${esc(p.last_error)}</span>`:''}</td>`+
       `<td style="font-size:12px;">${pFmtTime(p.last_poll_at)}${p.pulled_count?`<br><span class="muted">${p.pulled_count} events collected</span>`:''}</td>`+
-      `<td><button data-id="${p.id}" data-en="${p.enabled}" class="pTgl" style="font-size:11px;padding:3px 8px;">${p.enabled?'Disable':'Enable'}</button> <button data-id="${p.id}" class="pDel" style="font-size:11px;padding:3px 8px;color:var(--err);">Delete</button></td>`;
+      `<td><div class="row-actions"><button data-id="${p.id}" class="pTest secondary small">Test</button> <button data-id="${p.id}" data-en="${p.enabled}" class="pTgl secondary small">${p.enabled?'Turn off':'Turn on'}</button> <button data-id="${p.id}" class="pDel danger small">Delete</button></div></td>`;
     tb.appendChild(tr);
   });
+  tb.querySelectorAll('.pTest').forEach(b=>b.addEventListener('click',()=>testPoller(rows.find(r=>String(r.id)===b.dataset.id), b)));
   tb.querySelectorAll('.pTgl').forEach(b=>b.addEventListener('click',async()=>{
-    await fetch('/api/pollers/'+b.dataset.id,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled: b.dataset.en=='1'?false:true})});
+    await act('/api/pollers/'+b.dataset.id,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled: b.dataset.en=='1'?false:true})});
     loadPollers();
   }));
   tb.querySelectorAll('.pDel').forEach(b=>b.addEventListener('click',async()=>{
-    if(!confirm('Delete this connector?')) return;
-    await fetch('/api/pollers/'+b.dataset.id,{method:'DELETE'}); loadPollers();
+    if(!confirm('Delete this connection? Logs already collected stay in mini-SIEM.')) return;
+    await act('/api/pollers/'+b.dataset.id,{method:'DELETE'}); loadPollers();
   }));
 }
 (function(){
@@ -955,16 +1122,26 @@ async function loadPollers(){
       note.innerHTML='The secret is encrypted at rest in mini-SIEM\'s database. This protects against someone reading the database file; it does not protect against full host compromise (the key lives on this server).';
     }
   }
+  const preset=$('pPreset');
+  if(preset) preset.addEventListener('change', () => {
+    const pr = POLLER_PRESETS[preset.value];
+    $('pPresetHelp').hidden = !pr; if (!pr) return;
+    $('pPresetHelp').textContent = pr.help;
+    schemeSel.value = pr.scheme; updScheme();
+    // Fill only blank fields so a preset never overwrites what was typed.
+    [['pName', pr.name], ['pTokenUrl', pr.token], ['pWhoamiUrl', pr.whoami], ['pEventsUrl', pr.events], ['pScope', pr.scope]]
+      .forEach(([id, v]) => { if (v && !$(id).value.trim()) $(id).value = v; });
+    $(pr.scheme === 'api_key' ? 'pApiKey' : 'pClientId').focus();
+  });
   if(schemeSel){ schemeSel.addEventListener('change',updScheme); updScheme(); }
   if(modeSel){ modeSel.addEventListener('change',updNote); updNote(); }
   const btn=document.getElementById('addPollerBtn');
   if(btn) btn.addEventListener('click', async ()=>{
-    const out=document.getElementById('pollerStatus'); out.textContent=''; btn.disabled=true;
+    const out=document.getElementById('pollerStatus'); out.textContent=''; out.className='status-line'; btn.disabled=true;
     const scheme=$('pScheme').value;
     // the secret field depends on scheme: OAuth uses client secret, api_key uses the key
     const secret = scheme==='api_key' ? $('pApiKey').value : $('pClientSecret').value;
-    try{
-      const r=await fetch('/api/pollers',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+    const body = {
         name:$('pName').value, auth_scheme:scheme,
         token_url:$('pTokenUrl').value, events_url:$('pEventsUrl').value,
         whoami_url:$('pWhoamiUrl').value, tenant_header:$('pTenantHeader').value,
@@ -974,11 +1151,15 @@ async function loadPollers(){
         interval_seconds:Number($('pInterval').value||60),
         initial_lookback_seconds:Number($('pLookback').value||86400),
         enabled: $('pEnabled').value==='1'
-      })});
-      const d=await r.json();
-      if(d.error){ out.textContent=d.error; }
-      else{ out.textContent='Connector added.'; ['pName','pTokenUrl','pEventsUrl','pWhoamiUrl','pTenantHeader','pApiKey','pApiKeyHeader','pClientId','pClientSecret','pScope'].forEach(id=>$(id).value=''); loadPollers(); }
-    }catch(e){ out.textContent='Failed to add connector.'; }
+    };
+    try{
+      const d = await MS.getJSON('/api/pollers',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+      out.textContent='Saved.'; out.className='status-line ok';
+      ['pName','pTokenUrl','pEventsUrl','pWhoamiUrl','pTenantHeader','pApiKey','pApiKeyHeader','pClientId','pClientSecret','pScope'].forEach(id=>$(id).value='');
+      $('pPreset').value=''; $('pPresetHelp').hidden=true;
+      await loadPollers();
+      if (d.id) await testPoller({id: d.id, name: body.name.trim(), enabled: body.enabled});
+    }catch(e){ out.textContent=e.message; out.className='status-line err'; }
     finally{ btn.disabled=false; }
   });
   loadPollers();
@@ -1016,8 +1197,11 @@ function profLoadIntoForm(p){
 }
 const MATCH_LABEL={key_present:'key present',source_ip:'source =',app_contains:'app contains'};
 async function loadProfiles(){
-  let rows=[]; try{ rows=await (await fetch('/api/profiles')).json(); }catch(e){ return; }
+  if(!IS_ADMIN) return;
   const tb=document.querySelector('#profTable tbody'); if(!tb) return;
+  let rows=[];
+  try{ rows=await MS.getJSON('/api/profiles'); }
+  catch(e){ $('noProfiles').style.display='none'; $('profTable').style.display=''; MS.failed(tb, e, loadProfiles, 'field mapping profiles'); return; }
   tb.innerHTML='';
   if(!rows.length){ $('noProfiles').style.display='block'; $('profTable').style.display='none'; return; }
   $('noProfiles').style.display='none'; $('profTable').style.display='';
@@ -1037,12 +1221,13 @@ async function loadProfiles(){
   }));
   tb.querySelectorAll('.pfDel').forEach(b=>b.addEventListener('click',async()=>{
     if(!confirm('Delete this profile?')) return;
-    await fetch('/api/profiles/'+b.dataset.id,{method:'DELETE'}); loadProfiles();
+    await act('/api/profiles/'+b.dataset.id,{method:'DELETE'}); loadProfiles();
   }));
 }
 async function loadUnidentified(){
   const box=$('unidBox'); if(!box) return;
-  let d; try{ d=await (await fetch('/api/unidentified-log')).json(); }catch(e){ box.textContent='—'; return; }
+  if(!IS_ADMIN) return;
+  let d; try{ d=await MS.getJSON('/api/unidentified-log'); }catch(e){ MS.failed(box, e, loadUnidentified, 'the latest unidentified log'); return; }
   if(!d.present){ box.innerHTML='<span class="muted">None — all recent JSON events matched a profile.</span>'; return; }
   const keys=(d.keys||[]).map(k=>`<span class="mono" style="background:var(--line);padding:1px 5px;border-radius:3px;margin:2px;display:inline-block;">${esc(k)}</span>`).join(' ');
   box.innerHTML=`<div style="margin-bottom:6px;"><strong>Source:</strong> <span class="mono">${esc(d.source||'')}</span> · <span style="color:var(--err);">${esc((d.reasons||[]).join(', '))}</span></div>`+
@@ -1088,23 +1273,27 @@ async function profSave(){
   loadProfiles(); loadUnidentified();
 })();
 loadForwarders();
-setInterval(loadForwarders, 5000);
+setInterval(() => { if (!document.hidden && document.querySelector('.panel[data-section="sec-forwarding"].shown')) MS.background(loadForwarders); }, 5000);
 
 // ---- Users & access ----
 async function loadAuthMethods() {
+  if (!IS_ADMIN) return;
   try {
-    const m = await (await fetch('/api/auth/methods')).json();
+    const m = await MS.getJSON('/api/auth/methods');
     const parts = [];
     parts.push('Local login: <strong>' + (m.local ? 'enabled' : 'disabled') + '</strong>');
     parts.push('OAuth (' + m.oauth.provider_name + '): <strong>' + (m.oauth.enabled ? (m.oauth.configured ? 'enabled' : 'enabled but not configured') : 'off') + '</strong>');
     parts.push('SAML: <strong>' + (m.saml.enabled ? (m.saml.configured ? 'enabled' : 'enabled but not configured') : 'off') + '</strong>');
     document.getElementById('authMethods').innerHTML =
       'Login methods — ' + parts.join(' &nbsp;·&nbsp; ') + '<br><span class="muted" style="font-size:11.5px;">' + m.note + '</span>';
-  } catch(e) {}
+  } catch(e) { MS.failed('authMethods', e, loadAuthMethods, 'sign-in methods'); }
 }
 async function loadUsers() {
-  const rows = await (await fetch('/api/users')).json();
+  if (!IS_ADMIN) return;
   const b = document.getElementById('usersBody');
+  let rows;
+  try { rows = await MS.getJSON('/api/users'); }
+  catch (e) { MS.failed(b, e, loadUsers, 'users'); return; }
   if (!rows.length) { b.innerHTML = '<tr><td colspan="5" class="muted" style="padding:10px;">No users.</td></tr>'; return; }
   const isAdmin = window._role === 'admin';
   b.innerHTML = rows.map(u => `
@@ -1151,35 +1340,17 @@ document.getElementById('pwBtn').addEventListener('click', async () => {
   else { st.textContent = 'Password updated.'; st.className = 'status-line ok';
     ['pwCur','pwNew','pwConf'].forEach(id=>document.getElementById(id).value=''); }
 });
-(async () => {
-  try {
-    const who = await (await fetch('/api/whoami')).json();
-    window._role = who.role || 'viewer';
-  } catch(e) { window._role = 'viewer'; }
-  if (window._role !== 'admin') {
-    // hide the add-user form and show a note; the server enforces this too
-    const addBtn = document.getElementById('addUserBtn');
-    if (addBtn) {
-      const form = addBtn.closest('.panel');
-      ['nuName','nuPass','nuRole','addUserBtn','supportBundleBtn','troubleCaptureBtn'].forEach(id => {
-        const el = document.getElementById(id); if (el) el.disabled = true;
-      });
-      const note = document.createElement('p');
-      note.className = 'sub';
-      note.style.color = 'var(--warn)';
-      note.textContent = 'Your role (' + window._role + ') is read-only for user management. Only administrators can add or remove users.';
-      addBtn.parentElement.appendChild(note);
-    }
-  }
-  loadAuthMethods(); loadUsers();})();
+window._role = document.body.dataset.role || 'viewer';
+loadAuthMethods(); loadUsers();
 
 // ---- Idle session timeout ----
 async function loadIdleTimeout() {
+  if (!IS_ADMIN) return;
   try {
-    const d = await (await fetch('/api/idle-timeout')).json();
+    const d = await MS.getJSON('/api/idle-timeout');
     const el = document.getElementById('idleTimeout');
     if (el && typeof d.minutes === 'number') el.value = d.minutes || 0;
-  } catch(e) {}
+  } catch(e) { MS.failed('idleStatus', e, loadIdleTimeout, 'the idle timeout'); }
 }
 (function(){
   const btn = document.getElementById('saveIdleBtn');
@@ -1202,7 +1373,10 @@ async function loadIdleTimeout() {
 })();
 // ---- Ticketing connection ----
 async function loadTicketCfg(){
-  const c = await (await fetch('/api/tickets/config')).json();
+  if (!IS_ADMIN) return;
+  let c;
+  try { c = await MS.getJSON('/api/tickets/config'); }
+  catch (e) { MS.failed('tkStatus', e, loadTicketCfg, 'the ticketing settings'); return; }
   document.getElementById('tkEnabled').value = c.enabled ? 'true' : 'false';
   document.getElementById('tkUrl').value = c.url || '';
   document.getElementById('tkSev').value = c.min_severity || 'warning';

@@ -46,7 +46,8 @@ def test_helper_uses_ports_from_db_config(tmp_path, monkeypatch):
 
 def test_setup_contains_troubleshoot_tab_and_no_custom_filter_box():
     text = (ROOT / "templates" / "setup.html").read_text()
-    assert 'data-target="sec-troubleshoot"' in text
+    # the grouped settings nav is generated from this list (data-target="sec-troubleshoot")
+    assert "('sec-troubleshoot', 'Check log delivery', True)" in text and 'data-target="{{ target }}"' in text
     assert 'id="troubleSourceIp"' in text
     assert 'id="troubleCaptureBtn"' in text
     assert "/api/troubleshoot/syslog-capture" in text

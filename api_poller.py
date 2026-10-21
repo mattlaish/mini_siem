@@ -298,3 +298,72 @@ class PollerManager:
             "UPDATE api_pollers SET last_poll_at=?, last_error=? WHERE id=?",
             (datetime.now(timezone.utc).isoformat(), msg[:500], rid))
         conn.commit(); conn.close()
+
+
+# Bound the sample returned to the browser; the test never stores events.
+_TEST_SAMPLE_CHARS = 4000
+
+
+class _TestManager:
+    """Just enough of PollerManager for a one-off _PollerThread dry run."""
+
+    def __init__(self, resolve_secret_fn):
+        self._resolve_secret = resolve_secret_fn
+
+    def resolve_secret(self, row):
+        return self._resolve_secret(row)
+
+
+def test_connection(row, resolve_secret_fn, lookback_seconds=3600):
+    """Run each connection step once and report where it stops.
+
+    A dry run: the saved cursor is ignored and never advanced, and returned
+    events are counted (one is sampled) but not ingested. Steps are reported
+    in order so an operator can see whether sign-in, account discovery or the
+    events request failed, with the provider's own error text."""
+    row = dict(row)
+    row["cursor"] = None
+    row["initial_lookback_seconds"] = lookback_seconds
+    probe = _PollerThread(row.get("id"), _TestManager(resolve_secret_fn))
+    scheme = probe._scheme(row)
+    steps = []
+
+    def step(name, fn):
+        try:
+            detail = fn()
+        except Exception as exc:  # noqa: BLE001 — every failure is reported
+            steps.append({"step": name, "ok": False, "detail": str(exc) or type(exc).__name__})
+            return False
+        steps.append({"step": name, "ok": True, "detail": detail})
+        return True
+
+    result = {"ok": False, "steps": steps, "events": 0, "sample": None,
+              "lookback_seconds": lookback_seconds}
+    if scheme == "api_key":
+        steps.append({"step": "sign_in", "ok": True,
+                      "detail": "API key is sent with each request; there is no separate sign-in step"})
+    elif not step("sign_in", lambda: "signed in" if probe._valid_token(row) else ""):
+        return result
+    token = probe._token
+    if scheme == "oauth2_sophos":
+        def discover():
+            probe._discover(row, token)
+            if not probe._whoami_id:
+                raise RuntimeError("[whoami] response had no account id")
+            return f"{probe._whoami_id_type or 'account'} found; data region {probe._data_region or 'not reported'}"
+        if not step("account_discovery", discover):
+            return result
+    fetched = {}
+
+    def events():
+        fetched["items"], _ = probe._poll_once(row)
+        return f"{len(fetched['items'])} event(s) in the last {lookback_seconds // 60} minutes"
+    if not step("events", events):
+        return result
+    items = fetched["items"]
+    result.update(ok=True, events=len(items), events_url=probe._resolve_events_url(row))
+    if items:
+        sample = json.dumps(items[0], ensure_ascii=False, indent=2, default=str)
+        result["sample"] = sample[:_TEST_SAMPLE_CHARS]
+        result["sample_truncated"] = len(sample) > _TEST_SAMPLE_CHARS
+    return result

@@ -30,4 +30,6 @@ def config_set():
     _svc.cfg_set(**updates); _svc.audit("ticket_config_changed",detail=", ".join("headers (updated)" if k=="ticket_headers" else k for k in updates)); return jsonify({"ok":True})
 @bp.post("/api/tickets/test")
 def test():
+    denied=_svc.require_admin()
+    if denied is not None:return denied
     ok,detail=workers.TicketWorker(_svc.get_conn,get_ticket_settings).send_test(); return jsonify({"ok":True,"detail":detail}) if ok else (jsonify({"ok":False,"error":detail}),502)

@@ -56,7 +56,7 @@
 
   <div class="section-title">Incident diagnostics</div>
   <div class="bar" style="margin-top:-4px;">
-    <button id="runDiagnosticsBtn">Run diagnostics</button>
+    {% if is_admin %}<button id="runDiagnosticsBtn">Run diagnostics</button>{% endif %}
     <span class="muted" id="diagnosticsUpdated">Read-only checks; no service restart, migration or repair action is performed.</span>
   </div>
   <div class="grid" id="diagnosticsGrid">
@@ -76,7 +76,7 @@
       <div class="sub" id="dbIntegrityDetail">Click check to verify the database structure.</div>
       <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;">
         <button id="dbCheckBtn" style="padding:6px 12px;border:none;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;background:var(--accent);color:#fff;">Check now</button>
-        <button id="dbBackupBtn" style="padding:6px 12px;border:1px solid var(--accent);border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;background:#fff;color:var(--accent);">Backup now</button>
+        {% if is_admin %}<button id="dbBackupBtn" style="padding:6px 12px;border:1px solid var(--accent);border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;background:#fff;color:var(--accent);">Backup now</button>{% endif %}
       </div>
       <div class="sub" id="dbBackupResult" style="margin-top:8px;"></div>
     </div>
@@ -92,7 +92,11 @@
 {% block scripts %}
 <script>
 const $ = id => document.getElementById(id);
-let auto = true;
+let auto = true, lastGood = '';
+// Administrator-only cards explain themselves instead of requesting (and being
+// refused, which is audited) every few seconds. The server still checks.
+const IS_ADMIN = document.body.dataset.role === 'admin';
+const adminNote = text => `<div class="card"><div class="note">${text}</div></div>`;
 
 function bytes(n){ if(n==null) return '—'; const u=['B','KB','MB','GB','TB']; let i=0; n=+n; while(n>=1024&&i<u.length-1){n/=1024;i++;} return n.toFixed(i?1:0)+' '+u[i]; }
 function bps(n){ return n==null?'—':bytes(n)+'/s'; }
@@ -116,8 +120,15 @@ function kvCard(title, rows){
 
 async function load(){
   let d;
-  try { d = await (await fetch('/api/health')).json(); }
-  catch(e){ return; }
+  try { d = await MS.getJSON('/api/health'); }
+  catch(e){
+    // Never leave the previous numbers looking current after a failed refresh.
+    const now = MS.fmtTime(new Date().toISOString()).slice(11);
+    $('updated').textContent = `Refresh failed at ${now} — ${e.message}` + (lastGood ? ` Showing data from ${lastGood}.` : '');
+    $('updated').classList.add('stale');
+    if (!lastGood) MS.failed('sysGrid', e, load, 'system health');
+    return;
+  }
 
   // ---- system ----
   const sys = [];
@@ -195,7 +206,9 @@ async function load(){
     ]) +
     `<div class="card"><h3>Service details</h3><div class="sub">${esc(r.detail||'No service warning reported.')}</div><div class="note" style="margin-top:8px;">The log collection service regularly reports its status. An overdue update means its current health cannot be confirmed. Ask your administrator to check the service; this page cannot restart it.</div></div>`;
 
-  $('updated').textContent = 'Updated ' + MS.fmtTime(new Date().toISOString()).slice(11);
+  lastGood = MS.fmtTime(new Date().toISOString()).slice(11);
+  $('updated').textContent = 'Updated ' + lastGood;
+  $('updated').classList.remove('stale');
 }
 
 $('refreshNow').addEventListener('click', () => { load(); loadPostgresSecurity(); loadArchiveStatus(); loadDiagnostics(false); });$('autoToggle').addEventListener('click', () => {
@@ -210,6 +223,7 @@ function fmtBytes(n){ if(n==null) return '—'; const u=['B','KB','MB','GB','TB'
 
 async function loadPostgresSecurity(){
   const grid = $('postgresSecurityGrid');
+  if (!IS_ADMIN) { grid.innerHTML = adminNote('Administrator access is required for database privilege details.'); return; }
   try {
     const resp = await fetch('/api/postgres/security-status');
     if(resp.status===403){ grid.innerHTML='<div class="card"><div class="note">Administrator access is required for database privilege details.</div></div>'; return; }
@@ -248,6 +262,7 @@ async function loadPostgresSecurity(){
 
 async function loadArchiveStatus(){
   const grid=$('archiveGrid');
+  if (!IS_ADMIN) { grid.innerHTML = adminNote('Administrator access is required for archive/maintenance details.'); return; }
   try {
     const resp=await fetch('/api/archive/status');
     if(resp.status===403){ grid.innerHTML='<div class="card"><div class="note">Administrator access is required for archive/maintenance details.</div></div>'; return; }
@@ -286,6 +301,10 @@ async function loadArchiveStatus(){
 
 async function loadDiagnostics(explicitRun){
   const grid=$('diagnosticsGrid'), dep=$('dependencyGrid');
+  if (!IS_ADMIN) {
+    grid.innerHTML = adminNote('Administrator access is required for consolidated incident diagnostics.');
+    dep.innerHTML = adminNote('Dependency details are administrator-only.'); return;
+  }
   try {
     const resp=await fetch(explicitRun?'/api/diagnostics/run':'/api/diagnostics/status', {method:explicitRun?'POST':'GET'});
     if(resp.status===403){
@@ -334,7 +353,7 @@ document.getElementById('dbCheckBtn').addEventListener('click', async () => {
   const d = await (await fetch('/api/db/integrity?full=1')).json();
   paintIntegrity(d); loadDbFile();
 });
-document.getElementById('dbBackupBtn').addEventListener('click', async () => {
+if (document.getElementById('dbBackupBtn')) document.getElementById('dbBackupBtn').addEventListener('click', async () => {
   const out = document.getElementById('dbBackupResult');
   out.textContent = 'Backing up…';
   const d = await (await fetch('/api/db/backup', {method:'POST'})).json();
@@ -349,12 +368,12 @@ loadDbFile();
 loadPostgresSecurity();
 loadArchiveStatus();
 loadDiagnostics(false);
-setInterval(loadDbFile, 30000);
-setInterval(loadPostgresSecurity, 15000);
-setInterval(loadArchiveStatus, 15000);
-setInterval(()=>{ if(auto) loadDiagnostics(false); }, 15000);
+setInterval(()=>MS.background(loadDbFile), 30000);
+setInterval(()=>MS.background(loadPostgresSecurity), 15000);
+setInterval(()=>MS.background(loadArchiveStatus), 15000);
+setInterval(()=>{ if(auto) MS.background(()=>loadDiagnostics(false)); }, 15000);
 
 load();
-setInterval(()=>{ if(auto) load(); }, 4000);
+setInterval(()=>{ if(auto && !document.hidden) MS.background(load); }, 4000);
 </script>
 {% endblock %}

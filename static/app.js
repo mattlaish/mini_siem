@@ -204,11 +204,103 @@
     'Unsupported condition field/operator (use a listed field or field.<name>)': 'Choose a supported field and matching method. For a source field, use field. followed by its name.',
     'weekdays must contain Monday=0 through Sunday=6': 'Choose valid days of the week.',
     'telemetry_enabled must be boolean': 'Choose whether to warn when expected logs stop arriving.',
-    'Start and end must differ (end is exclusive)': 'Start and end times must be different. Activity at the end time is outside the approved window.'
+    'Start and end must differ (end is exclusive)': 'Start and end times must be different. Activity at the end time is outside the approved window.',
+    'name and events_url are required': 'Enter a name and the events URL.',
+    'OAuth2 schemes require a token URL and client ID': 'Enter the sign-in URL and the client ID.',
+    'The Sophos scheme requires a Whoami URL': 'Enter the account discovery URL (Sophos Whoami).',
+    'interval_seconds must be at least 15': 'Check for new logs every 15 seconds or more.',
+    'administrator role required for this action': 'Only administrators can do this. Ask an administrator.',
+    'analyst or administrator role required for this action': 'Read-only viewers cannot change this. Ask an analyst or administrator.'
   };
   MS.settingError = function (value) {
     var key = String(value || 'The request could not be completed. Try again.');
     return Object.prototype.hasOwnProperty.call(SETTING_ERRORS, key) ? SETTING_ERRORS[key] : key;
+  };
+  // ---- background requests -------------------------------------------------
+  // Timed refreshes run inside MS.background(fn): requests started while fn
+  // runs synchronously carry X-Background-Poll, so an open page never keeps an
+  // idle session alive. User actions are unaffected.
+  var bgDepth = 0, pageFetch = window.fetch && window.fetch.bind(window);
+  if (pageFetch) window.fetch = function (input, init) {
+    if (bgDepth > 0) {
+      init = Object.assign({}, init || {});
+      var headers = new Headers(init.headers || (typeof input !== 'string' && input.headers) || undefined);
+      headers.set('X-Background-Poll', '1');
+      init.headers = headers;
+    }
+    return pageFetch(input, init);
+  };
+  MS.background = function (fn) { bgDepth++; try { return fn(); } finally { bgDepth--; } };
+
+  // ---- uniform request recovery --------------------------------------------
+  // MS.getJSON throws an Error with operator wording (.message) and the
+  // technical reason (.detail). MS.failed paints one consistent "could not
+  // load · Retry · technical detail" state, so a failed request never looks
+  // like an empty or healthy result.
+  function requestMessage(status, d) {
+    var reason = d && d.error ? String(d.error) : '';
+    if (status === 401) return 'Your session has ended. Sign in again to continue.';
+    if (status === 403 && /csrf|origin/i.test(reason)) return 'This page is out of date. Reload it and try again.';
+    if (status === 403) return Object.prototype.hasOwnProperty.call(SETTING_ERRORS, reason) ? SETTING_ERRORS[reason] : 'Your role does not allow this. Ask an administrator.';
+    if (status === 404) return reason && reason !== 'not found' ? MS.settingError(reason) : 'This item no longer exists. Refresh the page.';
+    if (status === 429) return 'Too many requests. Wait a moment and try again.';
+    if (status >= 500) return 'The server could not complete the request. Try again; if it keeps failing, check System Health.';
+    if (reason) return MS.settingError(reason);
+    return status >= 200 && status < 300 ? 'The server sent an unexpected response.' : 'The request could not be completed. Try again.';
+  }
+  MS.getJSON = async function (url, opts) {
+    var r, text = '', d = null;
+    try { r = await fetch(url, opts); }
+    catch (e) {
+      var offline = new Error('mini-SIEM could not be reached. Check your connection and try again.');
+      offline.detail = String((e && e.message) || e); offline.status = 0; throw offline;
+    }
+    try { text = await r.text(); d = text ? JSON.parse(text) : null; } catch (e) { d = null; }
+    if (r.ok && d !== null && !(d && typeof d === 'object' && !Array.isArray(d) && d.error)) return d;
+    var err = new Error(requestMessage(r.status, d));
+    err.status = r.status;
+    err.detail = 'HTTP ' + r.status + ' ' + url.split('?')[0] + (d && d.error ? ' · ' + d.error : text ? ' · ' + text.slice(0, 300) : '');
+    throw err;
+  };
+  function stateTarget(target) {
+    var el = typeof target === 'string' ? document.getElementById(target) : target;
+    if (!el) return null;
+    if (el.tagName === 'TBODY') {   // keep tables valid: one full-width row
+      var head = el.closest('table') && el.closest('table').querySelector('thead tr');
+      var td = document.createElement('td'); td.colSpan = head ? head.children.length : 1;
+      var tr = document.createElement('tr'); tr.appendChild(td); el.replaceChildren(tr);
+      return td;
+    }
+    el.replaceChildren();
+    return el;
+  }
+  MS.loading = function (target, what) {
+    var el = stateTarget(target); if (!el) return;
+    var s = document.createElement('span'); s.className = 'muted load-state';
+    s.textContent = what ? 'Loading ' + what + '…' : 'Loading…';
+    el.appendChild(s);
+  };
+  // MS.failed(target, error, retryFn, 'cloud connections')
+  MS.failed = function (target, err, retry, what) {
+    var el = stateTarget(target); if (!el) return;
+    var box = document.createElement('div'); box.className = 'load-failed'; box.setAttribute('role', 'alert');
+    var msg = document.createElement('span');
+    msg.textContent = (what ? 'Could not load ' + what + '. ' : '') + ((err && err.message) || 'The request failed.');
+    box.appendChild(msg);
+    if (err && err.status === 401) {
+      var a = document.createElement('a'); a.href = '/login?next=' + encodeURIComponent(location.pathname); a.textContent = 'Sign in';
+      box.appendChild(a);
+    } else if (retry) {
+      var b = document.createElement('button'); b.type = 'button'; b.className = 'load-retry'; b.textContent = 'Retry';
+      b.onclick = function () { MS.loading(target, what); retry(); };
+      box.appendChild(b);
+    }
+    if (err && err.detail) {
+      var det = document.createElement('details'), sum = document.createElement('summary'), pre = document.createElement('code');
+      sum.textContent = 'Technical detail'; pre.textContent = err.detail;
+      det.appendChild(sum); det.appendChild(pre); box.appendChild(det);
+    }
+    el.appendChild(box);
   };
   MS.ingest = null;
   async function pollIngest() {

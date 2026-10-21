@@ -74,12 +74,13 @@
     <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;">
       <div><label style="font-size:12px;font-weight:600;display:block;margin-bottom:4px;">Window</label>
         <select id="repDays"><option value="1">Last 24 hours</option><option value="7" selected>Last 7 days</option><option value="30">Last 30 days</option><option value="90">Last 90 days</option></select></div>
-      <button id="runReportBtn">Run report now</button>
+      <button id="runReportBtn"{% if not can_triage %} disabled title="Analysts and administrators run reports"{% endif %}>Run report now</button>
       <div><label style="font-size:12px;font-weight:600;display:block;margin-bottom:4px;">Schedule</label>
-        <select id="repSched"><option value="off">Off</option><option value="weekly">Weekly (7-day window)</option><option value="monthly">Monthly (30-day window)</option></select></div>
-      <button class="secondary" id="saveSchedBtn">Save schedule</button>
+        <select id="repSched"{% if not is_admin %} disabled title="Administrators set the report schedule"{% endif %}><option value="off">Off</option><option value="weekly">Weekly (7-day window)</option><option value="monthly">Monthly (30-day window)</option></select></div>
+      {% if is_admin %}<button class="secondary" id="saveSchedBtn">Save schedule</button>{% endif %}
       <span class="muted" id="repStatus"></span>
     </div>
+    {% if not is_admin %}<p class="muted" style="font-size:11.5px;margin:6px 0 0;">{% if can_triage %}Administrators set the report schedule.{% else %}Analysts and administrators run reports; administrators set the schedule. You can open saved reports below.{% endif %}</p>{% endif %}
     <div class="table-scroll" style="max-height:220px;margin-top:14px;">
       <table>
         <thead><tr><th>#</th><th>Created</th><th>Trigger</th><th>Window</th><th>Summary</th><th></th></tr></thead>
@@ -143,8 +144,9 @@
 const $ = id => document.getElementById(id);
 
 async function loadPlaybooks() {
-  const r = await fetch('/api/playbooks');
-  const pbs = await r.json();
+  let pbs;
+  try { pbs = await MS.getJSON('/api/playbooks'); }
+  catch (e) { MS.failed('pbGrid', e, loadPlaybooks, 'investigation playbooks'); return; }
   $('pbGrid').innerHTML = pbs.map(pb => `
     <div class="pb-card">
       <div class="pb-head">
@@ -338,8 +340,10 @@ loadPlaybooks();
 
 // ---- Playbook reports ----
 async function loadReports(){
-  const rows = await (await fetch('/api/reports')).json();
   const b = document.getElementById('reportsBody');
+  let rows;
+  try { rows = await MS.getJSON('/api/reports'); }
+  catch (e) { MS.failed(b, e, loadReports, 'reports'); return; }
   if(!rows.length){ b.innerHTML='<tr><td colspan="6" class="muted">No reports yet — run one above.</td></tr>'; return; }
   b.innerHTML = rows.map(r => `
     <tr>
@@ -377,21 +381,22 @@ async function delReport(id){
 document.getElementById('runReportBtn').addEventListener('click', async () => {
   const st = document.getElementById('repStatus');
   st.textContent = 'Running all playbooks…';
-  const r = await fetch('/api/reports/run', {method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({window_days: parseInt(document.getElementById('repDays').value)})});
-  const d = await r.json();
-  st.textContent = d.summary || d.error || 'done';
+  let d;
+  try { d = await MS.getJSON('/api/reports/run', {method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({window_days: parseInt(document.getElementById('repDays').value)})}); }
+  catch (e) { st.textContent = e.message; return; }
+  st.textContent = d.summary || 'done';
   loadReports(); if(d.id) viewReport(d.id);
 });
-document.getElementById('saveSchedBtn').addEventListener('click', async () => {
+if (document.getElementById('saveSchedBtn')) document.getElementById('saveSchedBtn').addEventListener('click', async () => {
   const r = await fetch('/api/reports/schedule', {method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({schedule: document.getElementById('repSched').value})});
   const d = await r.json();
   document.getElementById('repStatus').textContent = d.error || ('Schedule: '+d.schedule);
 });
 (async () => {
-  const d = await (await fetch('/api/reports/schedule')).json();
-  document.getElementById('repSched').value = d.schedule || 'off';
+  try { document.getElementById('repSched').value = (await MS.getJSON('/api/reports/schedule')).schedule || 'off'; }
+  catch (e) { document.getElementById('repStatus').textContent = 'Could not load the report schedule: ' + e.message; }
 })();
 loadReports();
 </script>

@@ -45,8 +45,8 @@
       </label>
       <span id="aiQueueBar" style="font-size:12px;font-weight:400;color:var(--ink-soft);display:none;">
         <span id="aiQueueText"></span>
-        <button id="aiRetryBtn" style="margin-left:8px;padding:3px 10px;font-size:11px;border:1px solid var(--accent);background:#fff;color:var(--accent);border-radius:6px;cursor:pointer;font-weight:600;">Retry all</button>
-        <button id="aiClearBtn" style="margin-left:4px;padding:3px 10px;font-size:11px;border:1px solid var(--warn);background:#fff;color:var(--warn);border-radius:6px;cursor:pointer;font-weight:600;">Clear queue</button>
+        {% if is_admin %}<button id="aiRetryBtn" style="margin-left:8px;padding:3px 10px;font-size:11px;border:1px solid var(--accent);background:#fff;color:var(--accent);border-radius:6px;cursor:pointer;font-weight:600;">Retry all</button>
+        <button id="aiClearBtn" style="margin-left:4px;padding:3px 10px;font-size:11px;border:1px solid var(--warn);background:#fff;color:var(--warn);border-radius:6px;cursor:pointer;font-weight:600;">Clear queue</button>{% endif %}
       </span>
     </h2>
     <div class="table-scroll">
@@ -118,10 +118,11 @@
     <details style="margin-top:12px;">
       <summary style="font-size:12.5px;font-weight:600;cursor:pointer;">Searchable fields and display columns</summary>
       <p class="muted" style="font-size:12px;margin:8px 0;">Click any log row above to extract fields from its message. <span class="mono">key=value</span> and <span class="mono">key: value</span> pairs are extracted automatically. Add custom regex patterns below (one per line, Python syntax) using <strong>named groups</strong> to pull fields from messages that don't use key=value, e.g. <span class="mono">(?P&lt;user&gt;\S+) logged in from (?P&lt;ip&gt;[\d.]+)</span></p>
-      <textarea id="normPatterns" style="width:100%;min-height:70px;font-family:var(--mono);font-size:12px;border:1px solid var(--line);border-radius:6px;padding:8px;" placeholder="Failed password for (?P&lt;user&gt;\S+) from (?P&lt;src&gt;[\d.]+)"></textarea>
+      <textarea id="normPatterns"{% if not is_admin %} readonly{% endif %} style="width:100%;min-height:70px;font-family:var(--mono);font-size:12px;border:1px solid var(--line);border-radius:6px;padding:8px;" placeholder="Failed password for (?P&lt;user&gt;\S+) from (?P&lt;src&gt;[\d.]+)"></textarea>
       <p class="muted" style="font-size:12px;margin:12px 0 6px;"><strong>Extracted columns:</strong> field names (comma-separated) to show as sortable, filterable columns to the right of Message — from key=value pairs or your patterns' named groups, e.g. <span class="mono">user, action, srcport</span></p>
-      <input type="text" id="normColumns" class="mono" style="width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:6px;font-size:13px;" placeholder="user, action">
-      <div style="margin-top:8px;"><button id="savePatternsBtn">Save patterns &amp; columns</button> <button id="reindexBtn" style="background:#fff;color:var(--accent);border:1px solid var(--accent);">Update fields in earlier logs</button><span class="muted" id="patternsStatus" style="margin-left:10px;"></span></div>
+      <input type="text" id="normColumns"{% if not can_triage %} readonly{% endif %} class="mono" style="width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:6px;font-size:13px;" placeholder="user, action">
+      <div style="margin-top:8px;">{% if is_admin %}<button id="savePatternsBtn">Save patterns &amp; columns</button> <button id="reindexBtn" style="background:#fff;color:var(--accent);border:1px solid var(--accent);">Update fields in earlier logs</button>{% elif can_triage %}<button id="savePatternsBtn">Save columns</button>{% endif %}<span class="muted" id="patternsStatus" style="margin-left:10px;"></span></div>
+      {% if not is_admin %}<p class="muted" style="font-size:11.5px;margin:6px 0 0;">Administrators manage extraction patterns. {% if can_triage %}You can change the shared display columns.{% else %}Columns you add from a log row are shown for you until you reload.{% endif %}</p>{% endif %}
       <p class="muted" style="font-size:11.5px;margin:6px 0 0;">New logs use your saved field settings automatically. After changing a pattern, choose <strong>Update fields in earlier logs</strong> to make those fields searchable in older logs too. Original events are kept unchanged.</p>
     </details>
   </div>
@@ -216,12 +217,12 @@ async function loadAiQueue() {
     } else { bar.style.display = 'none'; }
   } catch(e){}
 }
-document.getElementById('aiRetryBtn').addEventListener('click', async () => {
+if (document.getElementById('aiRetryBtn')) document.getElementById('aiRetryBtn').addEventListener('click', async () => {
   const d = await (await fetch('/api/ai/queue/retry', {method:'POST'})).json();
   document.getElementById('aiQueueText').textContent = `Reset ${d.reset} alerts for re-triage…`;
   setTimeout(() => { loadAiQueue(); loadAlerts(); }, 1200);
 });
-document.getElementById('aiClearBtn').addEventListener('click', async () => {
+if (document.getElementById('aiClearBtn')) document.getElementById('aiClearBtn').addEventListener('click', async () => {
   if (!confirm('Mark all queued/failed alerts as skipped? They stay in the list but will not be sent to the AI.')) return;
   const d = await (await fetch('/api/ai/queue/clear', {method:'POST'})).json();
   loadAiQueue(); loadAlerts();
@@ -319,12 +320,19 @@ function _alertIds(data) {
   if (data && data.grouped) return (data.groups || []).flatMap(g => g.members.map(m => m.id));
   return (Array.isArray(data) ? data : []).map(a => a.id);
 }
-let _alertsMaxId = 0;
+let _alertsMaxId = 0, _alertsLoaded = false;
 async function loadAlerts(opts) {
   const background = !!(opts && opts.background === true);
   const grouped = document.getElementById('groupToggle').checked;
-  const r = await fetch('/api/alerts?limit=200' + (grouped ? '&group=1' : ''));
-  const data = await r.json();
+  let data;
+  try { data = await MS.getJSON('/api/alerts?limit=200' + (grouped ? '&group=1' : '')); }
+  catch (e) {
+    // A failed timed refresh keeps the rows already shown (refreshAll flags them
+    // as stale); a failed first or manual load says so instead of looking empty.
+    if (!background || !_alertsLoaded) MS.failed('alertsBody', e, () => loadAlerts(), 'alerts');
+    return false;
+  }
+  _alertsLoaded = true;
   const ids = _alertIds(data);
   const pill = document.getElementById('alertsNewPill');
   if (background && alertsHeld()) {
@@ -597,13 +605,20 @@ function addFieldChip(raw) {
   return true;
 }
 
+// Columns are shared by everyone; read-only viewers keep their changes for this page only.
+let xColsLocalNoted = false;
 async function saveXColumns() {
+  const box = document.getElementById('normColumns');
+  if (box) box.value = xCols.join(', ');
+  if (!['admin', 'analyst'].includes(document.body.dataset.role)) {
+    if (!xColsLocalNoted) MS.toast('Column shown for you until you reload. Ask an analyst or administrator to add it for everyone.', 'info');
+    xColsLocalNoted = true;
+    return;
+  }
   try {
-    await fetch('/api/norm-columns', {method:'POST', headers:{'Content-Type':'application/json'},
+    await MS.getJSON('/api/norm-columns', {method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({columns: xCols})});
-    const box = document.getElementById('normColumns');
-    if (box) box.value = xCols.join(', ');
-  } catch(e) {}
+  } catch(e) { MS.toast('Column change was not saved for everyone: ' + e.message, 'error'); }
 }
 
 async function addXColumn(name, value) {
@@ -795,13 +810,19 @@ function _restoreFromUrl() {
   const sort = u.get('sort');
   if (sort) { if (sort.startsWith('x_')) { xSort = sort; xDir = u.get('dir') || 'asc'; } else { baseSort = sort; baseDir = u.get('dir') || 'desc'; } }
 }
+let _logsLoaded = false;
 async function loadLogs(opts) {
   const background = !!(opts && opts.background === true);
   const params = currentFilterParams();
   params.set('limit', 200);
   const held = background ? logsHeldReason() : '';
-  const r = await fetch('/api/logs?' + params.toString());
-  const rows = await r.json();
+  let rows;
+  try { rows = await MS.getJSON('/api/logs?' + params.toString()); }
+  catch (e) {
+    if (!background || !_logsLoaded) MS.failed('logsBody', e, () => loadLogs(), 'events');
+    return false;
+  }
+  _logsLoaded = true;
   const pill = document.getElementById('logsNewPill');
   const note = document.getElementById('logsHeldNote');
   if (held) {
@@ -938,7 +959,7 @@ loadFacets();
     if (xCols.length) loadLogs();
   } catch(e){}
 })();
-document.getElementById('reindexBtn').addEventListener('click', async () => {
+if (document.getElementById('reindexBtn')) document.getElementById('reindexBtn').addEventListener('click', async () => {
   const st = document.getElementById('patternsStatus');
   const r = await fetch('/api/norm-reindex', {method:'POST'});
   const d = await r.json();
@@ -956,18 +977,21 @@ document.getElementById('reindexBtn').addEventListener('click', async () => {
     }
   }, 800);
 });
-document.getElementById('savePatternsBtn').addEventListener('click', async () => {
+if (document.getElementById('savePatternsBtn')) document.getElementById('savePatternsBtn').addEventListener('click', async () => {
   const pats = document.getElementById('normPatterns').value.split('\n').map(p=>p.trim()).filter(Boolean);
   const st = document.getElementById('patternsStatus');
-  const r = await fetch('/api/norm-patterns', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({patterns:pats})});
-  const d = await r.json();
-  if (d.error) { st.textContent = d.error; st.style.color = 'var(--warn)'; return; }
+  let d = {count: 0};
+  if (document.body.dataset.role === 'admin') {   // patterns are admin-only; columns are shared triage settings
+    const r = await fetch('/api/norm-patterns', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({patterns:pats})});
+    d = await r.json();
+    if (d.error) { st.textContent = d.error; st.style.color = 'var(--warn)'; return; }
+  }
   const r2 = await fetch('/api/norm-columns', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({columns: document.getElementById('normColumns').value})});
   const d2 = await r2.json();
   if (d2.error) { st.textContent = d2.error; st.style.color = 'var(--warn)'; return; }
   xCols = d2.columns || [];
   xSort = ''; renderXColumns();
-  st.textContent = `Saved ${d.count} pattern(s), ${xCols.length} column(s).`;
+  st.textContent = document.body.dataset.role === 'admin' ? `Saved ${d.count} pattern(s), ${xCols.length} column(s).` : `Saved ${xCols.length} column(s).`;
   st.style.color = 'var(--ok)';
   loadLogs();
 });
@@ -986,7 +1010,7 @@ window.fetch = function(url, opts) {
   return _origFetch(url, opts);
 };
 
-let _refreshBusy = false;
+let _refreshBusy = false, _lastGoodRefresh = '';
 function refreshAll(background) {
   // Never stack polls: a slow server would otherwise queue overlapping refreshes.
   if (background && _refreshBusy) return;
@@ -996,7 +1020,15 @@ function refreshAll(background) {
   try {
     pending = Promise.allSettled([loadStats(), loadAlerts({background: !!background}),
                                   loadLogs({background: !!background}), loadAiQueue()]);
-    document.getElementById('lastUpdated').textContent = 'Last updated: ' + MS.fmtTime(new Date().toISOString()).slice(11);
+    // Only a refresh that actually loaded counts as "updated"; otherwise say
+    // the data on screen is from the last successful refresh.
+    pending.then(res => {
+      const el = document.getElementById('lastUpdated');
+      const failed = res.some(x => x.status === 'rejected' || x.value === false);
+      const now = MS.fmtTime(new Date().toISOString()).slice(11);
+      if (!failed) { _lastGoodRefresh = now; el.textContent = 'Last updated: ' + now; el.classList.remove('stale'); }
+      else { el.textContent = `Refresh failed at ${now}` + (_lastGoodRefresh ? ` — showing data from ${_lastGoodRefresh}` : '') + '. Retrying automatically.'; el.classList.add('stale'); }
+    });
   } finally {
     // reset after the synchronous dispatch; the fetches captured the flag
     setTimeout(() => { _bgPoll = false; }, 0);

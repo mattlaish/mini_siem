@@ -4,6 +4,50 @@
   let config, editingRule, editingObject, dirty=false;
   const csv=s=>s.split(',').map(v=>v.trim()).filter(Boolean);
   const DAYS=['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'];
+  // Field picker: every field a custom condition accepts, with what it holds.
+  const FIELD_HELP={
+    'process.name':'Program file name, for example cmd.exe (Windows activity)',
+    'process.path':'Full path of the program started (Windows activity)',
+    'process.command_line':'Full command line of the program started (Windows activity)',
+    'process.parent.name':'Program that started it, for example w3wp.exe (Windows activity)',
+    'process.parent.path':'Full path of the program that started it (Windows activity)',
+    'user.name':'Account that ran it (Windows activity)',
+    'user.creator.sid':'Security ID of the account that started the program (Windows activity)',
+    'user.target.sid':'Security ID of the account the program runs as (Windows activity)',
+    'script.text':'PowerShell script text, from event 4104 (Windows activity)',
+    'host.name':'Name of the reporting Windows host (Windows activity)',
+    'event.id':'Windows event ID: 4688, Sysmon 1 or 4104 (Windows activity)',
+    'event.kind':'process_creation or script_execution (Windows activity)',
+    'event.provider':'Event provider, for example Microsoft-Windows-Security-Auditing (Windows activity)',
+    'event.channel':'Windows log channel, for example Security (Windows activity)',
+    'message':'Original log message text (all log sources)',
+    'source.ip':'Address the log was received from (all log sources)',
+    'event.severity':'Log severity, for example warning (all log sources)',
+    'app.name':'Application tag in the log, for example sshd (all log sources)',
+    'log.format':'How the log was parsed, for example syslog or json (all log sources)'
+  };
+  const EXTRACTED=/^field\.[A-Za-z0-9_.@-]{1,64}$/;
+  const LOCAL_TZ=(()=>{try{return Intl.DateTimeFormat().resolvedOptions().timeZone||'UTC';}catch{return 'UTC';}})();
+  const TIME_ZONES=(()=>{try{return new Set(['UTC',...Intl.supportedValuesOf('timeZone')]);}catch{return new Set();}})();
+  const ROLE_HELP={web_server:'Web server (Java or Apache): the web-server rule watches java.exe and httpd.exe only on hosts with this role'};
+  function fillLists(extracted=[]){
+    const fields=$('conditionFieldList');
+    if(fields){fields.replaceChildren();Object.entries(FIELD_HELP).concat(extracted.map(f=>[f.name,`Found in recent logs (${f.count.toLocaleString()} values)`])).forEach(([v,l])=>{const o=document.createElement('option');o.value=v;o.label=l;fields.append(o);});}
+    const zones=$('timeZoneList');
+    if(zones&&!zones.children.length)TIME_ZONES.forEach(z=>{const o=document.createElement('option');o.value=z;zones.append(o);});
+  }
+  function fieldHint(el,help,extracted){
+    const v=el.value.trim(),known=FIELD_HELP[v],ok=known||EXTRACTED.test(v);
+    help.textContent=known||(extracted.has(v)?'Field found in recent logs':ok?'Source-specific field; check it appears in your logs':'Choose a field from the list, or type field. followed by a source field name');
+    help.classList.toggle('warn',!ok);el.setCustomValidity(ok?'':'Unsupported field');
+  }
+  function zoneHint(el,help){
+    const v=el.value.trim(),ok=!TIME_ZONES.size||TIME_ZONES.has(v);
+    help.textContent=ok?`Your browser's time zone is ${LOCAL_TZ}.`:'Not a time zone this browser recognises. Check the spelling, for example Asia/Taipei; the server checks it when you save.';
+    help.classList.toggle('warn',!ok);
+  }
+  const knownRoles=()=>[...new Set(['web_server',...config.hosts.flatMap(h=>h.roles||[]),...config.rules.map(r=>r.required_role).filter(Boolean)])];
+  let extractedFields=new Set();
   const ruleName=rule=>rule.name===rule.id.split('_').map(word=>word.charAt(0).toUpperCase()+word.slice(1)).join(' ')?MS.label(rule.id):rule.name;
   function choices(parent,key,label,selected,options){
     const group=document.createElement('fieldset'),legend=document.createElement('legend');
@@ -12,6 +56,7 @@
     parent.append(group);
   }
   function objectValue(form,key,type){
+    if(key==='roles')return [...new Set([...form.querySelectorAll('[name="roles"]:checked')].map(el=>el.value).concat(csv(value(form,'roles_other'))))];
     if(key==='weekdays'||key==='expected_sources')return [...form.querySelectorAll('[name="'+key+'"]:checked')].map(el=>key==='weekdays'?Number(el.value):el.value);
     return type==='bool'?form.elements.namedItem(key).checked:type==='number'?Number(value(form,key)):type==='ints'?csv(value(form,key)).map(Number):type==='list'?csv(value(form,key)):value(form,key);
   }
@@ -46,8 +91,9 @@
   function condition(c={field:'process.name',op:'equals',value:'cmd.exe'}){
     const row=document.createElement('div');row.className='detect-condition';
     const field=document.createElement('input');field.dataset.key='field';field.value=c.field;field.required=true;field.maxLength=70;field.setAttribute('list','conditionFieldList');field.setAttribute('aria-label','Log field to check; use field.name for a source-specific field');row.append(field);
+    const help=text('small','');help.className='field-help';field.addEventListener('input',()=>fieldHint(field,help,extractedFields));fieldHint(field,help,extractedFields);
     const op=document.createElement('select');op.dataset.key='op';['equals','contains','glob'].forEach(v=>{const o=text('option',({equals:'is exactly',contains:'contains',glob:'matches a pattern (* or ?)'}[v]));o.value=v;op.append(o);});op.value=c.op;op.setAttribute('aria-label','How to match');row.append(op);
-    const val=document.createElement('input');val.value=c.value;val.required=true;val.maxLength=1024;val.dataset.key='value';val.setAttribute('aria-label','Condition value');row.append(val);button('Remove',()=>row.remove(),row,true);$('conditionRows').append(row);
+    const val=document.createElement('input');val.value=c.value;val.required=true;val.maxLength=1024;val.dataset.key='value';val.setAttribute('aria-label','Condition value');row.append(val);button('Remove',()=>row.remove(),row,true);row.append(help);$('conditionRows').append(row);
   }
   function editRule(i,isNew=false){
     editingRule={i,isNew};const r=config.rules[i],p=$('ruleFields');p.replaceChildren();$('conditionRows').replaceChildren();
@@ -57,7 +103,8 @@
     if(r.id==='web_server_shell'||r.id==='nxlog_severity_event')severity.disabled=true;
     if('threshold'in r){input(p,'threshold','Number of matching events',r.threshold,'number');input(p,'window_seconds','Within this many seconds',r.window_seconds,'number');}
     if(r.kind==='web_shell'){const mode=input(p,'child_match','Alert on',r.child_match||'listed','text',['any','listed']);mode.options[0].textContent='Any program except approved exclusions (recommended)';mode.options[1].textContent='Only the programs listed below';}
-    ['parents','scoped_parents','required_role','excluded_children','children'].forEach(k=>{if(k in r)input(p,k,({parents:'Web server programs',scoped_parents:'Programs that require a host role',required_role:'Required host role',excluded_children:'Approved programs to exclude',children:'Programs to watch (listed mode only)'}[k]||k.replaceAll('_',' '))+' (comma-separated)',r[k]);});
+    if('required_role'in r){const roles=[...new Set([...knownRoles(),r.required_role])];input(p,'required_role','Required host role',r.required_role,'text',roles.map(v=>({value:v,label:ROLE_HELP[v]?`${v} — ${ROLE_HELP[v].split(':')[0]}`:v})));}
+    ['parents','scoped_parents','excluded_children','children'].forEach(k=>{if(k in r)input(p,k,({parents:'Web server programs',scoped_parents:'Programs that require a host role',required_role:'Required host role',excluded_children:'Approved programs to exclude',children:'Programs to watch (listed mode only)'}[k]||k.replaceAll('_',' '))+' (comma-separated)',r[k]);});
     if(r.kind==='match'){const scope=input(p,'scope','Applies to',r.scope||'windows','text',['windows','all']);scope.options[0].textContent='Windows program and script activity';scope.options[1].textContent='All log sources';}
     $('addCondition').hidden=r.kind!=='match';
     if(r.kind==='match')r.conditions.forEach(condition);
@@ -82,6 +129,12 @@
     editingObject={section,i,isNew};const row=config[section][i],p=$('objectFields');p.replaceChildren();$('objectTitle').textContent={hosts:'Edit host settings',schedules:'Edit approved hours',exceptions:'Edit approved exception'}[section];
     objectSchema[section].forEach(([k,label,type])=>{
       if(k==='weekdays'){choices(p,k,label,row[k],DAYS.map((name,day)=>[day,name]));return;}
+      if(k==='roles'){
+        const roles=knownRoles();choices(p,k,label,row[k],roles.map(v=>[v,ROLE_HELP[v]||v]));
+        const other=input(p,'roles_other','Other roles (comma-separated)',(row[k]||[]).filter(v=>!roles.includes(v)));other.placeholder='database, domain_controller';return;}
+      if(k==='timezone'){
+        const tz=input(p,k,label,row[k]),help=text('small','');help.className='field-help';tz.setAttribute('list','timeZoneList');tz.placeholder=LOCAL_TZ;
+        tz.parentElement.append(help);tz.addEventListener('input',()=>zoneHint(tz,help));zoneHint(tz,help);return;}
       if(k==='expected_sources'){const options=[...new Set(['security_4688','sysmon_1','powershell_4104',...(row[k]||[])])];choices(p,k,label,row[k],options.map(source=>[source,MS.label(source)]));return;}
       let options=null;
       if(k==='id'){const ref=input(p,k,label,row[k],'hidden');ref.parentElement.hidden=true;return;}
@@ -93,6 +146,10 @@
     $('objectEditor').hidden=false;$('objectEditor').scrollIntoView({behavior:'smooth'});
   }
   function render(){renderRules();renderObjects();}
+  async function loadFields(){
+    fillLists();
+    try{const d=await api('/api/detection/fields');extractedFields=new Set(d.fields.map(f=>f.name));fillLists(d.fields);}catch{/* the built-in list still works */}
+  }
   async function load(){
     config=await api('/api/detection/config');dirty=false;const warning=config.load_warning;delete config.load_warning;render();
     if(warning)status(warning,true);else status(`Settings saved${config.updated_by?' · '+config.updated_by+' · '+config.updated_at:''}`);
@@ -102,7 +159,7 @@
     if(!rows.length){box.append(text('p','Every Windows host recently sending process/script events has a profile.'));return;}
     box.append(text('p',`${rows.length} Windows host(s) sent process/script events without a profile. Their timezone, roles, schedules and exceptions do not apply until one is added:`));
     rows.forEach(h=>{const p=document.createElement('p');p.append(text('strong',h.hostname));p.append(document.createTextNode(` · last seen ${MS.fmtTime(h.last_seen)} (${MS.fmtAgo(h.last_seen)}) · ${(h.sources||[]).join(', ')}`));
-      button('Add profile',()=>{config.hosts.push({hostname:h.hostname,timezone:'Asia/Taipei',groups:[],roles:[],telemetry_enabled:false,max_silence_seconds:3600,expected_sources:['security_4688']});draft();editObject('hosts',config.hosts.length-1,true);},p,true);box.append(p);});
+      button('Add profile',()=>{config.hosts.push({hostname:h.hostname,timezone:LOCAL_TZ,groups:[],roles:[],telemetry_enabled:false,max_silence_seconds:3600,expected_sources:['security_4688']});draft();editObject('hosts',config.hosts.length-1,true);},p,true);box.append(p);});
   }
   async function telemetry(){
     const d=await api('/api/detection/telemetry');$('telemetryRows').replaceChildren();
@@ -126,8 +183,8 @@
   if($('newHost')){
     const add=(section,row)=>{config[section].push(row);draft();editObject(section,config[section].length-1,true);};
     ['newHost','newSchedule','newException'].forEach(id=>$(id).disabled=!editable);
-    $('newHost').onclick=()=>add('hosts',{hostname:'NEW-HOST',timezone:'Asia/Taipei',groups:[],roles:[],telemetry_enabled:false,max_silence_seconds:3600,expected_sources:['security_4688']});
-    $('newSchedule').onclick=()=>add('schedules',{id:'window_'+Date.now(),name:'Business hours',timezone:'Asia/Taipei',hosts:[],groups:[],weekdays:[0,1,2,3,4],start:'09:00',end:'18:00',dates:[],exclude_dates:[]});
+    $('newHost').onclick=()=>add('hosts',{hostname:'NEW-HOST',timezone:LOCAL_TZ,groups:[],roles:[],telemetry_enabled:false,max_silence_seconds:3600,expected_sources:['security_4688']});
+    $('newSchedule').onclick=()=>add('schedules',{id:'window_'+Date.now(),name:'Business hours',timezone:LOCAL_TZ,hosts:[],groups:[],weekdays:[0,1,2,3,4],start:'09:00',end:'18:00',dates:[],exclude_dates:[]});
     $('newException').onclick=()=>add('exceptions',{id:'exception_'+Date.now(),rule_id:'out_of_hours_shell',hosts:[],groups:[],process_path:'',parent_path:'',command_glob:'',user:'',schedule_id:'',expires_at:'',approved_by:'recorded on save',ticket:''});
     $('cancelObject').onclick=()=>{if(editingObject.isNew){config[editingObject.section].splice(editingObject.i,1);draft();}$('objectEditor').hidden=true;};
     $('objectForm').onsubmit=e=>{e.preventDefault();const {section,i}=editingObject,row=config[section][i];objectSchema[section].forEach(([k,label,type])=>{row[k]=objectValue(e.target,k,type);});$('objectEditor').hidden=true;draft();};
@@ -156,5 +213,6 @@
     box.append(text('p',`Replayed ${d.scanned} stored event${d.scanned===1?'':'s'} from the last ${d.window_minutes} min${d.truncated?' (newest events only — narrow the window to cover all)':''} with the saved thresholds. Live counts reset when the collection service restarts, so a replayed alert can differ from what was raised.`));
   }
   if($('nearMissRefresh')){$('nearMissRefresh').onclick=()=>nearMisses().catch(e=>status(e.message,true));$('nearMissWindow').onchange=()=>nearMisses().catch(e=>status(e.message,true));}
+  loadFields();
   load().then(()=>{if($('telemetryRows'))return Promise.all([telemetry(),unprofiled()]);if($('nearMissRows'))return nearMisses();}).catch(e=>status(e.message,true));
 })();

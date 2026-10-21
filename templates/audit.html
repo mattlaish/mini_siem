@@ -66,7 +66,9 @@ async function load(){
   if ($('fAction').value) p.set('action', $('fAction').value);
   if ($('fQ').value.trim()) p.set('q', $('fQ').value.trim());
   p.set('limit', $('fLimit').value);
-  const d = await (await fetch('/api/audit?' + p.toString())).json();
+  let d;
+  try { d = await MS.getJSON('/api/audit?' + p.toString()); }
+  catch (e) { $('countLine').textContent = ''; MS.failed('auditBody', e, load, 'activity history'); return; }
   if (!filtersLoaded){
     $('fUser').innerHTML = '<option value="">All users</option>' + (d.users||[]).map(u=>`<option>${esc(u)}</option>`).join('');
     $('fAction').innerHTML = '<option value="">All actions</option>' + (d.actions||[]).map(a=>`<option value="${esc(a)}">${esc(MS.label(a))}</option>`).join('');
@@ -90,6 +92,6 @@ $('applyBtn').addEventListener('click', load);
 ['fUser','fAction','fLimit'].forEach(id => $(id).addEventListener('change', load));
 $('fQ').addEventListener('keydown', e => { if (e.key === 'Enter') load(); });
 load();
-setInterval(load, 10000);
+setInterval(() => { if (!document.hidden) MS.background(load); }, 10000);
 </script>
 {% endblock %}

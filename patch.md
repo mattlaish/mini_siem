@@ -806,3 +806,16 @@ Status: IMPLEMENTED_TESTING_DEFERRED; local UI checks complete, not a release ga
   advanced settings, field/time-zone pickers, compact mobile navigation and uniform
   request recovery. README and AI_HANDOFF updated; local source manifest refreshed.
   Original October 15 ZIP unchanged; no new archive or production acceptance claim.
+
+## 2026-10-21 - Guided connections, role-aware settings, pickers, recovery
+
+Status: READY FOR OWNER REVIEW.
+
+- UX_REVIEW items 1–5: guided cloud connection setup with a dry-run connection
+  test (`POST /api/pollers/<id>/test`), role-aware grouped Settings with a "Your
+  account" section, field/time-zone/host-role pickers (`GET /api/detection/fields`),
+  compact small-screen Settings navigation, shared request recovery
+  (`MS.getJSON`/`MS.failed`/`MS.background`) and honest stale-refresh labels.
+- Permission fixes on 17 previously unguarded change endpoints (10 admin, 7 analyst).
+- Validation: 27 new tests PASS; full suite 381 PASS / same 38 pre-existing
+  failures; static scan 8 HIGH unchanged; 26 browser checks PASS. No schema change.

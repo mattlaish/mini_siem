@@ -155,6 +155,28 @@ def near_misses():
                    rules=rules_mod.replay_threshold_rules(rows, config["rules"]))
 
 
+_FIELD_SAMPLE_ROWS = 50000
+_FIELD_LIST_MAX = 100
+
+
+@bp.get("/api/detection/fields")
+def extracted_fields():
+    """Extracted field names seen in recent logs, most common first, for the
+    rule editor's field picker (usable in rules as field.<name>)."""
+    conn = _svc.get_conn()
+    try:
+        top = conn.execute("SELECT MAX(id) AS m FROM log_fields").fetchone()["m"] or 0
+        rows = conn.execute(
+            "SELECT field, COUNT(*) AS n FROM log_fields WHERE id > ? "
+            "GROUP BY field ORDER BY n DESC, field LIMIT ?",
+            (top - _FIELD_SAMPLE_ROWS, _FIELD_LIST_MAX * 2)).fetchall()
+    finally:
+        conn.close()
+    fields = [{"name": "field." + r["field"], "count": r["n"]} for r in rows
+              if detection.EXTRACTED_FIELD.match("field." + str(r["field"]))]
+    return jsonify({"fields": fields[:_FIELD_LIST_MAX]})
+
+
 @bp.get("/api/detection/unprofiled-hosts")
 def unprofiled_hosts():
     """Windows hosts recently sending process/script events with no host

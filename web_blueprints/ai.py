@@ -94,6 +94,8 @@ def api_ai_config_set():
 
 @bp.post("/api/ai/test")
 def api_ai_test():
+    denied = _svc.require_admin()
+    if denied is not None: return denied
     if not _ai_enabled(): return jsonify({"ok": False, "error": "AI Analyst is turned off. Enable it first."}), 400
     cfg = _svc.get_ai_config()
     if cfg.get("ai_mode") == "external" and not cfg.get("ai_api_key"):
@@ -179,6 +181,8 @@ def api_ai_queue_stats():
 
 @bp.post("/api/ai/queue/retry")
 def api_ai_queue_retry():
+    denied = _svc.require_admin()
+    if denied is not None: return denied
     conn = _svc.get_conn(); cur = conn.execute("UPDATE alerts SET ai_status='pending', ai_attempts=0 WHERE ai_status IS NULL OR ai_status IN ('error','pending','skipped')"); conn.commit()
     n = cur.rowcount if hasattr(cur, "rowcount") else -1; _svc.audit("ai_queue_retry", detail=f"{n} alerts reset for re-triage")
     return jsonify({"ok": True, "reset": n})
@@ -186,6 +190,8 @@ def api_ai_queue_retry():
 
 @bp.post("/api/ai/queue/clear")
 def api_ai_queue_clear():
+    denied = _svc.require_admin()
+    if denied is not None: return denied
     conn = _svc.get_conn(); cur = conn.execute("UPDATE alerts SET ai_status='skipped' WHERE ai_status IS NULL OR ai_status IN ('pending','error')"); conn.commit()
     n = cur.rowcount if hasattr(cur, "rowcount") else -1; _svc.audit("ai_queue_cleared", detail=f"{n} alerts marked skipped")
     return jsonify({"ok": True, "cleared": n})
@@ -193,6 +199,8 @@ def api_ai_queue_clear():
 
 @bp.post("/api/ai/triage")
 def api_ai_triage():
+    denied = _svc.require_analyst()
+    if denied is not None: return denied
     if not _ai_enabled(): return jsonify({"error": "AI Analyst is turned off. Enable it on the AI page."}), 400
     body = request.get_json(force=True, silent=True) or {}; alert_id = body.get("alert_id")
     if not alert_id: return jsonify({"error": "alert_id is required"}), 400

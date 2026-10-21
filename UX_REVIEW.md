@@ -66,7 +66,11 @@ URLs when connecting a product. Advanced setup and support details may use these
 terms with explanations. Engineering handoffs, code comments, migration records,
 original log messages and audit evidence remain accurate rather than euphemized.
 
-## Next experience improvements (not implemented here)
+## Next experience improvements
+
+Status 2026-10-21: items 1–5 below are implemented (see AI_HANDOFF.md, "UX_REVIEW
+next improvements 1–5"). Guided setup tests a saved connector; testing an unsaved
+form and a live provider qualification remain open.
 
 1. **Guided source setup and verification.** Offer provider presets, connection
    validation, one sample event and a clear receiving/not-confirmed result in one

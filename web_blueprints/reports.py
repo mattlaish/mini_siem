@@ -6,6 +6,8 @@ def configure(services):
     global _svc; _svc = services
 @bp.post("/api/reports/run")
 def run():
+    denied=_svc.require_analyst()
+    if denied is not None:return denied
     body=request.get_json(force=True,silent=True) or {}; days=max(1,min(int(body.get("window_days",7)),365)); report=workers.run_playbook_report(_svc.get_conn(),window_days=days,trigger="manual"); _svc.audit("report_run",target=f"{days}-day window",detail=report.get("summary","")); return jsonify(report)
 @bp.get("/api/reports")
 def list_reports():
@@ -24,6 +26,8 @@ def delete_report(rid):
 def schedule_get(): return jsonify({"schedule":_svc.cfg_get("report_schedule","off")})
 @bp.post("/api/reports/schedule")
 def schedule_set():
+    denied=_svc.require_admin()
+    if denied is not None:return denied
     body=request.get_json(force=True,silent=True) or {}; sched=(body.get("schedule") or "off").lower()
     if sched not in ("off","weekly","monthly"):return jsonify({"error":"schedule must be off, weekly, or monthly"}),400
     _svc.cfg_set(report_schedule=sched); _svc.audit("report_schedule_changed",target=sched); return jsonify({"ok":True,"schedule":sched})

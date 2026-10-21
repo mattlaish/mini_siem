@@ -392,7 +392,7 @@ $('triageBtn').addEventListener('click', async () => {
   try {
     const r = await fetch('/api/ai/triage',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({alert_id:parseInt(id)})});
     const d = await r.json();
-    if(d.error){ box.innerHTML = `<div class="answer err">${esc(d.error)}</div>`; return; }
+    if(d.error){ box.innerHTML = `<div class="answer err">${esc(MS.settingError(d.error))}</div>`; return; }
     const c = d.context_summary;
     window._lastTriageAnswer = d.answer;
     box.innerHTML = `<div style="display:flex;justify-content:space-between;align-items:center;margin-top:12px;margin-bottom:-6px;">

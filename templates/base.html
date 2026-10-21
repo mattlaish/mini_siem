@@ -10,7 +10,7 @@
 <script src="{{ url_for('static', filename='csrf.js') }}"></script>
 {% block head %}{% endblock %}
 </head>
-<body>
+<body data-role="{{ user_role }}">
 <a href="#main" class="skip-link">Skip to main content</a>
 
 {% set nav_groups = [
