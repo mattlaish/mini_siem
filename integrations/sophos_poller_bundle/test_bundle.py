@@ -2,7 +2,10 @@ import json
 import unittest
 from unittest import mock
 
-import api_poller
+try:  # collected as a package from the repository root: test this snapshot's own copy
+    from . import api_poller
+except ImportError:  # run standalone inside the portable bundle directory
+    import api_poller
 
 
 class _Response:

@@ -1275,8 +1275,11 @@ def api_logs():
     args = request.args.copy()
     if paged:
         conn = get_conn()
-        relation = "security_event_logs" if getattr(conn, "backend", "sqlite") == "postgres" else "logs"
-        max_id = conn.execute("SELECT COALESCE(MAX(id),0) AS n FROM " + relation).fetchone()["n"]
+        # Two fixed statements (no string building): PostgreSQL reads the split event relation.
+        max_id_sql = ("SELECT COALESCE(MAX(id),0) AS n FROM security_event_logs"
+                      if getattr(conn, "backend", "sqlite") == "postgres"
+                      else "SELECT COALESCE(MAX(id),0) AS n FROM logs")
+        max_id = conn.execute(max_id_sql).fetchone()["n"]
         conn.close()
         if snapshot is None: snapshot = max_id
         if snapshot > max_id: return jsonify(error="History snapshot is ahead of available events"), 400
@@ -2707,10 +2710,13 @@ def api_pollers_test_draft():
     secret = body.get("client_secret")
     if cfg["secret_mode"] != "encrypted" or not isinstance(secret, str) or not secret.strip():
         return jsonify(error="Enter a credential and choose encrypted database storage to test this draft"), 400
+    # Same one-hour window as a saved test. A failed provider step is a test
+    # result (ok=false, per-step detail), not a server error, so the page can
+    # show which step stopped instead of a generic failure.
     result = _api_poller.test_connection(cfg, lambda row: secret,
-                                         lookback_seconds=cfg["initial_lookback_seconds"])
+                                         lookback_seconds=_POLLER_TEST_LOOKBACK)
     result["detail"] = "Draft test finished. No events, credentials or cursor were saved; collection was not enabled."
-    return jsonify(result), 200 if result["ok"] else 502
+    return jsonify(result)
 
 
 @app.route("/api/pollers/<int:pid>/test", methods=["POST"])

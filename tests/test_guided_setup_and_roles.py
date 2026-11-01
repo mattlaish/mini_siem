@@ -129,6 +129,25 @@ def test_connection_test_reports_where_it_stopped(app_db, provider):
     assert "invalid_client" not in d["steps"][0]["detail"]  # provider bodies must not echo credentials
 
 
+def test_draft_test_failure_is_a_result_not_a_server_error(app_db, provider):
+    """A provider refusing the credential must reach the page as per-step
+    detail (HTTP 200, ok=false), not as a 5xx the shared helper turns into a
+    generic server error. Drafts read the same last hour as saved tests."""
+    dashboard, cfg = app_db
+    provider["token_status"] = 401
+    body = {"name": "draft", "auth_scheme": "oauth2_sophos", "token_url": "https://id.sophos.com/api/v2/oauth2/token",
+            "whoami_url": "https://api.central.sophos.com/whoami/v1", "events_url": "/siem/v1/events",
+            "client_id": "cid", "client_secret": "wrong", "secret_mode": "encrypted", "scope": "token",
+            "initial_lookback_seconds": 86400}
+    r = client(dashboard).post("/api/pollers/test", json=body, headers=H)
+    d = r.get_json()
+    assert r.status_code == 200 and d["ok"] is False and d["lookback_seconds"] == 3600
+    assert d["steps"] == [{"step": "sign_in", "ok": False, "detail": "[token] HTTP 401"}]
+    conn = db.connect(cfg)
+    assert conn.execute("SELECT COUNT(*) AS n FROM api_pollers").fetchone()["n"] == 0
+    conn.close()
+
+
 def test_connection_test_api_key_scheme(app_db, provider):
     dashboard, cfg = app_db
     c = client(dashboard)
@@ -259,7 +278,7 @@ def test_ui_contracts_for_recovery_pickers_and_background_polls():
     # timed refreshes never keep an idle session alive
     assert "MS.background = function" in app_js
     assert "MS.background(load)" in pages["health"] and "MS.background(load)" in pages["audit"]
-    assert "MS.background(loadForwarders)" in pages["setup"] and "MS.background(() => { loadMatches(); loadStats(); })" in pages["threatintel"]
+    assert "MS.background(loadForwarders)" in pages["setup"] and "MS.background(loadPollers)" in pages["setup"] and "MS.background(() => { loadMatches(); loadStats(); })" in pages["threatintel"]
     # guided setup
     assert "/test', {method: 'POST'}" in pages["setup"] and "Turn on collection" in pages["setup"]
     # pickers: described fields, browser time zones, host roles

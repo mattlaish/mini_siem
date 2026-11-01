@@ -1161,7 +1161,8 @@ async function loadPollers(){
     catch(e){MS.failed(box,e,()=>draftBtn.click(),'the draft connection test');}
     finally{pollerDraftBusy=false;draftBtn.disabled=false;btn.disabled=false;}
   };
-  setInterval(()=>{if(!document.hidden)loadPollers();},15000);
+  // Timed refresh: only while this section is open, and never as user activity (idle timeout).
+  setInterval(()=>{if(!document.hidden&&document.querySelector('.panel[data-section="sec-pollers"].shown'))MS.background(loadPollers);},15000);
   if(btn) btn.addEventListener('click', async ()=>{
     if(pollerDraftBusy)return;pollerDraftBusy=true;draftBtn.disabled=true;
     const out=document.getElementById('pollerStatus'); out.textContent=''; out.className='status-line'; btn.disabled=true;

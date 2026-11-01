@@ -1,5 +1,37 @@
 # AI Handover Prompt - mini-SIEM
 
+## Review of the 2026-11-01 upload (ddbf4a0) — cloud session, 2026-11-01
+
+Checked the recovery/connector upload against the October 21 work: every
+October 21 feature (guided setup, role-aware Settings, pickers, recovery helpers,
+bulk triage, near-miss replay, background polls) is still present. The new
+database-verified sessions, default-deny write guard (analyst list matches real
+endpoint names), outbound transport and connector bearer boundary were reviewed;
+no regressions found in them. Fixed:
+
+- `pytest` from the repository root collected `return/mini-siem/source/tests`,
+  whose module names collide with `tests/`: 52 collection errors. Added
+  `pytest.ini` (norecursedirs includes `return`).
+- That exposed `integrations/sophos_poller_bundle/test_bundle.py` importing the
+  application's `api_poller` instead of its own snapshot copy (passed before by
+  coincidence). It now imports the snapshot copy when collected as a package and
+  still works standalone inside the bundle directory.
+- Draft connection test (`POST /api/pollers/test`) answered a failed provider step
+  with HTTP 502, which `MS.getJSON` shows as a generic server error, hiding the
+  failed step. It now returns 200 with ok=false like the saved test, and uses the
+  same one-hour window (was the 24-hour first-run lookback).
+- The new 15-second cloud-connection refresh did not use `MS.background`, so an
+  open Settings page kept idle sessions alive; it now runs in the background and
+  only while that section is open.
+- `/api/logs` paging built its MAX(id) query by concatenation (safe, fixed
+  names) and raised the static scan to 9 HIGH; now two fixed statements (8).
+
+Validation: full suite 498 PASS / same 38 pre-existing failures; static scan 8
+HIGH; truth gate PASS; browser pass as admin/analyst/viewer over all 11 pages:
+no JS errors, no failed requests, no permission_denied entries; failed draft test
+shows the failed step. Not changed: outbound concurrency cap (4, fail-fast),
+connector token management (CLI only), historical `return/` package.
+
 ## Latest: connector and exact historical return recovered — 2026-10-28
 
 Active source is only `C:/Users/mattlai/Projects/mini_siem`; always set that absolute
