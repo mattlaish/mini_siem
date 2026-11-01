@@ -19,6 +19,7 @@ import threading
 import time
 import urllib.parse
 import urllib.request
+import outbound
 from datetime import datetime, timezone
 
 # Refresh the token this many seconds before we assume it expires. The Sophos
@@ -165,22 +166,25 @@ class _PollerThread:
         return items, next_cursor
 
     def _http_json(self, req, phase, timeout=20):
-        """urlopen + json parse, but on HTTPError capture the response body
-        (APIs put the real reason there) and tag which phase failed."""
+        """Bounded, pinned transport; upstream bodies never enter UI errors."""
         import urllib.error
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
+            row = self.mgr.get_row(self.row_id)
+            if row and self._scheme(row) == "oauth2_sophos":
+                scheme, host, port = outbound.origin(req.full_url)
+                allowed = ((phase == "token" and host == "id.sophos.com")
+                           or (phase == "whoami" and host == "api.central.sophos.com")
+                           or (phase == "events" and (host == "api.central.sophos.com"
+                               or (host.startswith("api-") and host.endswith(".central.sophos.com")))))
+                if not allowed or scheme != "https" or port != 443:
+                    raise outbound.OutboundPolicyError("Sophos destination is outside the provider boundary")
+            with outbound.open_request(req, timeout=timeout) as resp:
                 return json.loads(resp.read().decode("utf-8"))
         except urllib.error.HTTPError as e:
-            detail = ""
-            try:
-                detail = e.read().decode("utf-8", "replace")[:300]
-            except Exception:
-                pass
-            raise RuntimeError(f"[{phase}] HTTP {e.code} {e.reason}"
-                               + (f" — {detail}" if detail else "")) from None
+            e.close()
+            raise RuntimeError(f"[{phase}] HTTP {e.code}") from None
         except urllib.error.URLError as e:
-            raise RuntimeError(f"[{phase}] connection failed: {e.reason}") from None
+            raise RuntimeError(f"[{phase}] connection failed") from None
         except json.JSONDecodeError:
             raise RuntimeError(f"[{phase}] response was not valid JSON") from None
 
@@ -320,11 +324,14 @@ def test_connection(row, resolve_secret_fn, lookback_seconds=3600):
     A dry run: the saved cursor is ignored and never advanced, and returned
     events are counted (one is sampled) but not ingested. Steps are reported
     in order so an operator can see whether sign-in, account discovery or the
-    events request failed, with the provider's own error text."""
+    events request failed. Provider error bodies are withheld to avoid exposing
+    credentials or evidence echoed by an upstream service."""
     row = dict(row)
     row["cursor"] = None
     row["initial_lookback_seconds"] = lookback_seconds
-    probe = _PollerThread(row.get("id"), _TestManager(resolve_secret_fn))
+    manager = _TestManager(resolve_secret_fn)
+    manager.get_row = lambda row_id: row
+    probe = _PollerThread(row.get("id"), manager)
     scheme = probe._scheme(row)
     steps = []
 

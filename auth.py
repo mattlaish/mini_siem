@@ -37,10 +37,12 @@ SECURITY NOTES
 import json
 import os
 import secrets
+import hashlib
+import hmac
 from datetime import datetime, timezone
 from functools import wraps
 
-from flask import session, redirect, url_for, request, jsonify
+from flask import session, redirect, url_for, request, jsonify, current_app, g
 
 from werkzeug.security import generate_password_hash, check_password_hash
 
@@ -141,14 +143,20 @@ def set_password(conn, username: str, new_password: str):
 
 def upsert_sso_user(conn, username: str, source: str):
     """Ensure a user record exists for someone authenticated via SSO."""
-    if not get_user(conn, username):
+    if not username or source not in ("oauth", "saml"):
+        raise ValueError("SSO identity is missing or invalid")
+    existing = get_user(conn, username)
+    if existing and existing["auth_source"] != source:
+        raise ValueError("SSO identity conflicts with an existing account")
+    if not existing:
         conn.execute(
             """INSERT INTO users (username, password_hash, role, auth_source,
                                   must_change_password, created_at)
                VALUES (?,?,?,?,?,?)""",
-            (username, "", "admin", source, 0,
+            (username, "", "viewer", source, 0,
              datetime.now(timezone.utc).isoformat()))
         conn.commit()
+    return get_user(conn, username)
 
 
 # --------------------------------------------------------------------------
@@ -174,12 +182,26 @@ def current_user():
 
 
 def current_role():
-    """Role of the logged-in user, cached in the session at login.
-    Missing/SSO -> 'admin' (preserves prior open behavior for federated
-    users; tighten here if SSO users should be restricted)."""
+    """Only the verified database principal grants privileges."""
     if not session.get("user"):
         return None
-    return session.get("role") or "admin"
+    return getattr(g, "auth_role", None)
+
+
+def session_stamp(user):
+    """Bind a cookie to this account incarnation and credentials, without DDL."""
+    material = json.dumps([user["username"], user["auth_source"], user["created_at"],
+                           user["password_hash"]], default=str)
+    key = current_app.secret_key
+    if isinstance(key, str): key = key.encode("utf-8")
+    return hmac.new(key, material.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def refresh_session(conn):
+    """Keep the password-changing browser; stale peers fail their next request."""
+    user = get_user(conn, session.get("user"))
+    session["auth_stamp"] = session_stamp(user)
+    session["must_change"] = bool(user["must_change_password"])
 
 
 def is_admin():
@@ -187,12 +209,24 @@ def is_admin():
 
 
 def login_user(username: str, source: str = "local", must_change: bool = False,
-               role: str = None):
+               role: str = None, *, verified_user=None):
+    conn = _CONN_FACTORY()
+    try:
+        user = get_user(conn, username)
+        if not user or user["auth_source"] != source:
+            raise ValueError("Account no longer available")
+        stamp = session_stamp(user)
+        if verified_user is not None and not hmac.compare_digest(stamp, session_stamp(verified_user)):
+            raise ValueError("Credentials changed during login; sign in again")
+    finally:
+        conn.close()
+    session.clear()
     session["user"] = username
     session["auth_source"] = source
-    session["must_change"] = bool(must_change)
-    # SSO users have no local role row -> admin (prior open behavior)
-    session["role"] = (role or "admin")
+    session["must_change"] = bool(user["must_change_password"])
+    session["role"] = user["role"] or "viewer"
+    session["auth_stamp"] = stamp
+    session["csrf_token"] = secrets.token_hex(32)
 
 
 def logout_user():
@@ -205,6 +239,11 @@ PUBLIC_ENDPOINTS = {
     "oauth_login", "oauth_callback",
     "saml_login", "saml_acs", "saml_metadata",
     "healthz",
+    # Fixed machine-only routes: their blueprint requires a scoped reader token.
+    # Browser cookies never authorize these endpoints.
+    "dashboard_connector.health", "dashboard_connector.capabilities",
+    "dashboard_connector.resource", "dashboard_connector.reject_mutation",
+    "dashboard_connector.not_found",
     "api_ingest",  # endpoint still requires its own API key
 }
 
@@ -239,6 +278,26 @@ def make_guard(app):
                 return jsonify({"error": "authentication required"}), 401
             return redirect(url_for("login", next=request.path))
 
+        try:
+            conn = _CONN_FACTORY()
+            try:
+                user = get_user(conn, current_user())
+            finally:
+                conn.close()
+            valid = (user is not None and user["auth_source"] == session.get("auth_source")
+                     and hmac.compare_digest(str(session.get("auth_stamp", "")), session_stamp(user)))
+        except Exception:
+            current_app.logger.warning("Session verification unavailable")
+            return jsonify(error="Account verification temporarily unavailable"), 503
+        if not valid:
+            session.clear()
+            if request.path.startswith("/api/"):
+                return jsonify(error="Session revoked; sign in again"), 401
+            return redirect(url_for("login", next=request.path))
+        g.auth_role = user["role"] if user["role"] in ("admin", "analyst", "viewer") else "viewer"
+        session["role"] = g.auth_role
+        session["must_change"] = bool(user["must_change_password"])
+
         # Idle-session timeout: if configured (> 0 minutes) and the gap since
         # the last request exceeds it, log the user out. Value is read from
         # app_config so it's changeable from the UI without a restart.
@@ -264,6 +323,20 @@ def make_guard(app):
             if request.path.startswith("/api/"):
                 return jsonify({"error": "password change required"}), 403
             return redirect(url_for("change_password"))
+        if request.method not in ("GET", "HEAD", "OPTIONS"):
+            read_only = {"detection_api.simulate", "api_playbooks_run", "api_investigate_ip", "api_profiles_preview"}
+            self_service = {"do_change_password", "users_api.api_users_password"}
+            soc = {"api_alert_workflow_update", "api_alert_workflow_bulk", "ai_api.api_ai_triage", "ai_api.api_ai_chat",
+                   "reports_api.run", "api_iocs_create", "api_iocs_import", "api_iocs_update",
+                   "api_norm_columns_set", "ioc_feeds_api.fetch_feed"}
+            if endpoint not in read_only | self_service:
+                allowed = ("admin", "analyst") if endpoint in soc else ("admin",)
+                if g.auth_role not in allowed:
+                    callback = current_app.extensions.get("minisiem_permission_denied")
+                    if callback: callback(endpoint, g.auth_role)
+                    return jsonify(error="Insufficient role for this action"), 403
+        if endpoint == "users_api.api_users_list" and g.auth_role != "admin":
+            return jsonify(error="Administrator role required"), 403
         return None
 
 
@@ -316,7 +389,7 @@ def oauth_identity(token, userinfo) -> str:
     for claim in ("email", "preferred_username", "sub"):
         if userinfo and userinfo.get(claim):
             return userinfo[claim]
-    return "sso-user"
+    raise ValueError("SSO provider did not return an identity")
 
 
 # --------------------------------------------------------------------------

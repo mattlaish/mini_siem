@@ -1,3 +1,4 @@
+from session_helpers import sign_in, set_role
 """Hardening for detection management: stored-config robustness and engine
 isolation, short-name/FQDN host matching, web-shell defaults, and all-events
 field-match rules with stream aggregation."""
@@ -118,8 +119,7 @@ def test_fallback_config_is_editable_through_the_api(tmp_path, monkeypatch):
     bad = config(); bad["revision"] = 3; bad["hosts"][0]["timezone"] = "Not/AZone"
     put_raw_config(conn, bad); conn.close()
     with dashboard.app.test_client() as c:
-        with c.session_transaction() as s:
-            s.update(user="admin", role="admin", must_change=False, csrf_token="t")
+        sign_in(dashboard, c)
         got = c.get("/api/detection/config").get_json()
         assert "rejected" in got["load_warning"] and got["revision"] == 3
         saved = c.put("/api/detection/config", json=got, headers={"X-CSRF-Token": "t"})
@@ -328,8 +328,7 @@ def test_simulator_accepts_raw_syslog_and_any_json(tmp_path, monkeypatch):
     dashboard.init_auth(None)
     draft = config(); draft["rules"].append(deny_rule())
     with dashboard.app.test_client() as c:
-        with c.session_transaction() as s:
-            s.update(user="viewer", role="viewer", must_change=False, csrf_token="t")
+        sign_in(dashboard, c, "viewer", "viewer")
         h = {"X-CSRF-Token": "t"}
         raw = c.post("/api/detection/simulate", json={"raw": FW_LINE, "config": draft}, headers=h).get_json()
         assert raw["windows_event"] is False and raw["findings"][0]["rule_id"] == "fw_admin_deny"

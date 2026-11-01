@@ -1,0 +1,66 @@
+{
+  "clean_extract_candidate_validation": {
+    "broad_dependency_available": {
+      "failed": 37,
+      "new_failed_nodes": 0,
+      "passed": 166,
+      "skipped": 1
+    },
+    "db_event_storage_postgres_installer_artifact_builder": {
+      "failed": 0,
+      "passed": 51
+    },
+    "note": "Candidate clean extraction reproduced source-tree counts; 37 failures are the exact inherited parent set.",
+    "priority_hardening_plus_fts": {
+      "failed": 0,
+      "passed": 31
+    }
+  },
+  "deferred_live_gates": [
+    "genuinely FTS5-less SQLite runtime startup/ingest/search",
+    "dependency-provisioned test_log_search_logic route-level fallback",
+    "all previously deferred PostgreSQL/systemd/SELinux/browser/external-integration gates"
+  ],
+  "environment_blocks": [
+    "tests/test_admin_bootstrap.py: Werkzeug unavailable",
+    "tests/test_dashboard_routes.py: Flask unavailable",
+    "tests/test_log_search_logic.py: Flask unavailable"
+  ],
+  "implemented": [
+    "SQLite base schema no longer requires FTS5",
+    "actual runtime TEMP virtual-table FTS5 capability probe",
+    "logs_fts table, maintenance triggers, and rebuild/backfill gated together",
+    "stale FTS triggers detached when an existing database is opened without FTS5 capability",
+    "dashboard selects MATCH only for runtime-probed FTS5 and escaped case-insensitive LIKE otherwise"
+  ],
+  "parent_artifact": "mini_siem_priority_hardening_alert_lifecycle_2026-09-23.zip",
+  "parent_sha256": "2bb230f6697469a1c4ff8f225b651e48853a1b6e7fb46db79578c296c7ef64ba",
+  "scope": "SQLite FTS5 optional-capability startup/search hardening only",
+  "source_validation": {
+    "broad_dependency_available": {
+      "failed": 37,
+      "new_failed_nodes": 0,
+      "note": "The 37 failed node IDs are the exact inherited set from the parent baseline; four new FTS regressions account for 162 -> 166 passes.",
+      "passed": 166,
+      "skipped": 1
+    },
+    "db_event_storage_postgres_installer_artifact_builder": {
+      "failed": 0,
+      "passed": 51
+    },
+    "fts_focused": {
+      "failed": 0,
+      "passed": 6
+    },
+    "priority_hardening_plus_fts": {
+      "failed": 0,
+      "passed": 31
+    },
+    "syntax_and_truth": {
+      "compileall": "PASS",
+      "placeholder_truth": "PASS",
+      "static_security_scan": "PASS / 0 findings"
+    }
+  },
+  "status": "IMPLEMENTED_TESTING_DEFERRED"
+}

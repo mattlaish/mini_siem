@@ -1,3 +1,4 @@
+from session_helpers import sign_in, set_role
 """Operator wording must not alter data values, privileges or UI contracts."""
 import shutil
 import subprocess
@@ -35,8 +36,7 @@ def language_client(tmp_path, monkeypatch):
     monkeypatch.setattr(dashboard, 'DB_CONFIG', db.config_from_path(str(tmp_path / 'copy.db')))
     dashboard.init_auth(None)
     with dashboard.app.test_client() as client:
-        with client.session_transaction() as session:
-            session.update(user='copy-test', role='admin', must_change=False, csrf_token='copy-token')
+        sign_in(dashboard, client, 'copy-test', csrf='copy-token')
         yield client
 
 
@@ -93,7 +93,7 @@ def test_display_labels_keep_unknown_custom_names_and_do_not_modify_api_values()
     code = r'''
 const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict');
 const root={setAttribute(){},removeAttribute(){},getAttribute(){return null;}};
-const sandbox={window:{},document:{documentElement:root,addEventListener(){}},localStorage:{getItem(){return null;}}};
+const sandbox={window:{addEventListener(){}},document:{documentElement:root,addEventListener(){}},localStorage:{getItem(){return null;}}};
 vm.runInNewContext(fs.readFileSync(process.argv[1],'utf8'),sandbox);
 const label=sandbox.window.MS.label;
 assert.equal(label('UNKNOWN'),'Not confirmed');
@@ -118,7 +118,8 @@ def test_calendar_and_exception_editor_uses_choices_but_preserves_request_schema
     assert "if(k==='schedule_id')options=" in script
     assert "'out_of_hours_shell','nxlog_severity_event','high_severity_event'" in script
     assert "row[k]=objectValue(e.target,k,type)" in script
-    assert 'Discard unsaved changes' in script
+    assert 'MS.confirmDiscard(dirty||editorDirty)' in script
+    assert 'Discard unsaved changes' in (ROOT / 'static/app.js').read_text(encoding='utf-8')
     assert "fetch(url,options)" in script
 
 

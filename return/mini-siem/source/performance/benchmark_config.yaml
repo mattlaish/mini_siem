@@ -1,0 +1,8 @@
+environment:
+  name: ""
+
+tests:
+  ingest: true
+  storage: true
+  query: true
+  archive: true

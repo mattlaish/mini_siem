@@ -1,7 +1,11 @@
 (() => {
   'use strict';
   const $ = id => document.getElementById(id), root=$('detectionApp'), editable=root.dataset.edit==='yes';
-  let config, editingRule, editingObject, dirty=false;
+  let config, editingRule, editingObject, dirty=false, editorDirty=false;
+  MS.guardDraft(()=>dirty||editorDirty);
+  ['ruleForm','objectForm'].forEach(id=>{
+    if($(id))['input','change'].forEach(event=>$(id).addEventListener(event,()=>{editorDirty=true;}));
+  });
   const csv=s=>s.split(',').map(v=>v.trim()).filter(Boolean);
   const DAYS=['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'];
   // Field picker: every field a custom condition accepts, with what it holds.
@@ -96,6 +100,7 @@
     const val=document.createElement('input');val.value=c.value;val.required=true;val.maxLength=1024;val.dataset.key='value';val.setAttribute('aria-label','Condition value');row.append(val);button('Remove',()=>row.remove(),row,true);row.append(help);$('conditionRows').append(row);
   }
   function editRule(i,isNew=false){
+    if(!MS.confirmDiscard(editorDirty))return;editorDirty=false;
     editingRule={i,isNew};const r=config.rules[i],p=$('ruleFields');p.replaceChildren();$('conditionRows').replaceChildren();
     const reference=input(p,'id','Rule reference',r.id,'hidden');reference.parentElement.hidden=true;input(p,'name','Name',r.name);
     const severity=input(p,'severity',r.id==='nxlog_severity_event'?'Severity (source-event severity is preserved)':'Severity',r.severity,'text',['critical','error','warning','notice','informational']);
@@ -126,6 +131,7 @@
     exceptions:[['id','Reference (unique name)'],['rule_id','Rule this exception applies to'],['hosts','Exact hostnames','list'],['groups','Groups','list'],['process_path','Full executable path'],['parent_path','Full parent path'],['command_glob','Approved command pattern (* matches any text; ? matches one character)'],['user','Exact user / service account'],['schedule_id','Approved hours'],['expires_at','Expires at (include time zone, for example 2026-12-31T23:59:00+08:00)'],['ticket','Approval / change ticket']]
   };
   function editObject(section,i,isNew=false){
+    if(!MS.confirmDiscard(editorDirty))return;editorDirty=false;
     editingObject={section,i,isNew};const row=config[section][i],p=$('objectFields');p.replaceChildren();$('objectTitle').textContent={hosts:'Edit host settings',schedules:'Edit approved hours',exceptions:'Edit approved exception'}[section];
     objectSchema[section].forEach(([k,label,type])=>{
       if(k==='weekdays'){choices(p,k,label,row[k],DAYS.map((name,day)=>[day,name]));return;}
@@ -166,12 +172,12 @@
     if(!Object.keys(d).length)$('telemetryRows').append(text('p','No log delivery checks yet. Enable monitoring for a host above, then check the log collection service in System Health.'));
     Object.entries(d).forEach(([key,v])=>$('telemetryRows').append(text('p',`${key.split('|').map(part=>MS.label(part)).join(' · ')}: ${MS.label(v.status)} · last receipt ${v.last_received_at?MS.fmtTime(v.last_received_at)+' ('+MS.fmtAgo(v.last_received_at)+')':'not yet received'} · checked ${MS.fmtTime(v.checked_at)}`)));
   }
-  if($('saveDetection'))$('saveDetection').onclick=async()=>{try{config=await api('/api/detection/config',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(config)});dirty=false;render();status(`Changes saved. Detection updates within five seconds.`);}catch(e){status(e.message,true);}};
-  if($('reloadDetection'))$('reloadDetection').onclick=()=>{if(dirty&&!confirm('Discard unsaved changes and reload the saved settings?'))return;load().catch(e=>status(e.message,true));};
+  if($('saveDetection'))$('saveDetection').onclick=async()=>{if(editorDirty){status('Choose Apply to draft in the open editor before saving.',true);return;}try{config=await api('/api/detection/config',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(config)});dirty=false;render();status(`Changes saved. Detection updates within five seconds.`);}catch(e){status(e.message,true);}};
+  if($('reloadDetection'))$('reloadDetection').onclick=()=>{if(!MS.confirmDiscard(dirty||editorDirty))return;editorDirty=false;load().catch(e=>status(e.message,true));};
   if($('newRule')){
-    $('newRule').disabled=!editable;$('newRule').onclick=()=>{config.rules.push({id:'custom_'+Date.now(),name:'New detection rule',kind:'match',scope:'windows',enabled:true,severity:'warning',conditions:[{field:'process.name',op:'equals',value:'cmd.exe'}]});draft();editRule(config.rules.length-1,true);};
-    $('addCondition').onclick=()=>condition();$('cancelRule').onclick=()=>{if(editingRule.isNew){config.rules.splice(editingRule.i,1);draft();}$('ruleEditor').hidden=true;};
-    $('ruleForm').onsubmit=e=>{e.preventDefault();const r=config.rules[editingRule.i],f=e.target;r.name=value(f,'name');r.severity=value(f,'severity');['threshold','window_seconds'].forEach(k=>{if(k in r)r[k]=Number(value(f,k));});['children','parents','scoped_parents','excluded_children'].forEach(k=>{if(k in r)r[k]=csv(value(f,k));});if(r.kind==='web_shell')r.child_match=value(f,'child_match');if('required_role'in r)r.required_role=value(f,'required_role');if(r.kind==='match')r.scope=value(f,'scope');if(r.kind==='match')r.conditions=[...$('conditionRows').children].map(row=>Object.fromEntries([...row.querySelectorAll('[data-key]')].map(el=>[el.dataset.key,el.value])));$('ruleEditor').hidden=true;draft();};
+    $('newRule').disabled=!editable;$('newRule').onclick=()=>{if(!MS.confirmDiscard(editorDirty))return;editorDirty=false;config.rules.push({id:'custom_'+Date.now(),name:'New detection rule',kind:'match',scope:'windows',enabled:true,severity:'warning',conditions:[{field:'process.name',op:'equals',value:'cmd.exe'}]});draft();editRule(config.rules.length-1,true);};
+    $('addCondition').onclick=()=>{condition();editorDirty=true;};$('cancelRule').onclick=()=>{if(!MS.confirmDiscard(editorDirty))return;editorDirty=false;if(editingRule.isNew){config.rules.splice(editingRule.i,1);draft();}$('ruleEditor').hidden=true;};
+    $('ruleForm').onsubmit=e=>{e.preventDefault();const r=config.rules[editingRule.i],f=e.target;r.name=value(f,'name');r.severity=value(f,'severity');['threshold','window_seconds'].forEach(k=>{if(k in r)r[k]=Number(value(f,k));});['children','parents','scoped_parents','excluded_children'].forEach(k=>{if(k in r)r[k]=csv(value(f,k));});if(r.kind==='web_shell')r.child_match=value(f,'child_match');if('required_role'in r)r.required_role=value(f,'required_role');if(r.kind==='match')r.scope=value(f,'scope');if(r.kind==='match')r.conditions=[...$('conditionRows').children].map(row=>Object.fromEntries([...row.querySelectorAll('[data-key]')].map(el=>[el.dataset.key,el.value])));$('ruleEditor').hidden=true;editorDirty=false;draft();};
     $('simulationEvent').value=JSON.stringify({EventID:4688,Channel:'Security',SourceName:'Microsoft-Windows-Security-Auditing',Hostname:'HMSWEB1',EventTime:'2026-10-15T22:56:35+08:00',NewProcessName:'C:\\Windows\\System32\\cmd.exe',ParentProcessName:'C:\\Tomcat\\tomcat7.exe',NewProcessId:'0x2bc',ProcessId:'0xe74',CommandLine:'cmd.exe /c whoami',SubjectUserName:'SYSTEM'},null,2);
     $('simulateRule').onclick=async()=>{try{const d=await api('/api/detection/simulate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify((()=>{const t=$('simulationEvent').value;let parsed=null;try{parsed=JSON.parse(t);}catch{}return parsed&&typeof parsed==='object'&&!Array.isArray(parsed)?{event:parsed,config}:{raw:t,config};})())});const summary=$('simulationSummary');summary.replaceChildren();
       summary.append(text('strong',d.findings.length?`${d.findings.length} alert rule(s) matched`:'No alert rules matched this sample'));
@@ -181,13 +187,13 @@
       $('simulationResult').textContent=JSON.stringify(d,null,2);}catch(e){$('simulationSummary').textContent='The sample could not be tested. Check the event and rule settings below.';$('simulationResult').textContent=e.message;}};
   }
   if($('newHost')){
-    const add=(section,row)=>{config[section].push(row);draft();editObject(section,config[section].length-1,true);};
+    const add=(section,row)=>{if(!MS.confirmDiscard(editorDirty))return;editorDirty=false;config[section].push(row);draft();editObject(section,config[section].length-1,true);};
     ['newHost','newSchedule','newException'].forEach(id=>$(id).disabled=!editable);
     $('newHost').onclick=()=>add('hosts',{hostname:'NEW-HOST',timezone:LOCAL_TZ,groups:[],roles:[],telemetry_enabled:false,max_silence_seconds:3600,expected_sources:['security_4688']});
     $('newSchedule').onclick=()=>add('schedules',{id:'window_'+Date.now(),name:'Business hours',timezone:LOCAL_TZ,hosts:[],groups:[],weekdays:[0,1,2,3,4],start:'09:00',end:'18:00',dates:[],exclude_dates:[]});
     $('newException').onclick=()=>add('exceptions',{id:'exception_'+Date.now(),rule_id:'out_of_hours_shell',hosts:[],groups:[],process_path:'',parent_path:'',command_glob:'',user:'',schedule_id:'',expires_at:'',approved_by:'recorded on save',ticket:''});
-    $('cancelObject').onclick=()=>{if(editingObject.isNew){config[editingObject.section].splice(editingObject.i,1);draft();}$('objectEditor').hidden=true;};
-    $('objectForm').onsubmit=e=>{e.preventDefault();const {section,i}=editingObject,row=config[section][i];objectSchema[section].forEach(([k,label,type])=>{row[k]=objectValue(e.target,k,type);});$('objectEditor').hidden=true;draft();};
+    $('cancelObject').onclick=()=>{if(!MS.confirmDiscard(editorDirty))return;editorDirty=false;if(editingObject.isNew){config[editingObject.section].splice(editingObject.i,1);draft();}$('objectEditor').hidden=true;};
+    $('objectForm').onsubmit=e=>{e.preventDefault();const {section,i}=editingObject,row=config[section][i];objectSchema[section].forEach(([k,label,type])=>{row[k]=objectValue(e.target,k,type);});$('objectEditor').hidden=true;editorDirty=false;draft();};
     $('refreshTelemetry').onclick=()=>Promise.all([telemetry(),unprofiled()]).catch(e=>status(e.message,true));
   }
   // Leaving the page (sidebar link, close, reload) must not silently drop a draft.

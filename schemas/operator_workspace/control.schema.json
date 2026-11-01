@@ -1,0 +1,337 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Phase A control responses",
+  "anyOf": [
+    {
+      "$ref": "#/$defs/health"
+    },
+    {
+      "$ref": "#/$defs/capabilities"
+    },
+    {
+      "$ref": "#/$defs/error"
+    }
+  ],
+  "$defs": {
+    "health": {
+      "type": "object",
+      "properties": {
+        "contract": {
+          "const": "operator-workspace.integration.v1"
+        },
+        "schema_version": {
+          "const": "1.0"
+        },
+        "source_product": {
+          "type": "string",
+          "enum": [
+            "NDR",
+            "SCANNER",
+            "FIREWALL",
+            "NAC",
+            "WAF",
+            "SIEM",
+            "SANDBOX",
+            "COMPLIANCE",
+            "PAM",
+            "DECEPTION",
+            "SOAR"
+          ]
+        },
+        "source_instance_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "READY",
+            "DEGRADED",
+            "UNAVAILABLE"
+          ]
+        },
+        "observed_at": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "Z$"
+        },
+        "export_ready": {
+          "type": "boolean"
+        },
+        "reason_codes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "maxItems": 100
+        }
+      },
+      "required": [
+        "contract",
+        "schema_version",
+        "source_product",
+        "source_instance_id",
+        "status",
+        "observed_at",
+        "export_ready",
+        "reason_codes"
+      ],
+      "additionalProperties": false
+    },
+    "capabilities": {
+      "type": "object",
+      "properties": {
+        "contract": {
+          "const": "operator-workspace.integration.v1"
+        },
+        "schema_version": {
+          "const": "1.0"
+        },
+        "source_product": {
+          "type": "string",
+          "enum": [
+            "NDR",
+            "SCANNER",
+            "FIREWALL",
+            "NAC",
+            "WAF",
+            "SIEM",
+            "SANDBOX",
+            "COMPLIANCE",
+            "PAM",
+            "DECEPTION",
+            "SOAR"
+          ]
+        },
+        "source_instance_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "auth_profile": {
+          "type": "string",
+          "enum": [
+            "opaque_bearer",
+            "service_jwt",
+            "mtls"
+          ]
+        },
+        "resources": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string",
+                "enum": [
+                  "/api/integrations/dashboard/v1/assets",
+                  "/api/integrations/dashboard/v1/findings",
+                  "/api/integrations/dashboard/v1/detections",
+                  "/api/integrations/dashboard/v1/alerts",
+                  "/api/integrations/dashboard/v1/incidents",
+                  "/api/integrations/dashboard/v1/events",
+                  "/api/integrations/dashboard/v1/flows",
+                  "/api/integrations/dashboard/v1/audit-events",
+                  "/api/integrations/dashboard/v1/compliance-results",
+                  "/api/integrations/dashboard/v1/policies",
+                  "/api/integrations/dashboard/v1/sessions",
+                  "/api/integrations/dashboard/v1/reports",
+                  "/api/integrations/dashboard/v1/scans",
+                  "/api/integrations/dashboard/v1/action-status",
+                  "/api/integrations/dashboard/v1/health-observations"
+                ]
+              },
+              "resource_kind": {
+                "type": "string",
+                "enum": [
+                  "ASSET",
+                  "FINDING",
+                  "DETECTION",
+                  "ALERT",
+                  "INCIDENT",
+                  "EVENT",
+                  "FLOW",
+                  "AUDIT_EVENT",
+                  "COMPLIANCE_RESULT",
+                  "POLICY",
+                  "SESSION",
+                  "SANDBOX_REPORT",
+                  "SCAN",
+                  "ACTION_STATUS",
+                  "HEALTH"
+                ]
+              },
+              "capability": {
+                "type": "string",
+                "enum": [
+                  "LIST_ASSETS",
+                  "LIST_FINDINGS",
+                  "LIST_DETECTIONS",
+                  "LIST_ALERTS",
+                  "LIST_INCIDENTS",
+                  "LIST_EVENTS",
+                  "LIST_EVENTS",
+                  "LIST_AUDIT_EVENTS",
+                  "LIST_COMPLIANCE_RESULTS",
+                  "OBSERVE_POLICY",
+                  "OBSERVE_SESSION",
+                  "LIST_REPORTS",
+                  "SCAN_STATUS",
+                  "LIST_ACTIONS",
+                  "HEALTH"
+                ]
+              },
+              "enabled": {
+                "type": "boolean"
+              },
+              "qualification": {
+                "type": "string",
+                "enum": [
+                  "IMPLEMENTED_UNQUALIFIED",
+                  "QUALIFIED",
+                  "NOT_IMPLEMENTED"
+                ]
+              },
+              "sync_modes": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "SNAPSHOT",
+                    "INCREMENTAL"
+                  ]
+                },
+                "uniqueItems": true,
+                "maxItems": 2
+              },
+              "stream_semantics": {
+                "type": "string",
+                "enum": [
+                  "STATE",
+                  "HISTORY"
+                ]
+              },
+              "bootstrap_retention_days": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "minimum": 30
+              },
+              "cursor_ttl_seconds": {
+                "type": "integer",
+                "minimum": 86400
+              },
+              "max_page_size": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 500
+              },
+              "reason_codes": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256
+                },
+                "maxItems": 100
+              }
+            },
+            "required": [
+              "path",
+              "resource_kind",
+              "capability",
+              "enabled",
+              "qualification",
+              "sync_modes",
+              "stream_semantics",
+              "bootstrap_retention_days",
+              "cursor_ttl_seconds",
+              "max_page_size",
+              "reason_codes"
+            ],
+            "additionalProperties": false
+          },
+          "maxItems": 100
+        },
+        "actions": {
+          "type": "array",
+          "maxItems": 0
+        }
+      },
+      "required": [
+        "contract",
+        "schema_version",
+        "source_product",
+        "source_instance_id",
+        "auth_profile",
+        "resources",
+        "actions"
+      ],
+      "additionalProperties": false
+    },
+    "error": {
+      "type": "object",
+      "properties": {
+        "contract": {
+          "const": "operator-workspace.integration.v1"
+        },
+        "error": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "string",
+              "enum": [
+                "RESET_REQUIRED",
+                "INVALID_REQUEST",
+                "INVALID_CURSOR",
+                "AUTH_REQUIRED",
+                "FORBIDDEN",
+                "NOT_FOUND",
+                "IDEMPOTENCY_CONFLICT",
+                "STATE_CONFLICT",
+                "RECORD_UNEXPORTABLE",
+                "RATE_LIMITED",
+                "CAPABILITY_UNAVAILABLE",
+                "TEMPORARY_UNAVAILABLE"
+              ]
+            },
+            "message": {
+              "type": "string",
+              "maxLength": 512
+            },
+            "request_id": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+            },
+            "retryable": {
+              "type": "boolean"
+            },
+            "retry_after_seconds": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 1
+            }
+          },
+          "required": [
+            "code",
+            "message",
+            "request_id",
+            "retryable",
+            "retry_after_seconds"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "contract",
+        "error"
+      ],
+      "additionalProperties": false
+    }
+  }
+}
+

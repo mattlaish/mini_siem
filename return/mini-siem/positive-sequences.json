@@ -1,0 +1,10 @@
+[
+  {
+    "actual_result": "PASS",
+    "case_id": "P-SYNC-001",
+    "evidence_ref": "test-logs/P-SYNC-001.json",
+    "expected_current_revision": "2",
+    "input_fixture": "fixtures/positive/old-revision-preserves-current.sequence.json",
+    "reason": "An older revision remains historical and does not replace current revision 2."
+  }
+]

@@ -57,6 +57,44 @@
 (function () {
   'use strict';
   var MS = window.MS = window.MS || {};
+  const drafts = [];
+  MS.guardDraft = function (check) { drafts.push(check); };
+  MS.confirmDiscard = function (dirty) { return !dirty || window.confirm('Discard unsaved changes?'); };
+  let leaving = false;
+  window.addEventListener('beforeunload', function (e) {
+    if (!leaving && drafts.some(check => check())) { e.preventDefault(); e.returnValue=''; }
+  });
+  document.addEventListener('click', function (e) {
+    const a=e.target.closest && e.target.closest('a[href]');
+    if(!a||e.defaultPrevented||e.ctrlKey||e.metaKey||e.shiftKey||e.altKey||a.target==='_blank'||a.hasAttribute('download'))return;
+    const u=new URL(a.href,location.href);
+    if(u.origin===location.origin&&u.pathname===location.pathname&&u.search===location.search)return;
+    if(!MS.confirmDiscard(drafts.some(check=>check()))){e.preventDefault();e.stopImmediatePropagation();return;}
+    leaving=true;setTimeout(()=>{leaving=false;},1000);
+  },true);
+  const refreshStates = new Map();
+  MS.read = async function (name,url,options,retry) {
+    let state=refreshStates.get(name)||{};refreshStates.set(name,state);
+    const sequence=state.sequence=(state.sequence||0)+1;
+    try {
+      const r=await fetch(url,options);
+      if(!r.ok)throw new Error('Request failed ('+r.status+')');
+      const data=await r.json();
+      if(state.sequence===sequence){state.at=new Date().toISOString();state.error='';}
+      return data;
+    } catch(e) {
+      if(state.sequence===sequence){state.error=e.message;state.retry=retry;}throw e;
+    } finally {
+      let box=document.getElementById('refreshProblems');
+      if(!box){box=document.createElement('div');box.id='refreshProblems';box.setAttribute('role','status');(document.querySelector('.wrap')||document.body).prepend(box);}
+      box.replaceChildren();
+      refreshStates.forEach((s,label)=>{
+        if(!s.error)return;
+        const p=document.createElement('p');p.textContent=label+' could not refresh. Keeping the last displayed data. Last successful check: '+(s.at?MS.fmtTime(s.at):'not yet confirmed')+'. ';
+        if(s.retry){const b=document.createElement('button');b.type='button';b.textContent='Retry';b.onclick=()=>Promise.resolve(s.retry()).catch(()=>{});p.append(b);}box.append(p);
+      });
+    }
+  };
 
   // ---- time --------------------------------------------------------------
   function pad(n) { return String(n).padStart(2, '0'); }

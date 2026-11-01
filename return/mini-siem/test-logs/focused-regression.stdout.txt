@@ -1,0 +1,20 @@
+........................................................................ [ 58%]
+...................................................                      [100%]
+============================== warnings summary ===============================
+tests/test_dashboard_connector.py: 5 warnings
+tests/test_detection_management.py: 12 warnings
+tests/test_detection_hardening.py: 12 warnings
+tests/test_ux_improvements.py: 7 warnings
+tests/test_product_language.py: 13 warnings
+tests/test_db.py: 1 warning
+tests/test_admin_bootstrap.py: 2 warnings
+  C:\Users\mattlai\Projects\mini_siem\db.py:938: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    now = _datetime.datetime.utcnow().isoformat()
+
+tests/test_db.py::test_postgres_initialize_executes_percent_ddl_as_raw_sql
+  C:\Users\mattlai\Projects\mini_siem\db.py:1189: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    (version, _datetime.datetime.utcnow().isoformat()),
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+- generated xml file: C:\Users\mattlai\Projects\mini_siem\return\mini-siem\test-logs\focused-regression.xml -
+123 passed, 53 warnings in 6.99s

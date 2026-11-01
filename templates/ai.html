@@ -50,12 +50,13 @@
 {% endblock %}
 
 {% block content %}
-<div class="wrap">
+<div class="wrap" id="aiApp" data-can-configure="{{ 'yes' if is_admin else 'no' }}" data-can-analyze="{{ 'yes' if can_triage else 'no' }}">
+{% if not is_admin %}<p class="muted">Read-only connection settings. An administrator can save, test or turn AI on and off.</p>{% endif %}
 
   <div class="panel" id="masterPanel" style="display:flex;align-items:center;justify-content:space-between;gap:12px;">
     <div>
       <h2 style="margin:0;">AI SOC Analyst <span id="stateBadge" class="badge b-amber">OFF</span></h2>
-      <p class="sub" id="stateHint" style="margin:6px 0 0;">Set up and test your AI connection before turning this on. It stays off until then — no connections are attempted.</p>
+      <p class="sub" id="stateHint" style="margin:6px 0 0;">Set up and test your AI connection before turning this on. Test connection makes one request using the fields below; it does not save settings or turn AI on.</p>
     </div>
     <button id="masterToggle">Turn ON</button>
   </div>
@@ -271,6 +272,11 @@ const $ = id => document.getElementById(id);
 function esc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;'); }
 
 let aiEnabled = false;
+const canConfigure=$('aiApp').dataset.canConfigure==='yes',canAnalyze=$('aiApp').dataset.canAnalyze==='yes';
+let configBusy=false;
+function lockConfig(busy){configBusy=busy;document.querySelectorAll('#settingsPanel input,#settingsPanel select,#settingsPanel textarea,#settingsPanel button,#masterToggle,#usageRateForm input,#usageRateForm button').forEach(el=>el.disabled=busy||!canConfigure);}
+async function configRequest(url,body){const r=await fetch(url,body===undefined?{}:{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});let d;try{d=await r.json();}catch{throw new Error('The server did not return a usable response. Try again.');}if(!r.ok||d.ok===false)throw new Error(d.error||`Request failed (${r.status})`);return d;}
+function configError(e){$('cfgStatus').textContent=e.message;$('cfgStatus').className='status-line err';}
 
 function applyMode(){
   const ext = $('aiMode').value === 'external';
@@ -292,7 +298,7 @@ document.getElementById('loadDefaultPrompt').addEventListener('click', () => {
 
 function applyEnabledState(){
   // Connection settings stay usable so setup does not require enabling AI first.
-  ['triageBtn','alertSelect','chatSend','chatInput'].forEach(id=>{$(id).disabled=!aiEnabled;});
+  ['triageBtn','alertSelect','chatSend','chatInput'].forEach(id=>{$(id).disabled=!aiEnabled||!canAnalyze;});
   if(!aiEnabled)$('alertSelect').innerHTML='<option value="">Turn on AI to choose an alert</option>';
   const badge = $('stateBadge'), btn = $('masterToggle'), hint = $('stateHint');
   if (aiEnabled){
@@ -302,20 +308,19 @@ function applyEnabledState(){
   } else {
     badge.textContent = 'OFF'; badge.className = 'badge b-amber';
     btn.textContent = 'Turn ON'; btn.className = '';
-    hint.textContent = 'Set up and test your AI connection before turning this on. It stays off until then — no connections are attempted.';
+    hint.textContent = 'Set up and test your AI connection before turning this on. Test connection makes one request using the fields below; it does not save settings or turn AI on.';
   }
 }
 
-$('masterToggle').addEventListener('click', async () => {
-  aiEnabled = !aiEnabled;
-  await fetch('/api/ai/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ai_enabled:aiEnabled})});
-  applyEnabledState();
-  if (aiEnabled) loadAlerts();
+$('masterToggle').addEventListener('click',async()=>{
+  if(!canConfigure||configBusy)return;lockConfig(true);
+  try{await configRequest('/api/ai/config',{ai_enabled:!aiEnabled});aiEnabled=!aiEnabled;applyEnabledState();if(aiEnabled)loadAlerts().catch(configError);}
+  catch(e){configError(e);}finally{lockConfig(false);}
 });
 
 // ---- settings ----
 async function loadCfg(){
-  const r = await fetch('/api/ai/config'); const c = await r.json();
+  const c = await MS.read('AI connection settings','/api/ai/config',undefined,loadCfg);
   aiEnabled = c.ai_enabled;
   $('baseUrl').value = c.ai_base_url; $('model').value = c.ai_model; $('apiStyle').value = c.ai_api_style || 'auto';
   $('apiKey').placeholder = c.ai_api_key_set ? '(key saved — leave blank to keep)' : '(leave blank)';
@@ -330,10 +335,9 @@ async function loadCfg(){
   $('aiMode').value = c.ai_mode || 'local';
   applyMode();
   $('connSummary').textContent = `— ${c.ai_model} @ ${c.ai_base_url}`;
-  applyEnabledState();
+  applyEnabledState();lockConfig(false);
 }
-$('saveCfg').addEventListener('click', async () => {
-  $('cfgStatus').textContent='Saving…'; $('cfgStatus').className='status-line';
+function connectionDraft(){
   const body = { ai_base_url: $('baseUrl').value, ai_model: $('model').value,
                  ai_mode: $('aiMode').value, ai_api_style: $('apiStyle').value,
                  ai_auto_triage: $('autoTriage').checked,
@@ -344,18 +348,18 @@ $('saveCfg').addEventListener('click', async () => {
                  ai_max_tokens: parseInt($('maxTokens').value) || 900,
                  ai_external_redaction: $('externalRedaction').value };
   if ($('apiKey').value) body.ai_api_key = $('apiKey').value;
-  await fetch('/api/ai/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-  $('apiKey').value=''; $('cfgStatus').textContent='Saved.'; $('cfgStatus').className='status-line ok';
-  loadCfg();
+  return body;
+}
+
+$('saveCfg').addEventListener('click',async()=>{
+  if(!canConfigure||configBusy)return;lockConfig(true);$('cfgStatus').textContent='Saving…';
+  try{const body=connectionDraft();await configRequest('/api/ai/config',body);$('apiKey').value='';$('cfgStatus').textContent='Saved.';$('cfgStatus').className='status-line ok';$('connSummary').textContent=`— ${body.ai_model} @ ${body.ai_base_url}`;}
+  catch(e){configError(e);}finally{lockConfig(false);}
 });
-$('testCfg').addEventListener('click', async () => {
-  $('cfgStatus').innerHTML='<span class="spin"></span> Testing…'; $('cfgStatus').className='status-line';
-  $('testCfg').disabled=true;
-  try {
-    const r = await fetch('/api/ai/test',{method:'POST'}); const d = await r.json();
-    if(d.ok){ $('cfgStatus').textContent='✓ '+d.detail; $('cfgStatus').className='status-line ok'; }
-    else { $('cfgStatus').textContent='✗ '+d.error; $('cfgStatus').className='status-line err'; }
-  } finally { $('testCfg').disabled=false; }
+$('testCfg').addEventListener('click',async()=>{
+  if(!canConfigure||configBusy)return;lockConfig(true);$('cfgStatus').textContent='Testing draft…';
+  try{const d=await configRequest('/api/ai/test',connectionDraft());$('cfgStatus').textContent='✓ '+d.detail;$('cfgStatus').className='status-line ok';}
+  catch(e){configError(e);}finally{lockConfig(false);}
 });
 
 // ---- alerts for triage ----
@@ -402,7 +406,7 @@ $('triageBtn').addEventListener('click', async () => {
       <div class="answer">${esc(d.answer)}</div>`;
     document.getElementById('expandTriage').addEventListener('click', () =>
       openTriageModal($('alertSelect').selectedOptions[0]?.text || 'AI analysis', d.answer));
-  } finally { $('triageBtn').disabled=false; }
+  } finally { $('triageBtn').disabled=!aiEnabled||!canAnalyze; }
 });
 
 // ---- chat ----
@@ -428,12 +432,13 @@ async function sendChat(){
     if(d.error){ history.push({role:'assistant', content:'⚠ '+d.error}); }
     else { history.push({role:'assistant', content:d.answer}); }
     renderChat();
-  } finally { $('chatSend').disabled=false; }
+  } finally { $('chatSend').disabled=!aiEnabled||!canAnalyze; }
 }
 $('chatSend').addEventListener('click', sendChat);
 $('chatInput').addEventListener('keydown', e => { if(e.key==='Enter' && (e.ctrlKey||e.metaKey)){ sendChat(); } });
 $('chatClear').addEventListener('click', () => { history=[]; renderChat(); });
 
-loadCfg().then(() => { if (aiEnabled) loadAlerts(); });
+lockConfig(false);
+loadCfg().then(() => { if (aiEnabled) return loadAlerts(); }).catch(configError);
 </script>
 {% endblock %}

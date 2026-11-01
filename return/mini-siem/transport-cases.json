@@ -1,0 +1,141 @@
+[
+  {
+    "actual_result": "PASS",
+    "case_id": "T-401",
+    "evidence_ref": "test-logs/T-401.json",
+    "expected_code": "AUTH_REQUIRED",
+    "expected_headers": {
+      "Cache-Control": "no-store"
+    },
+    "expected_status": 401,
+    "request_fixture": "fixtures/transport/T-401.json",
+    "setup": "Local Flask client without Authorization header.",
+    "stage": "transport"
+  },
+  {
+    "actual_result": "PASS",
+    "case_id": "T-403",
+    "evidence_ref": "test-logs/T-403.json",
+    "expected_code": "FORBIDDEN",
+    "expected_headers": {
+      "Cache-Control": "no-store"
+    },
+    "expected_status": 403,
+    "request_fixture": "fixtures/transport/T-403.json",
+    "setup": "Token has health scope only.",
+    "stage": "transport"
+  },
+  {
+    "actual_result": "PASS",
+    "case_id": "T-409",
+    "evidence_ref": "test-logs/T-409.json",
+    "expected_code": "RESET_REQUIRED",
+    "expected_headers": {
+      "Cache-Control": "no-store"
+    },
+    "expected_status": 409,
+    "request_fixture": "fixtures/transport/T-409.json",
+    "setup": "Local Flask client replays a valid signed cursor after its durable snapshot is evicted.",
+    "stage": "transport"
+  },
+  {
+    "actual_result": "PASS",
+    "case_id": "T-429",
+    "evidence_ref": "test-logs/T-429.json",
+    "expected_code": "RATE_LIMITED",
+    "expected_headers": {
+      "Retry-After": "integer seconds"
+    },
+    "expected_status": 429,
+    "request_fixture": "fixtures/transport/T-429.json",
+    "setup": "Per-principal rate limit set to one request/minute.",
+    "stage": "transport"
+  },
+  {
+    "actual_result": "PASS",
+    "case_id": "T-503",
+    "evidence_ref": "test-logs/T-503.json",
+    "expected_code": "TEMPORARY_UNAVAILABLE",
+    "expected_headers": {
+      "Retry-After": "integer seconds or absent"
+    },
+    "expected_status": 503,
+    "request_fixture": "fixtures/transport/T-503.json",
+    "setup": "Local Flask client requests a new snapshot while durable snapshot capacity is exhausted.",
+    "stage": "transport"
+  },
+  {
+    "actual_result": "PASS",
+    "case_id": "T-MUTATION",
+    "evidence_ref": "test-logs/T-MUTATION.json",
+    "expected_code": "FORBIDDEN",
+    "expected_headers": {
+      "Cache-Control": "no-store"
+    },
+    "expected_status": 403,
+    "request_fixture": "fixtures/transport/T-MUTATION.json",
+    "setup": "Reader token attempts a mutation.",
+    "stage": "transport"
+  },
+  {
+    "actual_result": "PASS",
+    "case_id": "T-REDIRECT",
+    "evidence_ref": "test-logs/T-REDIRECT.json",
+    "expected_code": "NOT_FOUND",
+    "expected_headers": {
+      "Location": "absent"
+    },
+    "expected_status": 404,
+    "request_fixture": "fixtures/transport/T-REDIRECT.json",
+    "setup": "Unknown connector path; redirect following disabled.",
+    "stage": "transport"
+  },
+  {
+    "actual_result": "PASS",
+    "case_id": "T-CONTENT-TYPE",
+    "evidence_ref": "test-logs/T-CONTENT-TYPE.json",
+    "expected_code": null,
+    "expected_headers": {
+      "Content-Type": "application/json; charset=utf-8"
+    },
+    "expected_status": 200,
+    "request_fixture": "fixtures/transport/T-CONTENT-TYPE.json",
+    "setup": "Validate success response media type.",
+    "stage": "transport"
+  },
+  {
+    "actual_result": "PASS",
+    "case_id": "T-OVERSIZE",
+    "evidence_ref": "test-logs/T-OVERSIZE.json",
+    "expected_code": "RECORD_UNEXPORTABLE",
+    "expected_headers": {
+      "Cache-Control": "no-store"
+    },
+    "expected_status": 422,
+    "request_fixture": "fixtures/transport/T-OVERSIZE.json",
+    "setup": "Local Flask client exports a native asset identity exceeding the contract limit.",
+    "stage": "transport"
+  },
+  {
+    "actual_result": "NOT_RUN",
+    "case_id": "T-TIMEOUT",
+    "evidence_ref": "test-logs/T-TIMEOUT.json",
+    "expected_code": "TIMEOUT",
+    "expected_headers": {},
+    "expected_status": null,
+    "request_fixture": "fixtures/transport/T-TIMEOUT.json",
+    "setup": "Deployed cancellation/deadline environment was not available to the offline generator.",
+    "stage": "transport"
+  },
+  {
+    "actual_result": "NOT_RUN",
+    "case_id": "T-TLS",
+    "evidence_ref": "test-logs/T-TLS.json",
+    "expected_code": "TLS_VALIDATION_FAILED",
+    "expected_headers": {},
+    "expected_status": null,
+    "request_fixture": "fixtures/transport/T-TLS.json",
+    "setup": "Intended HTTPS CA/hostname/revocation environment was not available to the offline generator.",
+    "stage": "transport"
+  }
+]

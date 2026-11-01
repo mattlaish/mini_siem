@@ -1,0 +1,1 @@
+{"accepted_revisions": ["2", "1"], "actual_result": "PASS", "case_id": "P-SYNC-001", "current_revision_after_sequence": "2", "network_io": false, "production_registration": false}

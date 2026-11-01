@@ -1,0 +1,16 @@
+{
+  "adapter_id": "mini-siem-owi-fixture-v1",
+  "capabilities": [
+    "HEALTH",
+    "LIST_ALERTS",
+    "LIST_ASSETS",
+    "LIST_INCIDENTS"
+  ],
+  "capability_generation": 1,
+  "identity_sha256": "3e82ef9a476a9750b1cd5e2f1fda5dc38f749277b5192499bb611ada298d3c40",
+  "product_type": "SIEM",
+  "protocol_version": 1,
+  "qualification_evidence_sha256": null,
+  "qualification_status": "UNQUALIFIED",
+  "vendor": "Internal"
+}

@@ -2,8 +2,8 @@
 
 ## Purpose
 
-Latest implementation: 2026-10-18 operator language and usability pass. See the
-dated entry at the end and UX_REVIEW.md; older slice statuses are historical
+Latest implementation: 2026-10-28 connector and historical return recovery. See the
+dated entry at the end and RECOVERY_2026-10-28.md; older slice statuses are historical
 where explicitly superseded. Owner handles Git synchronization manually.
 
 This file is the persistent implementation ledger for AI-assisted development.
@@ -819,3 +819,86 @@ Status: READY FOR OWNER REVIEW.
 - Permission fixes on 17 previously unguarded change endpoints (10 admin, 7 analyst).
 - Validation: 27 new tests PASS; full suite 381 PASS / same 38 pre-existing
   failures; static scan 8 HIGH unchanged; 26 browser checks PASS. No schema change.
+
+## 2026-10-27 — Recovery after local source overwrite
+
+Status: CORE RECOVERY READY FOR OWNER REVIEW; missing connector/package recovery
+remains open. Not a release qualification or byte-identical October 26 restore.
+
+- Used only C:/Users/mattlai/Projects/mini_siem as active source. Before editing,
+  copied 381 safe source/document files to the Documents recovery evidence area
+  (`work/mini-siem-recovery-20261027/before`). No Git operations, production DB
+  writes, credentials, provider cursors, deployment or permissions were changed.
+- Reconstructed database-verified session stamps and roles; revoke old/deleted/
+  credential-changed cookies, fail closed on DB failure, default protected writes
+  to admin with explicit SOC/self-service/read-only exceptions, default new SSO
+  users to viewer and reject cross-source username collisions.
+- Added shared outbound.py: exact-origin internal allowlist, all-DNS-answer
+  checks, literal-address pinning with original TLS hostname, metadata/redirect/
+  proxy rejection, body/deadline/concurrency limits. Applied to application
+  pollers, tickets, feeds and AI, preserving Sophos OAuth/Whoami/cursor behavior.
+- Restored escaping/delegated controls for extracted fields and account names,
+  and withheld provider HTTP error bodies while preserving status/phase evidence.
+- Recovered seven workflow areas: AI-off draft test/failed-save handling,
+  unsaved cloud connection tests, honest cloud delivery state, detection/alert
+  draft guards and pending-save protection, stable older-log history, older-alert
+  history, and retained-data refresh/help-link recovery. Preserved guided setup,
+  role-aware Settings, pickers, bulk triage, near-miss replay and shared helpers.
+- Preserved intentional X-Forwarded-For trust, memory-only live rule counters,
+  analyst configured-feed fetch/display-column changes, existing API array
+  contracts and stored original evidence. No schema migration.
+- Current Windows baseline 363 PASS / 47 FAIL / 3 SKIP; recovered full suite
+  446 PASS / identical 47 FAIL / 3 SKIP. Focused 247 PASS with four known Windows
+  permission cases deselected only from that run; all remain in full results.
+  Six Node UI runtime tests PASS; syntax/render/truth/credential-pattern checks
+  recorded outside source. Systemd collection excluded on Windows (`pwd`).
+- Real browser/provider/IdP/PostgreSQL/NXLog/Linux/systemd qualification NOT_RUN.
+  The 47 pre-existing search/performance/platform failures are not fixed or hidden.
+- Added SECURITY_HARDENING.md and RECOVERY_2026-10-27.md; synchronized README and
+  AI_HANDOFF. Warned that the portable Sophos snapshot/ZIP is not the hardened
+  application; it was not regenerated or silently modified as another source.
+- No complete October 22–26 source backup is available (owner confirmed). The
+  Dashboard reader connector, reader-token tool, schemas/tests and return package
+  remain missing; compiled cache remnants are evidence only. Do not claim the
+  historical archive is unchanged or reuse its hash. Next: reconstruct that
+  connector from its contract/evidence and rerun all relevant qualification cases.
+- Deploy the complete matching Python/static/template set including outbound.py,
+  then restart listener/dashboard. Expect re-login and explicitly allow only
+  required internal service origins. Owner remains responsible for Git sync.
+
+## 2026-10-28 — Dashboard connector and exact return-package recovery
+
+Status: READY FOR OWNER REVIEW; local compatibility complete, live qualification
+NOT_RUN. Resolves the missing connector/archive item recorded October 27.
+
+- Owner supplied the exact 1063223-byte ZIP with historical SHA-256
+  b54d5041d30ba646b188a7a917d502aa6f674b4e25540007d1d456c84ae25c34.
+  CRC, path/symlink/duplicate/size checks and 503 member hashes pass.
+- Backed up 389 safe source/doc files before selectively restoring connector,
+  owner CLI, schemas, original tests and seven return tools. Active source stays
+  C:/Users/mattlai/Projects/mini_siem; no Git, Dashboard source mutation, production
+  DB/credential writes, real tokens or provider requests.
+- Merged five-table owner schema/runtime checks, blueprint registration, fixed
+  bearer-only endpoint exemptions, restricted PostgreSQL state grants and protected
+  connector-table ownership checks. Restored jsonschema dev dependency and strict
+  truth checking of delivered source mirrors. No runtime DDL/root privileges added.
+- Preserved October 27 session/role/SSO/outbound/XSS/workflow fixes and October 21
+  guided setup/pickers/bulk triage. No application-wide rollback from the old ZIP.
+  Sophos flow, X-Forwarded-For trust and intentional memory-only rules unchanged.
+- Current baseline 446 PASS / 47 FAIL / 3 SKIP; merged 479 PASS / identical 47 FAIL /
+  3 SKIP, checked by failing identity. Current connector/security/workflow/schema/
+  package tests: 123 PASS / 0 FAIL / 0 SKIP. Syntax 165 maintained Python / five
+  static JS / seven inline JS and 11 page renders PASS; truth/secret-pattern checks
+  PASS. 377 unaffected pre-merge files remain byte-identical; reports outside source.
+- Historical replay 21 pages / 26 records / 6 negatives PASS; 14 stage-aware cases
+  PASS, no FAIL/BLOCKED; old-revision positive PASS. Eleven central transport cases
+  remain NOT_RUN. No real TLS/PostgreSQL/NXLog/IdP/systemd/load/crash qualification.
+- Restored original ZIP/payload under return/ unchanged; its source, identity,
+  catalog/log claims stay historical, not relabeled as the current application.
+  No new consolidated package produced. Added return/README.md and a ZIP checksum
+  sidecar; synchronized current recovery/security/README/AI handoff documentation.
+- Owner deployment requires a database backup, owner initialization of the five
+  tables and updated PostgreSQL grants before matching full-source restart. Full
+  R3/G1 remains PARTIAL: keep deadline/cancel/concurrency/crash/retention and native
+  single-authority/observed-asset limitations explicit. Next is operational-gap
+  qualification or a separately requested, versioned consolidated return.

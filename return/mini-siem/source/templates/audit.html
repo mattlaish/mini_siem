@@ -1,0 +1,95 @@
+{% extends "base.html" %}
+{% block title %}Activity History — mini-SIEM{% endblock %}
+{% block page_title %}Activity History{% endblock %}
+{% block head %}
+<style>
+  .wrap { max-width:1150px; margin:24px auto; padding:0 20px; }
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:20px; }
+  .panel h2 { margin:0 0 6px; font-size:15px; }
+  .sub { color:var(--ink-soft); font-size:12.5px; line-height:1.55; margin:0 0 14px; }
+  .toolbar { display:flex; gap:10px; flex-wrap:wrap; margin-bottom:14px; }
+  .toolbar input, .toolbar select { padding:8px 10px; border:1px solid var(--line); border-radius:6px; font-size:13px; }
+  .toolbar button { padding:8px 14px; border:none; border-radius:6px; font-size:13px; font-weight:600; cursor:pointer; background:var(--accent); color:#fff; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th { text-align:left; padding:6px 8px; border-bottom:1px solid var(--line); font-family:var(--mono); font-size:10px; text-transform:uppercase; color:var(--ink-soft); position:sticky; top:0; background:var(--panel); }
+  td { padding:7px 8px; border-bottom:1px solid var(--line); vertical-align:top; }
+  .mono { font-family:var(--mono); font-size:12px; }
+  .badge { display:inline-block; font-family:var(--mono); font-size:10px; padding:2px 8px; border-radius:20px; border:1px solid var(--line); }
+  .b-auth { background:var(--accent-soft); color:var(--accent); border-color:var(--accent); }
+  .b-fail { background:var(--warn-soft); color:var(--warn); border-color:var(--warn); }
+  .b-user { background:var(--amber-soft); color:var(--amber); border-color:var(--amber); }
+  .b-cfg  { background:var(--ok-soft); color:var(--ok); border-color:var(--ok); }
+  .table-scroll { max-height:600px; overflow-y:auto; }
+  .muted { color:var(--ink-soft); font-size:12px; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="wrap">
+  <div class="panel">
+    <h2>Activity history</h2>
+    <p class="sub">Who did what in the SIEM itself: logins and failures, password changes, user management, IOC and feed changes, forwarder/AI/ticket configuration, report runs. Each entry includes who made the change and the IP address they used.</p>
+    <div class="toolbar">
+      <select id="fUser"><option value="">All users</option></select>
+      <select id="fAction"><option value="">All actions</option></select>
+      <input type="text" id="fQ" data-hotkey="search" placeholder="Search activity details…">
+      <select id="fLimit"><option value="200">Last 200</option><option value="500">Last 500</option><option value="2000">Last 2000</option></select>
+      <button id="applyBtn">Apply</button>
+      <span class="muted" id="countLine" style="align-self:center;"></span>
+    </div>
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>Time</th><th>User</th><th>Client IP</th><th>Action</th><th>Target</th><th>Detail</th></tr></thead>
+        <tbody id="auditBody"><tr><td colspan="6" class="muted">Loading…</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;');
+
+function badgeClass(action){
+  if (action === 'login_failed') return 'b-fail';
+  if (action.startsWith('login') || action === 'logout' || action === 'password_changed') return 'b-auth';
+  if (action.startsWith('user_')) return 'b-user';
+  return 'b-cfg';
+}
+
+let filtersLoaded = false;
+async function load(){
+  const p = new URLSearchParams();
+  if ($('fUser').value) p.set('username', $('fUser').value);
+  if ($('fAction').value) p.set('action', $('fAction').value);
+  if ($('fQ').value.trim()) p.set('q', $('fQ').value.trim());
+  p.set('limit', $('fLimit').value);
+  const d = await (await fetch('/api/audit?' + p.toString())).json();
+  if (!filtersLoaded){
+    $('fUser').innerHTML = '<option value="">All users</option>' + (d.users||[]).map(u=>`<option>${esc(u)}</option>`).join('');
+    $('fAction').innerHTML = '<option value="">All actions</option>' + (d.actions||[]).map(a=>`<option value="${esc(a)}">${esc(MS.label(a))}</option>`).join('');
+    filtersLoaded = true;
+  }
+  const rows = d.entries || [];
+  $('countLine').textContent = rows.length + ' entr' + (rows.length===1?'y':'ies');
+  const b = $('auditBody');
+  if (!rows.length){ b.innerHTML = '<tr><td colspan="6" class="muted">No audit entries match.</td></tr>'; return; }
+  b.innerHTML = rows.map(e => `
+    <tr>
+      <td class="mono">${MS.fmtTime(e.at)}</td>
+      <td><strong>${esc(e.username)}</strong></td>
+      <td class="mono">${esc(e.source_ip||'—')}</td>
+      <td><span class="badge ${badgeClass(e.action)}">${esc(MS.label(e.action))}</span></td>
+      <td class="mono">${esc(e.target||'—')}</td>
+      <td style="font-size:12px;">${esc(e.detail||'—')}</td>
+    </tr>`).join('');
+}
+$('applyBtn').addEventListener('click', load);
+['fUser','fAction','fLimit'].forEach(id => $(id).addEventListener('change', load));
+$('fQ').addEventListener('keydown', e => { if (e.key === 'Enter') load(); });
+load();
+setInterval(load, 10000);
+</script>
+{% endblock %}

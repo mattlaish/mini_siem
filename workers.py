@@ -18,7 +18,7 @@ the same pattern as the AI triage worker (poll the DB, act, record):
   FeedRefresher — re-downloads enabled IOC feeds (Threat Intel page)
       on their configured interval and imports new indicators.
 
-All outbound calls (tickets, feeds) use stdlib urllib — no new deps.
+All outbound calls (tickets, feeds) use the shared bounded stdlib transport.
 NOTE: tickets and feeds are OUTBOUND connections from the SIEM. That is
 the point of the feature, but be deliberate about what the SIEM is
 allowed to reach.
@@ -34,6 +34,7 @@ import urllib.parse
 from datetime import datetime, timezone
 
 import severity as severity_mod
+import outbound
 
 
 def _now():
@@ -42,22 +43,22 @@ def _now():
 
 def _http(url, method="GET", headers=None, body=None, timeout=15, max_bytes=2000):
     """Minimal HTTP helper. Returns (status_code, response_text).
-    max_bytes caps how much of the response we keep — the default (2000) is
-    fine for webhook/API responses, but IOC feeds and other bulk downloads
-    need it raised (or set to None for unlimited) or they'd be silently
-    truncated mid-list."""
-    req = urllib.request.Request(url, method=method)
+    max_bytes caps the returned text preview (default 2000 characters).
+    The transport independently bounds downloads to JSON_LIMIT; None returns
+    the complete feed only within FEED_LIMIT, never an unlimited download.
+    """
+    data = body.encode("utf-8") if isinstance(body, str) else body
+    req = urllib.request.Request(url, data=data, method=method)
     for k, v in (headers or {}).items():
         req.add_header(k, v)
-    data = body.encode("utf-8") if isinstance(body, str) else body
     try:
-        with urllib.request.urlopen(req, data=data, timeout=timeout) as resp:
+        with outbound.open_request(req, timeout=timeout, max_bytes=outbound.FEED_LIMIT if max_bytes is None else outbound.JSON_LIMIT) as resp:
             raw = resp.read()
             text = raw.decode("utf-8", "replace")
             return resp.status, (text if max_bytes is None else text[:max_bytes])
     except urllib.error.HTTPError as e:
-        text = e.read().decode("utf-8", "replace")
-        return e.code, (text if max_bytes is None else text[:max_bytes])
+        e.close()
+        return e.code, "Upstream request failed"
 
 
 # ==========================================================================

@@ -1,0 +1,11 @@
+{
+  "authorization": "fixture-secret-ref",
+  "fault_injection": "insert a 513-character native hostname before export",
+  "json": null,
+  "method": "GET",
+  "path": "/api/integrations/dashboard/v1/assets",
+  "query": {
+    "limit": 1
+  },
+  "transport": {}
+}

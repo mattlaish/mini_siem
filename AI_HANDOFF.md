@@ -1,5 +1,95 @@
 # AI Handover Prompt - mini-SIEM
 
+## Latest: connector and exact historical return recovered — 2026-10-28
+
+Active source is only `C:/Users/mattlai/Projects/mini_siem`; always set that absolute
+workdir. No Git operations are authorized, regardless of AGENTS.md. Read
+`RECOVERY_2026-10-28.md`, `SECURITY_HARDENING.md` and `return/README.md` first.
+
+The owner supplied the previously missing return ZIP from
+`C:/Users/mattlai/Projects/dashboard/return/dashboard/mini-siem-return-package.zip`.
+Its SHA-256 is exactly the recorded b54d5041...ae25c34, bytes 1063223, 504 entries;
+all 503 listed hashes match. The missing connector, token CLI, schemas, tests and
+seven return tools are now recovered as actual source; bytecode reconstruction is
+no longer needed. The October 27 "missing connector/archive" item is resolved.
+
+Selective merge restored blueprint hooks, five owner-created tables/runtime
+requirements, narrow bearer-only browser/CSRF exemptions, PostgreSQL least-privilege
+export-state grants and protected-table ownership checks, jsonschema dev dependency
+and mirrored-source truth checks. Browser sessions/roles/SSO, outbound policy,
+escaping, workflow recovery, guided setup, pickers and bulk triage remain current;
+no whole-file rollback of auth/dashboard/UI/poller code. Sophos, X-Forwarded-For
+trust and memory-only live windows are unchanged.
+
+Historical ZIP and exact extracted payload restored under `return/`, unchanged.
+Their source/identity/logs describe October 22, NOT the current application. Do not
+deploy that old source mirror, reuse its identity as current, or run preparation
+over it as if it were a safe no-op. A new consolidated delivery needs fresh identity,
+fixtures, acceptance evidence and ZIP. No new package was generated in this recovery.
+
+Current Windows baseline 446 PASS / 47 FAIL / 3 SKIP; merged 479 PASS / identical
+47 failures / 3 SKIP; focused 123 PASS / 0 FAIL / 0 SKIP. Syntax: 165 maintained
+Python files, five static and seven inline JS, 11 rendered pages PASS; secret
+patterns/truth gate PASS. Fresh historical offline replay passes 21 pages / 26 records /
+6 negatives; catalog 14 PASS, 11 transport NOT_RUN, no FAIL/BLOCKED; positive old
+revision sequence PASS. Real PostgreSQL/TLS/IdP/Sophos/NXLog/systemd/load/crash and
+production registration remain NOT_RUN. Full R3/G1 remains PARTIAL; keep the
+historical open-gaps explicit. No source changed in Dashboard and no Git executed.
+
+Before deployment: preserve configs, database backup, owner initialization of five
+connector tables and updated PostgreSQL split-role grants, then matching full-source
+deployment/restart. The recovery did not touch production DBs or issue real tokens.
+Backups/reports: `C:/Users/mattlai/Documents/ChatGPT/dev project/work/mini-siem-connector-recovery-20261028`.
+Next: operational-gap qualification or an explicitly requested newly versioned
+consolidated delivery. Historical entries below are superseded where inconsistent.
+
+## Latest: overwrite recovery merge — 2026-10-27
+
+Work only in `C:/Users/mattlai/Projects/mini_siem`, with explicit absolute workdir.
+The owner prohibits ALL Git operations and handles synchronization manually;
+this overrides the permissive Git section in AGENTS.md. Do not use the Documents
+launch cwd, Desktop copies, a transfer package or a return mirror as active source.
+Use scoped approval for Projects writes rather than silently relocating work.
+
+Read `RECOVERY_2026-10-27.md` and `SECURITY_HARDENING.md` first. The October 25–26
+security/workflow changes had been overwritten; no exact full source backup was
+available. This is a reconstructed, tested merge, not a byte-identical restoration.
+The pre-recovery source backup and test evidence are outside source at
+`C:/Users/mattlai/Documents/ChatGPT/dev project/work/mini-siem-recovery-20261027`.
+
+Recovered: database-verified sessions and roles, SSO viewer defaults/collision
+rejection, default-deny mutation permissions, shared DNS-pinned bounded outbound
+transport, contextual HTML escaping and provider-error-body withholding; AI-off
+draft tests/write recovery, unsaved cloud tests, honest connection status, draft
+guards, older log/alert history and retained-data refresh recovery.
+Preserved October 21 guided setup, saved test phase/sample results, pickers,
+role-aware responsive Settings, shared helpers, bulk triage and near-miss replay.
+Analysts retain configured-feed fetch and display-column changes; other provider/
+extraction settings stay admin-only. User-required X-Forwarded-For trust,
+memory-only live rule state and Sophos OAuth/Whoami/cursor protocol are unchanged.
+
+Deploy complete matching source/static/templates with `outbound.py`; restart both
+processes. Existing cookies require login again; internal outbound services may
+need exact origin allowlisting. No schema migration or production credential
+replacement. The portable Sophos snapshot/ZIP has NOT been transport-hardened.
+
+Validation on the actual Projects root: baseline 363 PASS / 47 FAIL / 3 SKIP;
+recovered 446 PASS / identical 47 failing identities / 3 SKIP. Focused 247 PASS,
+four known Windows permission cases deselected only from that focused run (all
+remain in the full result). Six Node UI runtime tests PASS; no full browser/live
+provider/PostgreSQL/NXLog/IdP/systemd qualification claimed. Windows excludes the
+Linux-only systemd collection file (`pwd`). No Git or production database writes.
+
+Important outstanding recovery: `dashboard_connector.py`, reader-token tool,
+connector schemas/tests and the complete Dashboard return package are missing.
+Only compiled cache remnants survive; do not execute/deploy them as recovered
+source. The old return archive is absent, so its historical hash cannot be
+verified. Owner reports no backup. Next task is contract/evidence-based connector
+reconstruction and fresh replay/catalog/transport/identity qualification; do not
+claim the entire October 26 package is restored or reuse the old archive identity.
+Historical sections below describe earlier states and are superseded where they
+conflict with this entry (including the old provider-error-text and test claims).
+
 ## Operator language pass - 2026-10-18
 
 Work directly in C:/Users/mattlai/Projects/mini_siem, using scoped approval when

@@ -70,6 +70,9 @@ RUNTIME_REQUIRED_TABLES = (
     "audit_log", "log_fields", "api_keys", "schema_migrations", "ai_usage_audit",
     "runtime_stats", "archive_segments", "archive_occurrence_catalog",
     "security_events", "assets", "identities",
+    "dashboard_reader_tokens", "dashboard_export_counters",
+    "dashboard_export_records", "dashboard_export_snapshots",
+    "dashboard_export_snapshot_records",
 )
 
 
@@ -509,6 +512,58 @@ def _schema_statements(backend: str):
             archived_at TEXT NOT NULL
         )""",
         "CREATE INDEX IF NOT EXISTS idx_archive_occ_segment ON archive_occurrence_catalog(segment_id)",
+        """CREATE TABLE IF NOT EXISTS dashboard_reader_tokens (
+            id              TEXT PRIMARY KEY,
+            principal_id    TEXT NOT NULL,
+            tenant_id       TEXT NOT NULL,
+            source_instance_id TEXT NOT NULL,
+            token_digest    TEXT NOT NULL UNIQUE,
+            token_prefix    TEXT NOT NULL,
+            scopes_json     TEXT NOT NULL,
+            created_at      TEXT NOT NULL,
+            expires_at      TEXT NOT NULL,
+            revoked_at      TEXT,
+            rotation_group  TEXT NOT NULL,
+            last_used_at    TEXT
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_dashboard_tokens_principal ON dashboard_reader_tokens(principal_id, tenant_id)",
+        """CREATE TABLE IF NOT EXISTS dashboard_export_counters (
+            tenant_id       TEXT NOT NULL,
+            lane            TEXT NOT NULL,
+            next_sequence   INTEGER NOT NULL,
+            PRIMARY KEY (tenant_id, lane)
+        )""",
+        """CREATE TABLE IF NOT EXISTS dashboard_export_records (
+            tenant_id       TEXT NOT NULL,
+            lane            TEXT NOT NULL,
+            external_id     TEXT NOT NULL,
+            revision        INTEGER NOT NULL,
+            stream_sequence INTEGER NOT NULL,
+            fingerprint     TEXT NOT NULL,
+            record_json     TEXT NOT NULL,
+            updated_at      TEXT NOT NULL,
+            PRIMARY KEY (tenant_id, lane, external_id)
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_dashboard_export_stream ON dashboard_export_records(tenant_id, lane, stream_sequence)",
+        """CREATE TABLE IF NOT EXISTS dashboard_export_snapshots (
+            snapshot_id     TEXT PRIMARY KEY,
+            tenant_id       TEXT NOT NULL,
+            principal_id    TEXT NOT NULL,
+            source_instance_id TEXT NOT NULL,
+            lane            TEXT NOT NULL,
+            watermark       INTEGER NOT NULL,
+            created_at      TEXT NOT NULL,
+            expires_at      TEXT NOT NULL,
+            record_count    INTEGER NOT NULL
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_dashboard_snapshots_expiry ON dashboard_export_snapshots(expires_at)",
+        """CREATE TABLE IF NOT EXISTS dashboard_export_snapshot_records (
+            snapshot_id     TEXT NOT NULL,
+            position        INTEGER NOT NULL,
+            record_json     TEXT NOT NULL,
+            PRIMARY KEY (snapshot_id, position)
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_dashboard_snapshot_page ON dashboard_export_snapshot_records(snapshot_id, position)",
     ]
     if backend == "postgres":
         # PostgreSQL Event Storage v2 is an owner-created typed query projection.

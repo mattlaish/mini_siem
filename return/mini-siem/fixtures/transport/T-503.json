@@ -1,0 +1,11 @@
+{
+  "authorization": "fixture-secret-ref",
+  "fault_injection": "set active snapshot capacity below the existing durable snapshot count",
+  "json": null,
+  "method": "GET",
+  "path": "/api/integrations/dashboard/v1/alerts",
+  "query": {
+    "limit": 1
+  },
+  "transport": {}
+}

@@ -1,0 +1,2792 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.example.invalid/operator-workspace.integration.v1/page.schema.json",
+  "title": "Operator Workspace Integration v1 resource page",
+  "type": "object",
+  "properties": {
+    "contract": {
+      "type": "string",
+      "enum": [
+        "operator-workspace.integration.v1"
+      ]
+    },
+    "schema_version": {
+      "type": "string",
+      "enum": [
+        "1.0"
+      ]
+    },
+    "source_product": {
+      "type": "string",
+      "enum": [
+        "NDR",
+        "SCANNER",
+        "FIREWALL",
+        "NAC",
+        "WAF",
+        "SIEM",
+        "SANDBOX",
+        "COMPLIANCE",
+        "PAM",
+        "DECEPTION",
+        "SOAR"
+      ]
+    },
+    "source_instance_id": {
+      "$ref": "#/$defs/id"
+    },
+    "resource_kind": {
+      "type": "string",
+      "enum": [
+        "ASSET",
+        "FINDING",
+        "DETECTION",
+        "ALERT",
+        "INCIDENT",
+        "EVENT",
+        "FLOW",
+        "AUDIT_EVENT",
+        "COMPLIANCE_RESULT",
+        "POLICY",
+        "SESSION",
+        "SANDBOX_REPORT",
+        "SCAN",
+        "ACTION_STATUS",
+        "HEALTH"
+      ]
+    },
+    "sync_mode": {
+      "type": "string",
+      "enum": [
+        "SNAPSHOT",
+        "INCREMENTAL"
+      ]
+    },
+    "source_snapshot_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 128
+    },
+    "coverage": {
+      "type": "object",
+      "properties": {
+        "state": {
+          "type": "string",
+          "enum": [
+            "COMPLETE",
+            "PARTIAL",
+            "GAP"
+          ]
+        },
+        "reason_codes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "maxItems": 100
+        }
+      },
+      "required": [
+        "state",
+        "reason_codes"
+      ],
+      "additionalProperties": false
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "Z$"
+    },
+    "records": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/record"
+      },
+      "maxItems": 500
+    },
+    "next_cursor": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2048,
+      "pattern": "^[A-Za-z0-9_-]+$"
+    },
+    "has_more": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "contract",
+    "schema_version",
+    "source_product",
+    "source_instance_id",
+    "resource_kind",
+    "sync_mode",
+    "source_snapshot_id",
+    "coverage",
+    "generated_at",
+    "records",
+    "next_cursor",
+    "has_more"
+  ],
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "sync_mode": {
+            "const": "SNAPSHOT"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "source_snapshot_id": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "source_snapshot_id": {
+            "type": "null"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "resource_kind": {
+            "const": "ASSET"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "records": {
+            "items": {
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "operation": {
+                        "const": "UPSERT"
+                      }
+                    }
+                  },
+                  "then": {
+                    "properties": {
+                      "payload": {
+                        "$ref": "#/$defs/payload_ASSET"
+                      }
+                    }
+                  },
+                  "else": {
+                    "properties": {
+                      "payload": {
+                        "type": "object",
+                        "properties": {},
+                        "required": [],
+                        "additionalProperties": false
+                      }
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "resource_kind": {
+            "const": "FINDING"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "records": {
+            "items": {
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "operation": {
+                        "const": "UPSERT"
+                      }
+                    }
+                  },
+                  "then": {
+                    "properties": {
+                      "payload": {
+                        "$ref": "#/$defs/payload_FINDING"
+                      }
+                    }
+                  },
+                  "else": {
+                    "properties": {
+                      "payload": {
+                        "type": "object",
+                        "properties": {},
+                        "required": [],
+                        "additionalProperties": false
+                      }
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "resource_kind": {
+            "const": "DETECTION"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "records": {
+            "items": {
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "operation": {
+                        "const": "UPSERT"
+                      }
+                    }
+                  },
+                  "then": {
+                    "properties": {
+                      "payload": {
+                        "$ref": "#/$defs/payload_DETECTION"
+                      }
+                    }
+                  },
+                  "else": {
+                    "properties": {
+                      "payload": {
+                        "type": "object",
+                        "properties": {},
+                        "required": [],
+                        "additionalProperties": false
+                      }
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "resource_kind": {
+            "const": "ALERT"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "records": {
+            "items": {
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "operation": {
+                        "const": "UPSERT"
+                      }
+                    }
+                  },
+                  "then": {
+                    "properties": {
+                      "payload": {
+                        "$ref": "#/$defs/payload_ALERT"
+                      }
+                    }
+                  },
+                  "else": {
+                    "properties": {
+                      "payload": {
+                        "type": "object",
+                        "properties": {},
+                        "required": [],
+                        "additionalProperties": false
+                      }
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "resource_kind": {
+            "const": "INCIDENT"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "records": {
+            "items": {
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "operation": {
+                        "const": "UPSERT"
+                      }
+                    }
+                  },
+                  "then": {
+                    "properties": {
+                      "payload": {
+                        "$ref": "#/$defs/payload_INCIDENT"
+                      }
+                    }
+                  },
+                  "else": {
+                    "properties": {
+                      "payload": {
+                        "type": "object",
+                        "properties": {},
+                        "required": [],
+                        "additionalProperties": false
+                      }
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "resource_kind": {
+            "const": "EVENT"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "records": {
+            "items": {
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "operation": {
+                        "const": "UPSERT"
+                      }
+                    }
+                  },
+                  "then": {
+                    "properties": {
+                      "payload": {
+                        "$ref": "#/$defs/payload_EVENT"
+                      }
+                    }
+                  },
+                  "else": {
+                    "properties": {
+                      "payload": {
+                        "type": "object",
+                        "properties": {},
+                        "required": [],
+                        "additionalProperties": false
+                      }
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "resource_kind": {
+            "const": "FLOW"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "records": {
+            "items": {
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "operation": {
+                        "const": "UPSERT"
+                      }
+                    }
+                  },
+                  "then": {
+                    "properties": {
+                      "payload": {
+                        "$ref": "#/$defs/payload_FLOW"
+                      }
+                    }
+                  },
+                  "else": {
+                    "properties": {
+                      "payload": {
+                        "type": "object",
+                        "properties": {},
+                        "required": [],
+                        "additionalProperties": false
+                      }
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "resource_kind": {
+            "const": "AUDIT_EVENT"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "records": {
+            "items": {
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "operation": {
+                        "const": "UPSERT"
+                      }
+                    }
+                  },
+                  "then": {
+                    "properties": {
+                      "payload": {
+                        "$ref": "#/$defs/payload_AUDIT_EVENT"
+                      }
+                    }
+                  },
+                  "else": {
+                    "properties": {
+                      "payload": {
+                        "type": "object",
+                        "properties": {},
+                        "required": [],
+                        "additionalProperties": false
+                      }
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "resource_kind": {
+            "const": "COMPLIANCE_RESULT"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "records": {
+            "items": {
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "operation": {
+                        "const": "UPSERT"
+                      }
+                    }
+                  },
+                  "then": {
+                    "properties": {
+                      "payload": {
+                        "$ref": "#/$defs/payload_COMPLIANCE_RESULT"
+                      }
+                    }
+                  },
+                  "else": {
+                    "properties": {
+                      "payload": {
+                        "type": "object",
+                        "properties": {},
+                        "required": [],
+                        "additionalProperties": false
+                      }
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "resource_kind": {
+            "const": "POLICY"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "records": {
+            "items": {
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "operation": {
+                        "const": "UPSERT"
+                      }
+                    }
+                  },
+                  "then": {
+                    "properties": {
+                      "payload": {
+                        "$ref": "#/$defs/payload_POLICY"
+                      }
+                    }
+                  },
+                  "else": {
+                    "properties": {
+                      "payload": {
+                        "type": "object",
+                        "properties": {},
+                        "required": [],
+                        "additionalProperties": false
+                      }
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "resource_kind": {
+            "const": "SESSION"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "records": {
+            "items": {
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "operation": {
+                        "const": "UPSERT"
+                      }
+                    }
+                  },
+                  "then": {
+                    "properties": {
+                      "payload": {
+                        "$ref": "#/$defs/payload_SESSION"
+                      }
+                    }
+                  },
+                  "else": {
+                    "properties": {
+                      "payload": {
+                        "type": "object",
+                        "properties": {},
+                        "required": [],
+                        "additionalProperties": false
+                      }
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "resource_kind": {
+            "const": "SANDBOX_REPORT"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "records": {
+            "items": {
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "operation": {
+                        "const": "UPSERT"
+                      }
+                    }
+                  },
+                  "then": {
+                    "properties": {
+                      "payload": {
+                        "$ref": "#/$defs/payload_SANDBOX_REPORT"
+                      }
+                    }
+                  },
+                  "else": {
+                    "properties": {
+                      "payload": {
+                        "type": "object",
+                        "properties": {},
+                        "required": [],
+                        "additionalProperties": false
+                      }
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "resource_kind": {
+            "const": "SCAN"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "records": {
+            "items": {
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "operation": {
+                        "const": "UPSERT"
+                      }
+                    }
+                  },
+                  "then": {
+                    "properties": {
+                      "payload": {
+                        "$ref": "#/$defs/payload_SCAN"
+                      }
+                    }
+                  },
+                  "else": {
+                    "properties": {
+                      "payload": {
+                        "type": "object",
+                        "properties": {},
+                        "required": [],
+                        "additionalProperties": false
+                      }
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "resource_kind": {
+            "const": "ACTION_STATUS"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "records": {
+            "items": {
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "operation": {
+                        "const": "UPSERT"
+                      }
+                    }
+                  },
+                  "then": {
+                    "properties": {
+                      "payload": {
+                        "$ref": "#/$defs/payload_ACTION_STATUS"
+                      }
+                    }
+                  },
+                  "else": {
+                    "properties": {
+                      "payload": {
+                        "type": "object",
+                        "properties": {},
+                        "required": [],
+                        "additionalProperties": false
+                      }
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "resource_kind": {
+            "const": "HEALTH"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "records": {
+            "items": {
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "operation": {
+                        "const": "UPSERT"
+                      }
+                    }
+                  },
+                  "then": {
+                    "properties": {
+                      "payload": {
+                        "$ref": "#/$defs/payload_HEALTH"
+                      }
+                    }
+                  },
+                  "else": {
+                    "properties": {
+                      "payload": {
+                        "type": "object",
+                        "properties": {},
+                        "required": [],
+                        "additionalProperties": false
+                      }
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+    },
+    "revision": {
+      "type": "string",
+      "pattern": "^[1-9][0-9]{0,19}$"
+    },
+    "ref": {
+      "type": "object",
+      "properties": {
+        "source_product": {
+          "type": "string",
+          "enum": [
+            "NDR",
+            "SCANNER",
+            "FIREWALL",
+            "NAC",
+            "WAF",
+            "SIEM",
+            "SANDBOX",
+            "COMPLIANCE",
+            "PAM",
+            "DECEPTION",
+            "SOAR"
+          ]
+        },
+        "source_instance_id": {
+          "$ref": "#/$defs/id"
+        },
+        "resource_kind": {
+          "type": "string",
+          "enum": [
+            "ASSET",
+            "FINDING",
+            "DETECTION",
+            "ALERT",
+            "INCIDENT",
+            "EVENT",
+            "FLOW",
+            "AUDIT_EVENT",
+            "COMPLIANCE_RESULT",
+            "POLICY",
+            "SESSION",
+            "SANDBOX_REPORT",
+            "SCAN",
+            "ACTION_STATUS",
+            "HEALTH"
+          ]
+        },
+        "external_id": {
+          "$ref": "#/$defs/id"
+        }
+      },
+      "required": [
+        "source_product",
+        "source_instance_id",
+        "resource_kind",
+        "external_id"
+      ],
+      "additionalProperties": false
+    },
+    "entity_ref": {
+      "type": "object",
+      "properties": {
+        "ref": {
+          "$ref": "#/$defs/ref"
+        },
+        "role": {
+          "type": "string",
+          "enum": [
+            "SUBJECT",
+            "PEER",
+            "TELEMETRY_ORIGIN",
+            "PROTECTOR",
+            "IDENTITY",
+            "SAMPLE",
+            "ANALYSIS_GUEST"
+          ]
+        },
+        "observed_at": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "Z$"
+        },
+        "valid_until": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "Z$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "network_namespace": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 256
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      },
+      "required": [
+        "ref",
+        "role",
+        "observed_at",
+        "valid_until",
+        "network_namespace",
+        "confidence"
+      ],
+      "additionalProperties": false
+    },
+    "evidence": {
+      "type": "object",
+      "properties": {
+        "ref": {
+          "$ref": "#/$defs/ref"
+        },
+        "revision": {
+          "$ref": "#/$defs/revision"
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "OBSERVATION",
+            "ANALYSIS",
+            "RECEIPT",
+            "VERIFICATION",
+            "REPORT",
+            "AUDIT"
+          ]
+        },
+        "summary": {
+          "type": "string",
+          "maxLength": 1024
+        },
+        "detail_path": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 1024,
+          "pattern": "^/(?!/)"
+        }
+      },
+      "required": [
+        "ref",
+        "revision",
+        "kind",
+        "summary",
+        "detail_path"
+      ],
+      "additionalProperties": false
+    },
+    "attention": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "string",
+          "pattern": "^[A-Z][A-Z0-9_.]{1,127}$"
+        },
+        "severity": {
+          "type": "string",
+          "enum": [
+            "CRITICAL",
+            "HIGH",
+            "MEDIUM",
+            "LOW",
+            "INFO",
+            "UNKNOWN"
+          ]
+        },
+        "confidence": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 1
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "OPEN",
+            "ACKNOWLEDGED",
+            "RESOLVED",
+            "UNKNOWN"
+          ]
+        },
+        "reason_codes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "maxItems": 100
+        },
+        "recommended_action_codes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "maxItems": 100
+        }
+      },
+      "required": [
+        "code",
+        "severity",
+        "confidence",
+        "status",
+        "reason_codes",
+        "recommended_action_codes"
+      ],
+      "additionalProperties": false
+    },
+    "identity": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "AGENT_ID",
+            "CLOUD_RESOURCE_ID",
+            "HARDWARE_UUID",
+            "SERIAL",
+            "FQDN",
+            "HOSTNAME",
+            "IP",
+            "MAC",
+            "FILE_SHA256",
+            "URL_ORIGIN",
+            "PRODUCT_OBJECT_ID"
+          ]
+        },
+        "value": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "namespace": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "observed_at": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "Z$"
+        },
+        "valid_until": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "Z$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "assurance": {
+          "type": "string",
+          "enum": [
+            "VERIFIED",
+            "OBSERVED",
+            "CLAIMED",
+            "UNKNOWN"
+          ]
+        }
+      },
+      "required": [
+        "kind",
+        "value",
+        "namespace",
+        "observed_at",
+        "valid_until",
+        "assurance"
+      ],
+      "additionalProperties": false
+    },
+    "verification": {
+      "type": "object",
+      "properties": {
+        "state": {
+          "type": "string",
+          "enum": [
+            "NOT_RUN",
+            "PENDING",
+            "VERIFIED",
+            "FAILED",
+            "UNKNOWN"
+          ]
+        },
+        "observed_at": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "Z$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "evidence_refs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/evidence"
+          },
+          "maxItems": 100
+        }
+      },
+      "required": [
+        "state",
+        "observed_at",
+        "evidence_refs"
+      ],
+      "additionalProperties": false
+    },
+    "metric": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "value": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "unit": {
+          "type": "string",
+          "enum": [
+            "percent",
+            "count",
+            "bytes",
+            "bytes_per_second",
+            "requests_per_second",
+            "milliseconds",
+            "seconds",
+            "ratio"
+          ]
+        },
+        "window_seconds": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "observed_at": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "Z$"
+        },
+        "threshold": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "threshold_operator": {
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "GT",
+                "GTE",
+                "LT",
+                "LTE"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "quality": {
+          "type": "string",
+          "enum": [
+            "MEASURED",
+            "ESTIMATED",
+            "UNKNOWN"
+          ]
+        }
+      },
+      "required": [
+        "name",
+        "value",
+        "unit",
+        "window_seconds",
+        "observed_at",
+        "threshold",
+        "threshold_operator",
+        "quality"
+      ],
+      "additionalProperties": false
+    },
+    "provenance": {
+      "type": "object",
+      "properties": {
+        "origin": {
+          "$ref": "#/$defs/ref"
+        },
+        "origin_revision": {
+          "$ref": "#/$defs/revision"
+        },
+        "origin_event_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 256
+        },
+        "forwarded_by": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "source_product": {
+                "type": "string",
+                "enum": [
+                  "NDR",
+                  "SCANNER",
+                  "FIREWALL",
+                  "NAC",
+                  "WAF",
+                  "SIEM",
+                  "SANDBOX",
+                  "COMPLIANCE",
+                  "PAM",
+                  "DECEPTION",
+                  "SOAR"
+                ]
+              },
+              "source_instance_id": {
+                "$ref": "#/$defs/id"
+              }
+            },
+            "required": [
+              "source_product",
+              "source_instance_id"
+            ],
+            "additionalProperties": false
+          },
+          "maxItems": 100
+        },
+        "derived_from": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ref"
+          },
+          "maxItems": 100
+        },
+        "evidence_refs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/evidence"
+          },
+          "maxItems": 100
+        },
+        "detail_path": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 1024,
+          "pattern": "^/(?!/)"
+        }
+      },
+      "required": [
+        "origin",
+        "origin_revision",
+        "origin_event_id",
+        "forwarded_by",
+        "derived_from",
+        "evidence_refs",
+        "detail_path"
+      ],
+      "additionalProperties": false
+    },
+    "payload_ASSET": {
+      "type": "object",
+      "properties": {
+        "entity_refs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/entity_ref"
+          },
+          "maxItems": 100
+        },
+        "summary": {
+          "type": "string",
+          "maxLength": 2048
+        },
+        "attention": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/attention"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "asset_type": {
+          "type": "string",
+          "enum": [
+            "HOST",
+            "NETWORK_DEVICE",
+            "APPLICATION",
+            "SITE",
+            "SERVICE",
+            "SENSOR",
+            "DECOY",
+            "FILE",
+            "IDENTITY",
+            "UNKNOWN"
+          ]
+        },
+        "display_name": {
+          "type": "string",
+          "maxLength": 256
+        },
+        "identities": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/identity"
+          },
+          "maxItems": 100
+        },
+        "lifecycle": {
+          "type": "string",
+          "enum": [
+            "ACTIVE",
+            "INACTIVE",
+            "RETIRED",
+            "UNKNOWN"
+          ]
+        },
+        "criticality": {
+          "type": "string",
+          "enum": [
+            "CRITICAL",
+            "HIGH",
+            "MEDIUM",
+            "LOW",
+            "UNKNOWN"
+          ]
+        },
+        "last_seen_at": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "Z$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "entity_refs",
+        "summary",
+        "attention",
+        "asset_type",
+        "display_name",
+        "identities",
+        "lifecycle",
+        "criticality",
+        "last_seen_at"
+      ],
+      "additionalProperties": false
+    },
+    "payload_FINDING": {
+      "type": "object",
+      "properties": {
+        "entity_refs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/entity_ref"
+          },
+          "maxItems": 100
+        },
+        "summary": {
+          "type": "string",
+          "maxLength": 2048
+        },
+        "attention": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/attention"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "asset_external_id": {
+          "$ref": "#/$defs/id"
+        },
+        "candidate_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 256
+        },
+        "cve_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 256
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "OPEN",
+            "RESOLVED",
+            "REOPENED",
+            "ACCEPTED_RISK",
+            "FALSE_POSITIVE",
+            "UNKNOWN"
+          ]
+        },
+        "severity": {
+          "type": "string",
+          "enum": [
+            "CRITICAL",
+            "HIGH",
+            "MEDIUM",
+            "LOW",
+            "INFO",
+            "UNKNOWN"
+          ]
+        },
+        "first_seen_at": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "Z$"
+        },
+        "last_seen_at": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "Z$"
+        },
+        "evidence_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "remediation_status": {
+          "type": "string",
+          "enum": [
+            "NOT_STARTED",
+            "IN_PROGRESS",
+            "FIXED_UNVERIFIED",
+            "VERIFIED_FIXED",
+            "UNKNOWN"
+          ]
+        },
+        "exploit_evidence": {
+          "type": "string",
+          "enum": [
+            "NONE",
+            "KNOWN_EXPLOITED_CATALOG",
+            "LOCAL_SUSPECTED",
+            "LOCAL_CONFIRMED",
+            "UNKNOWN"
+          ]
+        }
+      },
+      "required": [
+        "entity_refs",
+        "summary",
+        "attention",
+        "asset_external_id",
+        "candidate_id",
+        "cve_id",
+        "status",
+        "severity",
+        "first_seen_at",
+        "last_seen_at",
+        "evidence_count",
+        "remediation_status",
+        "exploit_evidence"
+      ],
+      "additionalProperties": false
+    },
+    "payload_DETECTION": {
+      "type": "object",
+      "properties": {
+        "entity_refs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/entity_ref"
+          },
+          "maxItems": 100
+        },
+        "summary": {
+          "type": "string",
+          "maxLength": 2048
+        },
+        "attention": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/attention"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "detector_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "rule_version": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 256
+        },
+        "category": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "confidence": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 1
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "OPEN",
+            "RESOLVED",
+            "SUPPRESSED",
+            "UNKNOWN"
+          ]
+        },
+        "lure_type": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 256
+        },
+        "match_strength": {
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "EXACT",
+                "HEURISTIC",
+                "UNKNOWN"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "entity_refs",
+        "summary",
+        "attention",
+        "detector_id",
+        "rule_version",
+        "category",
+        "confidence",
+        "status",
+        "lure_type",
+        "match_strength"
+      ],
+      "additionalProperties": false
+    },
+    "payload_ALERT": {
+      "type": "object",
+      "properties": {
+        "entity_refs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/entity_ref"
+          },
+          "maxItems": 100
+        },
+        "summary": {
+          "type": "string",
+          "maxLength": 2048
+        },
+        "attention": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/attention"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "rule_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "rule_version": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 256
+        },
+        "severity": {
+          "type": "string",
+          "enum": [
+            "CRITICAL",
+            "HIGH",
+            "MEDIUM",
+            "LOW",
+            "INFO",
+            "UNKNOWN"
+          ]
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "OPEN",
+            "ACKNOWLEDGED",
+            "RESOLVED",
+            "SUPPRESSED",
+            "UNKNOWN"
+          ]
+        },
+        "source_case_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ref"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "entity_refs",
+        "summary",
+        "attention",
+        "rule_id",
+        "rule_version",
+        "severity",
+        "status",
+        "source_case_ref"
+      ],
+      "additionalProperties": false
+    },
+    "payload_INCIDENT": {
+      "type": "object",
+      "properties": {
+        "entity_refs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/entity_ref"
+          },
+          "maxItems": 100
+        },
+        "summary": {
+          "type": "string",
+          "maxLength": 2048
+        },
+        "attention": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/attention"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "title": {
+          "type": "string",
+          "maxLength": 256
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "OPEN",
+            "INVESTIGATING",
+            "CONTAINED",
+            "RESOLVED",
+            "CLOSED",
+            "UNKNOWN"
+          ]
+        },
+        "severity": {
+          "type": "string",
+          "enum": [
+            "CRITICAL",
+            "HIGH",
+            "MEDIUM",
+            "LOW",
+            "INFO",
+            "UNKNOWN"
+          ]
+        },
+        "member_refs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ref"
+          },
+          "maxItems": 100
+        },
+        "opened_at": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "Z$"
+        },
+        "closed_at": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "Z$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "entity_refs",
+        "summary",
+        "attention",
+        "title",
+        "status",
+        "severity",
+        "member_refs",
+        "opened_at",
+        "closed_at"
+      ],
+      "additionalProperties": false
+    },
+    "payload_EVENT": {
+      "type": "object",
+      "properties": {
+        "entity_refs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/entity_ref"
+          },
+          "maxItems": 100
+        },
+        "summary": {
+          "type": "string",
+          "maxLength": 2048
+        },
+        "attention": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/attention"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "event_type": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "outcome": {
+          "type": "string",
+          "enum": [
+            "SUCCESS",
+            "FAILURE",
+            "DENIED",
+            "UNKNOWN"
+          ]
+        },
+        "category": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        }
+      },
+      "required": [
+        "entity_refs",
+        "summary",
+        "attention",
+        "event_type",
+        "outcome",
+        "category"
+      ],
+      "additionalProperties": false
+    },
+    "payload_FLOW": {
+      "type": "object",
+      "properties": {
+        "entity_refs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/entity_ref"
+          },
+          "maxItems": 100
+        },
+        "summary": {
+          "type": "string",
+          "maxLength": 2048
+        },
+        "attention": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/attention"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "flow_start_at": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "Z$"
+        },
+        "flow_end_at": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "Z$"
+        },
+        "protocol": {
+          "type": "string",
+          "enum": [
+            "TCP",
+            "UDP",
+            "ICMP",
+            "OTHER"
+          ]
+        },
+        "source_port": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 65535
+        },
+        "destination_port": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 65535
+        },
+        "bytes": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "selection_reason": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        }
+      },
+      "required": [
+        "entity_refs",
+        "summary",
+        "attention",
+        "flow_start_at",
+        "flow_end_at",
+        "protocol",
+        "source_port",
+        "destination_port",
+        "bytes",
+        "selection_reason"
+      ],
+      "additionalProperties": false
+    },
+    "payload_AUDIT_EVENT": {
+      "type": "object",
+      "properties": {
+        "entity_refs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/entity_ref"
+          },
+          "maxItems": 100
+        },
+        "summary": {
+          "type": "string",
+          "maxLength": 2048
+        },
+        "attention": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/attention"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "event_type": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "actor_ref": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 256
+        },
+        "target_ref": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 256
+        },
+        "outcome": {
+          "type": "string",
+          "enum": [
+            "SUCCESS",
+            "FAILURE",
+            "DENIED",
+            "UNKNOWN"
+          ]
+        },
+        "operation_ref": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 256
+        }
+      },
+      "required": [
+        "entity_refs",
+        "summary",
+        "attention",
+        "event_type",
+        "actor_ref",
+        "target_ref",
+        "outcome",
+        "operation_ref"
+      ],
+      "additionalProperties": false
+    },
+    "payload_COMPLIANCE_RESULT": {
+      "type": "object",
+      "properties": {
+        "entity_refs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/entity_ref"
+          },
+          "maxItems": 100
+        },
+        "summary": {
+          "type": "string",
+          "maxLength": 2048
+        },
+        "attention": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/attention"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "assessment_id": {
+          "$ref": "#/$defs/id"
+        },
+        "control_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "profile_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "profile_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "result": {
+          "type": "string",
+          "enum": [
+            "PASS",
+            "FAIL",
+            "ERROR",
+            "NOT_APPLICABLE",
+            "UNKNOWN"
+          ]
+        },
+        "evaluated_at": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "Z$"
+        },
+        "drift_fields": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "maxItems": 100
+        }
+      },
+      "required": [
+        "entity_refs",
+        "summary",
+        "attention",
+        "assessment_id",
+        "control_id",
+        "profile_id",
+        "profile_version",
+        "result",
+        "evaluated_at",
+        "drift_fields"
+      ],
+      "additionalProperties": false
+    },
+    "payload_POLICY": {
+      "type": "object",
+      "properties": {
+        "entity_refs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/entity_ref"
+          },
+          "maxItems": 100
+        },
+        "summary": {
+          "type": "string",
+          "maxLength": 2048
+        },
+        "attention": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/attention"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "policy_type": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "desired_generation": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 256
+        },
+        "active_generation": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 256
+        },
+        "enforcement_state": {
+          "type": "string",
+          "enum": [
+            "ENFORCING",
+            "NOT_ENFORCING",
+            "PARTIAL",
+            "UNKNOWN"
+          ]
+        },
+        "scope_refs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ref"
+          },
+          "maxItems": 100
+        },
+        "content_digest": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        }
+      },
+      "required": [
+        "entity_refs",
+        "summary",
+        "attention",
+        "policy_type",
+        "desired_generation",
+        "active_generation",
+        "enforcement_state",
+        "scope_refs",
+        "content_digest"
+      ],
+      "additionalProperties": false
+    },
+    "payload_SESSION": {
+      "type": "object",
+      "properties": {
+        "entity_refs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/entity_ref"
+          },
+          "maxItems": 100
+        },
+        "summary": {
+          "type": "string",
+          "maxLength": 2048
+        },
+        "attention": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/attention"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "endpoint_ref": {
+          "$ref": "#/$defs/ref"
+        },
+        "identity_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ref"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "network_location": {
+          "type": "object",
+          "properties": {
+            "nad_ref": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ref"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "interface_ref": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "maxLength": 256
+            },
+            "site": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "maxLength": 256
+            },
+            "vrf": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "maxLength": 256
+            },
+            "vlan": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "maxLength": 256
+            },
+            "sgt": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "maxLength": 256
+            }
+          },
+          "required": [
+            "nad_ref",
+            "interface_ref",
+            "site",
+            "vrf",
+            "vlan",
+            "sgt"
+          ],
+          "additionalProperties": false
+        },
+        "authentication_state": {
+          "type": "string",
+          "enum": [
+            "ACCEPTED",
+            "REJECTED",
+            "UNKNOWN"
+          ]
+        },
+        "authorization_state": {
+          "type": "string",
+          "enum": [
+            "AUTHORIZED",
+            "DENIED",
+            "UNKNOWN"
+          ]
+        },
+        "enforcement_state": {
+          "type": "string",
+          "enum": [
+            "ENFORCING",
+            "NOT_ENFORCING",
+            "PARTIAL",
+            "UNKNOWN"
+          ]
+        },
+        "started_at": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "Z$"
+        },
+        "ended_at": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "Z$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "entity_refs",
+        "summary",
+        "attention",
+        "endpoint_ref",
+        "identity_ref",
+        "network_location",
+        "authentication_state",
+        "authorization_state",
+        "enforcement_state",
+        "started_at",
+        "ended_at"
+      ],
+      "additionalProperties": false
+    },
+    "payload_SANDBOX_REPORT": {
+      "type": "object",
+      "properties": {
+        "entity_refs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/entity_ref"
+          },
+          "maxItems": 100
+        },
+        "summary": {
+          "type": "string",
+          "maxLength": 2048
+        },
+        "attention": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/attention"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "report_type": {
+          "type": "string",
+          "enum": [
+            "SANDBOX_ANALYSIS"
+          ]
+        },
+        "analysis_id": {
+          "$ref": "#/$defs/id"
+        },
+        "sample_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "stage": {
+          "type": "string",
+          "enum": [
+            "QUEUED",
+            "RUNNING",
+            "COMPLETED",
+            "FAILED",
+            "CANCELLED",
+            "UNKNOWN"
+          ]
+        },
+        "verdict": {
+          "type": "string",
+          "enum": [
+            "MALICIOUS",
+            "SUSPICIOUS",
+            "BENIGN",
+            "UNKNOWN"
+          ]
+        },
+        "confidence": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 1
+        },
+        "runtime_assurance": {
+          "type": "string",
+          "enum": [
+            "QUALIFIED",
+            "UNQUALIFIED",
+            "UNKNOWN"
+          ]
+        },
+        "iocs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "DOMAIN",
+                  "IP",
+                  "SHA256",
+                  "URL_ORIGIN"
+                ]
+              },
+              "value": {
+                "type": "string",
+                "maxLength": 512
+              },
+              "basis": {
+                "type": "string",
+                "enum": [
+                  "EXTRACTED",
+                  "OBSERVED",
+                  "CONFIRMED"
+                ]
+              }
+            },
+            "required": [
+              "type",
+              "value",
+              "basis"
+            ],
+            "additionalProperties": false
+          },
+          "maxItems": 100
+        }
+      },
+      "required": [
+        "entity_refs",
+        "summary",
+        "attention",
+        "report_type",
+        "analysis_id",
+        "sample_sha256",
+        "stage",
+        "verdict",
+        "confidence",
+        "runtime_assurance",
+        "iocs"
+      ],
+      "additionalProperties": false
+    },
+    "payload_SCAN": {
+      "type": "object",
+      "properties": {
+        "entity_refs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/entity_ref"
+          },
+          "maxItems": 100
+        },
+        "summary": {
+          "type": "string",
+          "maxLength": 2048
+        },
+        "attention": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/attention"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "scan_profile_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "QUEUED",
+            "RUNNING",
+            "COMPLETED",
+            "FAILED",
+            "CANCELLED",
+            "UNKNOWN"
+          ]
+        },
+        "started_at": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "Z$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "completed_at": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "Z$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "target_refs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ref"
+          },
+          "maxItems": 100
+        }
+      },
+      "required": [
+        "entity_refs",
+        "summary",
+        "attention",
+        "scan_profile_id",
+        "status",
+        "started_at",
+        "completed_at",
+        "target_refs"
+      ],
+      "additionalProperties": false
+    },
+    "payload_ACTION_STATUS": {
+      "type": "object",
+      "properties": {
+        "entity_refs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/entity_ref"
+          },
+          "maxItems": 100
+        },
+        "summary": {
+          "type": "string",
+          "maxLength": 2048
+        },
+        "attention": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/attention"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "action_type": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "native_state": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "REQUESTED",
+            "PENDING_APPROVAL",
+            "APPROVED",
+            "QUEUED",
+            "RUNNING",
+            "SUCCEEDED",
+            "FAILED",
+            "CANCELLED",
+            "EXPIRED",
+            "RECONCILIATION_REQUIRED"
+          ]
+        },
+        "execution_owner": {
+          "type": "object",
+          "properties": {
+            "source_product": {
+              "type": "string",
+              "enum": [
+                "NDR",
+                "SCANNER",
+                "FIREWALL",
+                "NAC",
+                "WAF",
+                "SIEM",
+                "SANDBOX",
+                "COMPLIANCE",
+                "PAM",
+                "DECEPTION",
+                "SOAR"
+              ]
+            },
+            "source_instance_id": {
+              "$ref": "#/$defs/id"
+            },
+            "action_external_id": {
+              "$ref": "#/$defs/id"
+            }
+          },
+          "required": [
+            "source_product",
+            "source_instance_id",
+            "action_external_id"
+          ],
+          "additionalProperties": false
+        },
+        "central_request_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 256
+        },
+        "receipt_ref": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 256
+        },
+        "verification": {
+          "$ref": "#/$defs/verification"
+        },
+        "target_refs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ref"
+          },
+          "maxItems": 100
+        }
+      },
+      "required": [
+        "entity_refs",
+        "summary",
+        "attention",
+        "action_type",
+        "native_state",
+        "state",
+        "execution_owner",
+        "central_request_id",
+        "receipt_ref",
+        "verification",
+        "target_refs"
+      ],
+      "additionalProperties": false
+    },
+    "payload_HEALTH": {
+      "type": "object",
+      "properties": {
+        "entity_refs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/entity_ref"
+          },
+          "maxItems": 100
+        },
+        "summary": {
+          "type": "string",
+          "maxLength": 2048
+        },
+        "attention": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/attention"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "component": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "HEALTHY",
+            "DEGRADED",
+            "UNAVAILABLE",
+            "UNKNOWN"
+          ]
+        },
+        "observed_at": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "Z$"
+        },
+        "reason_codes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "maxItems": 100
+        },
+        "metrics": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/metric"
+          },
+          "maxItems": 100
+        }
+      },
+      "required": [
+        "entity_refs",
+        "summary",
+        "attention",
+        "component",
+        "state",
+        "observed_at",
+        "reason_codes",
+        "metrics"
+      ],
+      "additionalProperties": false
+    },
+    "record": {
+      "type": "object",
+      "properties": {
+        "external_id": {
+          "$ref": "#/$defs/id"
+        },
+        "revision": {
+          "$ref": "#/$defs/revision"
+        },
+        "stream_sequence": {
+          "$ref": "#/$defs/revision"
+        },
+        "operation": {
+          "type": "string",
+          "enum": [
+            "UPSERT",
+            "DELETE"
+          ]
+        },
+        "source_observed_at": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "Z$"
+        },
+        "source_updated_at": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "Z$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "provenance": {
+          "$ref": "#/$defs/provenance"
+        },
+        "payload": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "external_id",
+        "revision",
+        "stream_sequence",
+        "operation",
+        "source_observed_at",
+        "source_updated_at",
+        "provenance",
+        "payload"
+      ],
+      "additionalProperties": false
+    }
+  }
+}
+

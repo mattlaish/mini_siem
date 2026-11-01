@@ -67,6 +67,9 @@ def main() -> int:
 
     for path in sorted(ROOT.rglob("*.py")):
         rel = path.relative_to(ROOT).as_posix()
+        # The return contains a complete source mirror. Apply exactly the same
+        # existing example policy to it; do not skip checking delivered code.
+        audit_rel = rel.removeprefix("return/mini-siem/source/")
         if any(part in {".git", "__pycache__", ".pytest_cache"} for part in path.parts):
             continue
         try:
@@ -76,14 +79,16 @@ def main() -> int:
             continue
 
         doc = ast.get_docstring(tree) or ""
-        if rel not in DOCSTRING_WORD_EXCEPTIONS and SUSPICIOUS_DOCSTRING.search(doc):
-            if rel in ALLOWED_INCOMPLETE_EXAMPLES:
+        if audit_rel not in DOCSTRING_WORD_EXCEPTIONS and SUSPICIOUS_DOCSTRING.search(doc):
+            if audit_rel in ALLOWED_INCOMPLETE_EXAMPLES:
                 if not _has_true_assignment(tree, "EXAMPLE_ONLY"):
                     failures.append(f"intentional incomplete example lacks EXAMPLE_ONLY=True: {rel}")
             else:
                 failures.append(f"executable Python has design/scaffold module docstring: {rel}")
 
-        if rel.startswith("tests/") and path.name.startswith("test_"):
+        if audit_rel in removed:
+            failures.append(f"reclassified placeholder path reappeared: {rel}")
+        if audit_rel.startswith("tests/") and path.name.startswith("test_"):
             for node in tree.body:
                 if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name.startswith("test_"):
                     if _trivial_true_test(node):

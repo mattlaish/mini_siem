@@ -1,0 +1,8 @@
+# Error handling baseline
+
+ERROR_CATEGORIES = [
+    "VALIDATION_ERROR",
+    "AUTHORIZATION_ERROR",
+    "DEPENDENCY_ERROR",
+    "INTERNAL_ERROR",
+]

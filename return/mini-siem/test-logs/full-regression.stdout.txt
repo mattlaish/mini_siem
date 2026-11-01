@@ -1,0 +1,136 @@
+.......FFFF....................F.....s..F............FFF................ [ 18%]
+........................................................................ [ 37%]
+..........F....F.....FFF.F.............FFFFF.........s.................. [ 55%]
+......FFFFFFFFFF..F.F..FF................F..................F........... [ 74%]
+.................................................F...FFFFFFF..FFF....... [ 92%]
+............................                                             [100%]
+================================== FAILURES ===================================
+C:\Users\mattlai\Projects\mini_siem\tests\test_ai_openai_integration.py:227: AssertionError: assert 438 == 384
+C:\Users\mattlai\Projects\mini_siem\ai_secret.py:61: RuntimeError: AI secret master file permissions are too broad (0o666): C:\Users\mattlai\AppData\Local\Temp\mini-siem-full-regression-8z38abv_\pytest\test_decrypt_missing_master_fa0\missing-master.key; require owner-only access (0600)
+C:\Users\mattlai\Projects\mini_siem\ai_secret.py:61: RuntimeError: AI secret master file permissions are too broad (0o666): C:\Users\mattlai\AppData\Local\Temp\mini-siem-full-regression-8z38abv_\pytest\test_config_store_migrates_pla0\ai-master.key; require owner-only access (0600)
+C:\Users\mattlai\Projects\mini_siem\ai_secret.py:61: RuntimeError: AI secret master file permissions are too broad (0o666): C:\Users\mattlai\AppData\Local\Temp\mini-siem-full-regression-8z38abv_\pytest\test_config_store_new_key_neve0\ai-master.key; require owner-only access (0600)
+C:\Users\mattlai\Projects\mini_siem\tests\test_backup_restore_readiness.py:37: AssertionError: assert (33206 & 511) == 384
+C:\Users\mattlai\Projects\mini_siem\tests\test_build_source_artifact.py:50: AssertionError: assert ((2176188416 >> 16) & 511) == 416
+C:\Users\mattlai\Projects\mini_siem\tests\test_dashboard_live_refresh.py:13: assert 'const LOG_REFRESH_MS = 5000;' in '{% extends "base.html" %}\n{% block title %}mini-SIEM Dashboard{% endblock %}\n{% block page_title %}Live logs &amp; ...'visibilitychange\', () => { if (!document.hidden && autoRefresh) refreshAll(true); });\n</script>\n\n{% endblock %}\n'
+C:\Users\mattlai\Projects\mini_siem\tests\test_dashboard_live_refresh.py:24: assert 'if (background && current) return null;' in '{% extends "base.html" %}\n{% block title %}mini-SIEM Dashboard{% endblock %}\n{% block page_title %}Live logs &amp; ...'visibilitychange\', () => { if (!document.hidden && autoRefresh) refreshAll(true); });\n</script>\n\n{% endblock %}\n'
+C:\Users\mattlai\Projects\mini_siem\tests\test_dashboard_live_refresh.py:33: assert 'id="timelineRefresh"' in '{% extends "base.html" %}\n{% block title %}mini-SIEM Dashboard{% endblock %}\n{% block page_title %}Live logs &amp; ...'visibilitychange\', () => { if (!document.hidden && autoRefresh) refreshAll(true); });\n</script>\n\n{% endblock %}\n'
+C:\Users\mattlai\Projects\mini_siem\db.py:197: sqlite3.OperationalError: no such table: hourly_log_stats
+C:\Users\mattlai\Projects\mini_siem\tests\test_evidence_archive_phase6.py:252: assert '_record_query_telemetry_safe' in '#!/usr/bin/env python3\n"""\nmini-SIEM dashboard\n====================\nRead-only web UI over the SQLite database pop... import serve\n    serve(app, host=args.host, port=args.port, threads=8)\n\n\nif __name__ == "__main__":\n    main()\n'
+C:\Users\mattlai\Projects\mini_siem\tests\test_ingest_performance.py:37: AttributeError: 'Storage' object has no attribute 'flush'
+C:\Users\mattlai\Projects\mini_siem\tests\test_ingest_performance.py:63: AssertionError: write_fields should not issue per-row execute calls
+C:\Users\mattlai\AppData\Local\Programs\Python\Python312\Lib\tempfile.py:909: PermissionError: [WinError 32] The process cannot access the file because it is being used by another process: 'C:\\Users\\mattlai\\AppData\\Local\\Temp\\mini-siem-full-regression-8z38abv_\\tmpyej3losa\\siem.db'
+C:\Users\mattlai\AppData\Local\Programs\Python\Python312\Lib\tempfile.py:909: PermissionError: [WinError 32] The process cannot access the file because it is being used by another process: 'C:\\Users\\mattlai\\AppData\\Local\\Temp\\mini-siem-full-regression-8z38abv_\\tmpchf2y6br\\siem.db'
+C:\Users\mattlai\Projects\mini_siem\tests\test_log_search_logic.py:114: assert [2] == []
+C:\Users\mattlai\Projects\mini_siem\tests\test_log_search_logic.py:123: assert [4, 3, 2, 1] == [3, 2, 1]
+C:\Users\mattlai\Projects\mini_siem\tests\test_log_search_logic.py:135: assert [] == [3, 2, 1]
+C:\Users\mattlai\Projects\mini_siem\tests\test_log_search_logic.py:148: assert [] == [3, 2, 1]
+C:\Users\mattlai\Projects\mini_siem\tests\test_log_search_logic.py:159: assert [] == [2, 1]
+C:\Users\mattlai\Projects\mini_siem\tests\test_performance_phase3.py:206: TypeError: IngestPipeline.__init__() got an unexpected keyword argument 'stats_interval_seconds'
+C:\Users\mattlai\Projects\mini_siem\tests\test_performance_phase3.py:218: assert 'function incrementalRenderLogs(rows, ncols, signature)' in '{% extends "base.html" %}\n{% block title %}mini-SIEM Dashboard{% endblock %}\n{% block page_title %}Live logs &amp; ...'visibilitychange\', () => { if (!document.hidden && autoRefresh) refreshAll(true); });\n</script>\n\n{% endblock %}\n'
+C:\Users\mattlai\AppData\Local\Programs\Python\Python312\Lib\tempfile.py:909: PermissionError: [WinError 32] The process cannot access the file because it is being used by another process: 'C:\\Users\\mattlai\\AppData\\Local\\Temp\\mini-siem-full-regression-8z38abv_\\tmprot485q_\\siem.db'
+C:\Users\mattlai\Projects\mini_siem\tests\test_performance_phase4.py:133: TypeError: IngestPipeline.__init__() got an unexpected keyword argument 'db_writer_queue_size'
+C:\Users\mattlai\Projects\mini_siem\tests\test_performance_phase4.py:155: KeyError: 'total_alerts'
+C:\Users\mattlai\Projects\mini_siem\tests\test_performance_phase4.py:164: KeyError: '_encode_log_cursor'
+C:\Users\mattlai\Projects\mini_siem\tests\test_performance_phase4.py:197: assert "params.set('after_cursor', logNewestCursor);" in '{% extends "base.html" %}\n{% block title %}mini-SIEM Dashboard{% endblock %}\n{% block page_title %}Live logs &amp; ...'visibilitychange\', () => { if (!document.hidden && autoRefresh) refreshAll(true); });\n</script>\n\n{% endblock %}\n'
+C:\Users\mattlai\Projects\mini_siem\tests\test_performance_phase4.py:219: AssertionError: assert {'hourly_log_...ce_last_seen'} <= {'ai_usage_au..._config', ...}
+C:\Users\mattlai\AppData\Local\Programs\Python\Python312\Lib\tempfile.py:909: PermissionError: [WinError 32] The process cannot access the file because it is being used by another process: 'C:\\Users\\mattlai\\AppData\\Local\\Temp\\mini-siem-full-regression-8z38abv_\\tmpk21_lztl\\siem.db'
+C:\Users\mattlai\Projects\mini_siem\tests\test_performance_phase4.py:287: AttributeError: module 'db' has no attribute 'recent_log_counts_from_rollups'
+C:\Users\mattlai\Projects\mini_siem\tests\test_performance_phase5.py:72: assert 0 == 2
+C:\Users\mattlai\Projects\mini_siem\tests\test_performance_phase5.py:94: AssertionError: assert ['a.b.evil.ex...e', 'example'] == ['a.b.evil.ex...evil.example']
+C:\Users\mattlai\Projects\mini_siem\tests\test_performance_phase5.py:155: KeyError: 'hot_days'
+C:\Users\mattlai\Projects\mini_siem\tests\test_performance_phase5.py:165: assert 'id="systemHealthBadge"' in '{% extends "base.html" %}\n{% block title %}mini-SIEM Dashboard{% endblock %}\n{% block page_title %}Live logs &amp; ...'visibilitychange\', () => { if (!document.hidden && autoRefresh) refreshAll(true); });\n</script>\n\n{% endblock %}\n'
+C:\Users\mattlai\Projects\mini_siem\tests\test_postgres_backup_restore.py:50: AssertionError: assert (33206 & 511) == 384
+C:\Users\mattlai\Projects\mini_siem\tests\test_postgres_bootstrap_preflight.py:85: assert 438 == 384
+C:\Users\mattlai\AppData\Local\Programs\Python\Python312\Lib\subprocess.py:1538: OSError: [WinError 193] %1 is not a valid Win32 application
+C:\Users\mattlai\Projects\mini_siem\tests\test_text_search_backend.py:51: AttributeError: module 'db' has no attribute 'text_search_requested'
+C:\Users\mattlai\Projects\mini_siem\tests\test_text_search_backend.py:60: AttributeError: <module 'db' from 'C:\\Users\\mattlai\\Projects\\mini_siem\\db.py'> has no attribute 'postgres_text_search_capabilities'
+C:\Users\mattlai\Projects\mini_siem\tests\test_text_search_backend.py:74: AttributeError: <module 'db' from 'C:\\Users\\mattlai\\Projects\\mini_siem\\db.py'> has no attribute 'postgres_text_search_capabilities'
+C:\Users\mattlai\Projects\mini_siem\tests\test_text_search_backend.py:92: assert 'LOWER(source_ip) = ?' in "SELECT id, received_at, source_ip, hostname, destination, severity, message FROM security_event_logs l WHERE to_tsvec...('simple',?) AND (l.src_ip = ?::inet) AND (lower(l.hostname) LIKE ? ESCAPE '\\') ORDER BY l.event_time DESC, l.id DESC"
+C:\Users\mattlai\Projects\mini_siem\tests\test_text_search_backend.py:105: assert 'message ILIKE ?' in "SELECT id, received_at, source_ip, hostname, destination, severity, message FROM security_event_logs l WHERE to_tsvec...AND NOT (to_tsvector('simple',COALESCE(l.message,'')) @@ to_tsquery('simple',?)) ORDER BY l.event_time DESC, l.id DESC"
+C:\Users\mattlai\Projects\mini_siem\tests\test_text_search_backend.py:113: AttributeError: <module 'db' from 'C:\\Users\\mattlai\\Projects\\mini_siem\\db.py'> has no attribute '_ensure_postgres_text_search'
+C:\Users\mattlai\Projects\mini_siem\tests\test_text_search_backend.py:143: AttributeError: module 'db' has no attribute '_ensure_postgres_text_search'
+C:\Users\mattlai\Projects\mini_siem\tests\test_timeline_dialog_structure.py:13: assert '<dialog id="timelineDialog"' in '{% extends "base.html" %}\n{% block title %}mini-SIEM Dashboard{% endblock %}\n{% block page_title %}Live logs &amp; ...'visibilitychange\', () => { if (!document.hidden && autoRefresh) refreshAll(true); });\n</script>\n\n{% endblock %}\n'
+C:\Users\mattlai\Projects\mini_siem\tests\test_timeline_dialog_structure.py:22: assert 'width:min(1600px,90vw)' in '{% extends "base.html" %}\n{% block title %}mini-SIEM Dashboard{% endblock %}\n{% block page_title %}Live logs &amp; ...'visibilitychange\', () => { if (!document.hidden && autoRefresh) refreshAll(true); });\n</script>\n\n{% endblock %}\n'
+C:\Users\mattlai\Projects\mini_siem\tests\test_timeline_dialog_structure.py:31: assert 'async function focusTimelineLog(logId)' in '{% extends "base.html" %}\n{% block title %}mini-SIEM Dashboard{% endblock %}\n{% block page_title %}Live logs &amp; ...'visibilitychange\', () => { if (!document.hidden && autoRefresh) refreshAll(true); });\n</script>\n\n{% endblock %}\n'
+============================== warnings summary ===============================
+tests/test_admin_bootstrap.py: 2 warnings
+tests/test_alert_lifecycle.py: 1 warning
+tests/test_cef_parser.py: 1 warning
+tests/test_dashboard_connector.py: 5 warnings
+tests/test_dashboard_routes.py: 1 warning
+tests/test_db.py: 1 warning
+tests/test_detection_hardening.py: 12 warnings
+tests/test_detection_management.py: 12 warnings
+tests/test_evidence_archive_phase6.py: 5 warnings
+tests/test_ingest_performance.py: 4 warnings
+tests/test_performance_phase3.py: 3 warnings
+tests/test_performance_phase4.py: 5 warnings
+tests/test_performance_phase5.py: 2 warnings
+tests/test_performance_qualification_runner.py: 6 warnings
+tests/test_product_language.py: 13 warnings
+tests/test_scheduled_playbook_alerts.py: 5 warnings
+tests/test_sqlite_fts_optional.py: 2 warnings
+tests/test_ux_improvements.py: 7 warnings
+tests/test_webconsole_observability_slice.py: 3 warnings
+  C:\Users\mattlai\Projects\mini_siem\db.py:938: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    now = _datetime.datetime.utcnow().isoformat()
+
+tests/test_db.py::test_postgres_initialize_executes_percent_ddl_as_raw_sql
+  C:\Users\mattlai\Projects\mini_siem\db.py:1189: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    (version, _datetime.datetime.utcnow().isoformat()),
+
+tests/test_postgres_bootstrap.py::test_secret_requires_env_when_noninteractive
+  C:\Users\mattlai\AppData\Local\Programs\Python\Python312\Lib\getpass.py:100: GetPassWarning: Can not control echo on the terminal.
+    return fallback_getpass(prompt, stream)
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+- generated xml file: C:\Users\mattlai\Projects\mini_siem\return\mini-siem\test-logs\full-regression.xml -
+=========================== short test summary info ===========================
+FAILED tests/test_ai_openai_integration.py::test_ai_secret_master_is_outside_db_and_owner_only
+FAILED tests/test_ai_openai_integration.py::test_decrypt_missing_master_fails_without_creating_replacement
+FAILED tests/test_ai_openai_integration.py::test_config_store_migrates_plaintext_key_and_audits_metadata_only
+FAILED tests/test_ai_openai_integration.py::test_config_store_new_key_never_writes_plaintext
+FAILED tests/test_backup_restore_readiness.py::test_sqlite_online_backup_is_verified_private_unique_and_rotated
+FAILED tests/test_build_source_artifact.py::test_zip_non_entrypoint_preserves_regular_mode
+FAILED tests/test_dashboard_live_refresh.py::test_auto_refresh_polls_only_logs_and_stats_at_split_intervals
+FAILED tests/test_dashboard_live_refresh.py::test_background_refresh_is_non_overlapping_and_pauses_when_hidden
+FAILED tests/test_dashboard_live_refresh.py::test_timeline_is_on_demand_not_rebuilt_by_log_poll
+FAILED tests/test_evidence_archive_phase6.py::test_archive_move_evicts_only_verified_hot_copy_and_preserves_evidence_rollups
+FAILED tests/test_evidence_archive_phase6.py::test_phase6_removes_age_delete_configuration_and_freezes_ioc_architecture
+FAILED tests/test_ingest_performance.py::test_log_and_fields_share_one_batched_transaction
+FAILED tests/test_ingest_performance.py::test_write_fields_uses_one_executemany_call
+FAILED tests/test_ingest_performance.py::test_reindex_batches_deletes_and_inserts
+FAILED tests/test_ingest_performance.py::test_forwarder_enqueue_is_non_blocking_when_sender_is_slow
+FAILED tests/test_log_search_logic.py::test_message_text_and_field_filter_are_conjunctive
+FAILED tests/test_log_search_logic.py::test_field_or_preserves_duplicate_field_names
+FAILED tests/test_log_search_logic.py::test_source_or_is_scoped_to_source_and_other_filters_stay_and
+FAILED tests/test_log_search_logic.py::test_host_and_destination_support_or
+FAILED tests/test_log_search_logic.py::test_negations_remain_conjunctive_in_or_mode
+FAILED tests/test_performance_phase3.py::test_per_event_stdout_is_off_by_default
+FAILED tests/test_performance_phase3.py::test_dashboard_log_refresh_uses_incremental_dom_and_event_delegation
+FAILED tests/test_performance_phase4.py::test_db_writer_microbatches_and_rollups_are_transactional
+FAILED tests/test_performance_phase4.py::test_post_processing_never_runs_before_log_id_is_persisted
+FAILED tests/test_performance_phase4.py::test_alert_counter_uses_runtime_rollup
+FAILED tests/test_performance_phase4.py::test_received_at_id_cursor_is_stable_across_equal_timestamps
+FAILED tests/test_performance_phase4.py::test_dashboard_uses_incremental_cursor_and_timeline_virtualization
+FAILED tests/test_performance_phase4.py::test_phase4_schema_has_cursor_and_rollup_indexes
+FAILED tests/test_performance_phase4.py::test_db_writer_shutdown_flushes_partial_tail_without_waiting_full_delay
+FAILED tests/test_performance_phase4.py::test_recent_rollup_counts_are_exact_across_partial_boundary_hours
+FAILED tests/test_performance_phase5.py::test_fresh_sqlite_uses_incremental_auto_vacuum_without_full_vacuum
+FAILED tests/test_performance_phase5.py::test_domain_suffix_lookup_matches_subdomains_but_not_bare_tld
+FAILED tests/test_performance_phase5.py::test_nested_phase5_config_merges_with_defaults
+FAILED tests/test_performance_phase5.py::test_dashboard_exposes_phase5_health_query_and_archive_status
+FAILED tests/test_postgres_backup_restore.py::test_manifest_helpers_are_checksum_and_atomic_json
+FAILED tests/test_postgres_bootstrap_preflight.py::test_resume_secret_payload_is_stable_and_root_only
+FAILED tests/test_syslog_troubleshoot.py::test_helper_capture_reports_header_only_packet_summary
+FAILED tests/test_text_search_backend.py::test_text_search_environment_override
+FAILED tests/test_text_search_backend.py::test_postgres_auto_prefers_indexed_fts
+FAILED tests/test_text_search_backend.py::test_postgres_auto_falls_back_to_ilike_without_indexes
+FAILED tests/test_text_search_backend.py::test_postgres_fts_sql_keeps_other_filters_conjunctive
+FAILED tests/test_text_search_backend.py::test_postgres_trigram_uses_ilike_contains_semantics
+FAILED tests/test_text_search_backend.py::test_postgres_optional_search_ddl_is_once_per_process_and_uses_persisted_mode
+FAILED tests/test_text_search_backend.py::test_postgres_search_ddl_respects_selected_mode
+FAILED tests/test_timeline_dialog_structure.py::test_timeline_uses_native_dialog_not_custom_overlay
+FAILED tests/test_timeline_dialog_structure.py::test_timeline_desktop_and_mobile_sizing_and_horizontal_scrolling
+FAILED tests/test_timeline_dialog_structure.py::test_timeline_event_can_locate_log_outside_current_page
+47 failed, 339 passed, 3 skipped, 92 warnings in 19.88s

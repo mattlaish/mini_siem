@@ -1,0 +1,17 @@
+{
+  "contract": "operator-workspace.integration.v1",
+  "coverage": {
+    "reason_codes": [],
+    "state": "COMPLETE"
+  },
+  "generated_at": "2026-10-22T02:10:53Z",
+  "has_more": false,
+  "next_cursor": "eyJjaGVja3BvaW50IjoyLCJleHAiOjE3OTI3MjE0NTMsImxhbmUiOiJoZWFsdGgtb2JzZXJ2YXRpb25zIiwibW9kZSI6ImluY3JlbWVudGFsIiwicHJpbmNpcGFsIjoiZml4dHVyZS1yZWFkZXIiLCJzY2hlbWEiOiIxLjAiLCJzb3VyY2UiOiJtaW5pLXNpZW0tZml4dHVyZS0wMSIsInRlbmFudCI6InRlbmFudC1maXh0dXJlIiwidmlzaWJpbGl0eSI6Ijk4MDY2ZmI2N2I5NDRkZGM2MDkwMDdhZDRkYzM4NGEwZGMxYzEyNzA5ZmZjYjU5MGY2OGVlZThkMmM2YjNmZjYifS74kyf_HvLGqBEILdhrCGBKWDg49r-S7HSqWLlQ9Oyc",
+  "records": [],
+  "resource_kind": "HEALTH",
+  "schema_version": "1.0",
+  "source_instance_id": "mini-siem-fixture-01",
+  "source_product": "SIEM",
+  "source_snapshot_id": null,
+  "sync_mode": "INCREMENTAL"
+}

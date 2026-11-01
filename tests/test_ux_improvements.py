@@ -1,3 +1,4 @@
+from session_helpers import sign_in, set_role
 """UX contracts: readable event summaries, live ingestion status, the unified
 alert queue (filters + role-aware triage), grouped navigation, and no native
 prompt()/alert() dialogs in the UI."""
@@ -36,8 +37,7 @@ def app_db(tmp_path, monkeypatch):
 
 def client(dashboard, role="admin", user="alice"):
     c = dashboard.app.test_client()
-    with c.session_transaction() as s:
-        s.update(user=user, role=role, must_change=False, csrf_token="t")
+    sign_in(dashboard, c, user, role)
     return c
 
 

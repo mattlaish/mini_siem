@@ -1,0 +1,43 @@
+{
+  "status": "IMPLEMENTED_TESTING_DEFERRED",
+  "parent_artifact": "mini_siem_openai_responses_hardening_2026-09-18.zip",
+  "parent_sha256": "dfb2776c069b32b633f99b0770e303a8971d813aaa33af198667f795d1e8029f",
+  "source_truth": {
+    "phase13_pseudo_python_reclassified": 19,
+    "phase13_python_files_remaining": 0,
+    "repository_compileall": "PASS",
+    "shell_bash_n": "PASS (4 files)",
+    "javascript_node_check": "PASS (1 standalone .js file)",
+    "static_security_scan": "PASS: 0 findings across 29 root Python files",
+    "obvious_private_key_cloud_key_openai_token_scan": "PASS: no matches",
+    "runtime_secret_state_file_scan": "PASS: no runtime credential/master/database files present",
+    "p0_source_truth_packaging_scope": "TESTED"
+  },
+  "tests": {
+    "focused_p0_p1_postgresql": "21 passed",
+    "parent_dependency_available_comparison": "82 passed, 41 failed, 1 skipped",
+    "current_dependency_available_comparison": "92 passed, 41 failed, 1 skipped",
+    "full_collection": "INCOMPLETE: 134 tests collected before 3 collection errors because Flask/Werkzeug are unavailable"
+  },
+  "live_deferred": [
+    "clean PostgreSQL bootstrap and ownership verification",
+    "legacy PostgreSQL owner migration",
+    "PostgreSQL privilege regression",
+    "systemd/reboot/start-order",
+    "browser login/dashboard",
+    "listener and CEF end-to-end ingest",
+    "backup/restore",
+    "live OpenAI",
+    "24h/72h performance qualification"
+  ],
+  "artifact_integrity": {
+    "complete_source_zip_build": "PASS",
+    "zip_crc": "PASS",
+    "path_traversal": "PASS",
+    "symlink_check": "PASS",
+    "required_file_size_shebang": "PASS",
+    "extracted_python_shell_javascript_syntax": "PASS",
+    "source_extracted_sha256_parity": "PASS",
+    "artifact_level_focused_smoke": "21 passed"
+  }
+}

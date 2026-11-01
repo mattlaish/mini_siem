@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+{% block title %}Help — mini-SIEM{% endblock %}
+{% block page_title %}Help{% endblock %}
+{% block head %}
+<style>
+  .wrap { max-width:1000px; margin:24px auto; padding:0 20px; display:flex; gap:24px; }
+  .toc { flex:0 0 200px; position:sticky; top:24px; align-self:flex-start; font-size:13px; }
+  .toc a { display:block; color:var(--ink-soft); text-decoration:none; padding:4px 0; }
+  .toc a:hover { color:var(--accent); }
+  .content { flex:1; min-width:0; }
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:22px 26px; margin-bottom:18px; }
+  .panel h2 { margin:0 0 12px; font-size:16px; scroll-margin-top:20px; }
+  .panel h3 { margin:18px 0 6px; font-size:13.5px; color:var(--ink); }
+  .panel p { color:var(--ink-soft); font-size:13px; line-height:1.6; margin:0 0 12px; }
+  .panel ul { color:var(--ink-soft); font-size:13px; line-height:1.6; margin:0 0 12px; padding-left:20px; }
+  .panel li { margin-bottom:5px; }
+  .mono { font-family:var(--mono); font-size:12px; background:var(--canvas); padding:1px 5px; border-radius:4px; }
+  strong { color:var(--ink); }
+  .lead { font-size:13.5px; color:var(--ink-soft); max-width:70ch; }
+  @media (max-width:760px){ .wrap{flex-direction:column;} .toc{position:static;flex-basis:auto;} }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="wrap">
+  <nav class="toc" aria-label="Help topics">
+    <a href="#getting-started">Get started</a><a href="#alerts">Review alerts</a>
+    <a href="#search">Find events</a><a href="#detection">Manage detection</a>
+    <a href="#intel">Threat intelligence</a><a href="#feed-auth">Connect a protected feed</a>
+    <a href="#aliases">Search across sources</a><a href="#normalization">Choose searchable fields</a>
+    <a href="#correlate">Investigate related activity</a><a href="#selfmon">Monitor this server</a>
+  </nav>
+  <div class="content">
+    <p class="lead">Start with incoming logs, review alerts, then investigate the evidence. Settings changes require an administrator unless the page says otherwise.</p>
+    <section class="panel" id="getting-started"><h2>Get started</h2>
+      <ol><li>Open <a href="/setup#sec-listen">Settings → Receive device logs</a> for syslog devices, or <a href="/setup#sec-pollers">Cloud log connections</a> for services such as Sophos Central.</li>
+      <li>Open <a href="/">Live logs &amp; alerts</a> and confirm that events arrive from the expected host. The status at the top reports recent collection activity, not a guarantee of lossless delivery.</li>
+      <li>If logs are missing, use <a href="/setup#sec-troubleshoot">Check log delivery</a> with the device IP, then review <a href="/health">System Health</a>.</li>
+      <li>Configure <a href="/detection-rules">Detection Rules</a> and, for outside-hours monitoring, add each host and its <a href="/execution-windows">Approved Hours</a>.</li></ol>
+    </section>
+    <section class="panel" id="alerts"><h2>Review alerts</h2>
+      <p>The <a href="/security-alerts">Alerts</a> page starts with open alerts. Filter by severity, rule, assignee or text. Open an alert to see its reason, related events and history. Analysts and administrators can acknowledge it, assign an owner, add a note or move it to an allowed next status. Viewers can read but cannot make these changes.</p>
+      <p>New items wait behind the new-alerts button while you are reading. Use <strong>j</strong>/<strong>k</strong> to move through the list, <strong>Enter</strong> to open an alert, <strong>a</strong> to acknowledge it and <strong>Esc</strong> to close details.</p>
+    </section>
+    <section class="panel" id="search"><h2>Find events</h2>
+      <p>Use Message, Source, Host, Destination, severity and time filters on <a href="/">Live logs &amp; alerts</a>. Press <strong>/</strong> to focus search. Filters stay in the page address so you can bookmark or share the same view.</p>
+      <p>Enter <span class="mono">!term</span> to exclude a term. Separate terms with commas. IP fields also accept a network such as <span class="mono">192.168.1.0/24</span>. Available word-search behavior depends on this installation; use an exact field filter when precision matters.</p>
+      <p>Expand an event to see its fields and original evidence. Add a field as a column, or use <span class="mono">field=value</span>, for example <span class="mono">action=deny</span>. Choose whether multiple field conditions must all match or any may match. Export uses your current filters.</p>
+      <p>While you read an expanded event, type a search or scroll the list, new arrivals wait behind the new-events button. Counts can continue updating.</p>
+    </section>
+    <section class="panel" id="detection"><h2>Manage detection and approved hours</h2>
+      <p>On <a href="/detection-rules">Detection Rules</a>, turn rules on or off, tune repeated-activity limits or add custom conditions. Every condition in a custom rule must match. Choose Windows activity or All log sources. Custom field names use <span class="mono">field.</span> followed by the source field, such as <span class="mono">field.action</span>.</p>
+      <p>Edits are not active until you choose <strong>Save changes</strong>. A sample test uses your unsaved settings without saving events or creating alerts. A single sample cannot test rules that require repeated activity.</p>
+      <p>On <a href="/execution-windows">Approved Hours</a>, add hosts, time zones, allowed days and maintenance exceptions. Without an approved window, outside-hours detection is not checked. A window ending at 18:00 does not approve activity at 18:00. Overnight windows start on the selected day.</p>
+      <p>The web-server rule remains Critical at any time. An outside-hours exception cannot suppress it. Scope exceptions narrowly to approved programs, accounts, times and tickets; original logs and other detection rules remain available.</p>
+    </section>
+    <section class="panel" id="intel"><h2>Threat intelligence</h2>
+      <p>Add known malicious IPs, domains, URLs or file hashes on <a href="/threatintel">Threat Intelligence</a>. Incoming logs are checked against enabled indicators. A match creates an alert and can be reviewed by AI when automatic analysis is enabled.</p>
+      <p>Paste one indicator per line, or CSV <span class="mono">value,type,threat</span>. Lines starting with <span class="mono">#</span> and duplicate indicators are skipped. Use a feed name to manage an import as a group.</p>
+      <p>For automatic updates, add a trusted feed URL and choose how often to check it. mini-SIEM must be able to reach that provider. Review any failed check shown next to the feed.</p>
+    </section>
+    <section class="panel" id="feed-auth"><h2>Connect a protected feed</h2>
+      <p>Choose the access method specified by your feed provider. API credentials are encrypted when saved and are not shown again. Keep the provider's exact header or parameter names:</p>
+      <ul><li><strong>API key header:</strong> for example <span class="mono">X-OTX-API-Key</span>, <span class="mono">Auth-Key</span> or <span class="mono">x-apikey</span>.</li>
+      <li><strong>Authorization header:</strong> sends the key exactly as required by providers such as MISP.</li>
+      <li><strong>URL parameter:</strong> adds the key under the provider's specified parameter.</li>
+      <li><strong>Username and password:</strong> HTTP Basic authentication.</li></ul>
+      <p>Services using OAuth2 client ID and secret belong under <a href="/setup#sec-pollers">Cloud log connections</a> instead.</p>
+    </section>
+    <section class="panel" id="aliases"><h2>Search across log sources</h2>
+      <p>Different products name the same address differently. Fortigate may use <span class="mono">src</span>, while Sophos uses <span class="mono">endpoint_ip</span>. In <a href="/setup#sec-aliases">Settings → Search across log sources</a>, list the fields that should also count as Source, Host or Destination.</p>
+      <p>These choices apply immediately to search and investigations, including earlier logs. No historical update is needed. To find a source's exact field names, expand one of its events.</p>
+    </section>
+    <section class="panel" id="normalization"><h2>Choose searchable fields</h2>
+      <p>mini-SIEM recognizes common JSON and key-value logs automatically. In <a href="/setup#sec-mapping">Log field mapping</a>, choose which source fields should appear as Host, Message, Severity and Time.</p>
+      <p>Advanced users can add extraction patterns under <strong>Searchable fields and display columns</strong> in Log Search. These use regular expressions with named fields. Test carefully and keep the original event for reference.</p>
+      <p>New logs use saved patterns automatically. After changing a pattern, choose <strong>Update fields in earlier logs</strong> to make the new fields searchable in older events. This does not replay detection or change original log text.</p>
+    </section>
+    <section class="panel" id="correlate"><h2>Investigate related activity</h2>
+      <p>On <a href="/correlate">Investigations</a>, run a ready-made security check, save a report or start from an IP address. Choose the time period and how many connection steps to follow.</p>
+      <p>A connection A → B does not automatically include B. B is followed only if it later sends traffic during the same period. Each further step needs the same evidence. Results link to the events that establish those connections.</p>
+      <p>An alert may come from one serious event or from a pattern across many events. Scheduled report findings can also raise alerts. Reports require mini-SIEM to remain running.</p>
+    </section>
+    <section class="panel" id="selfmon"><h2>Monitor this server</h2>
+      <p>Use <a href="/setup#sec-selfmon">Settings → Monitor this host</a> to prepare forwarding settings for the SIEM server's own sign-ins, account changes and Linux audit activity. Your administrator must apply the generated settings on that server.</p>
+      <p>Authentication logs cover sign-ins, SSH and sudo. Detailed Linux audit records need the additional auditd connection shown on that page. These logs then appear in Log Search under the server's host name.</p>
+      <p>For missing logs or an overdue service update, check <a href="/health">System Health</a>. Its checks do not restart services or repair the database. Download a support report from Settings when you need help; review it before sharing.</p>
+    </section>
+  </div>
+</div>
+{% endblock %}

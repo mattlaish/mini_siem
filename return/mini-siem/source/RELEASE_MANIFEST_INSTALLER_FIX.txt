@@ -1,0 +1,50 @@
+mini-SIEM installer/source truth manifest — 2026-09-19
+
+Status: IMPLEMENTED_TESTING_DEFERRED
+This is a development-baseline manifest, not a RELEASED artifact record.
+
+Canonical parent artifact:
+  mini_siem_event_storage_v2_2026-09-19.zip
+  SHA-256: 16cc6ef71678ded34a12a60ff4a81b452fb15447baf819d61f34aace99e5f5eb
+
+Installer entry-point split:
+  fresh-install.sh
+    purpose: NEW installations only
+    SHA-256: 36b9d21836d979e8216a60c8e7a80613b764f97e4c2e74578b5a7d7315b42421
+  upgrade-existing.sh
+    purpose: EXISTING operational installations only
+    SHA-256: f84aef075ed844d4806a6137eae11dd4980b4de783f7703891e41a8868370ca8
+  install-services.sh
+    purpose: low-level service/unit reconciliation helper
+    SHA-256: 89ab6bf7f1a85f31368cd6b328ddcf5e1bdb70e992cc1f0c431b71425780f1fa
+
+Existing split-role PostgreSQL upgrade orchestrator:
+  tools/postgres_upgrade_existing.py
+  SHA-256: 2dd76f86ccc44e0aabf0c92b4abb45c27827c6a2b5abfb2fa905afd0d415fc17
+  behavior: pre-DDL default-privilege lockdown, owner-only migration/backfill,
+            grants-only refresh, preserve existing runtime credentials,
+            runtime privilege verification, no role/password rotation.
+
+Related owner tools:
+  tools/postgres_privilege_boundary.py
+  SHA-256: 22985bb4b9b3baea050f78f92892ccd2888de3962b204400191b234d1d71fc3c
+  tools/postgres_event_storage_v2.py
+  SHA-256: 1fe57cf7a27cbd08d3136f9361254e1f35b82bdb730fb8a74019c4e0b540fd1c
+
+Current local evidence:
+  focused dual-entrypoint/PostgreSQL/Event Storage/build suite: 27 passed / 0 failed
+  dependency-available broad suite: 112 passed / 37 failed / 1 skipped
+  canonical parent identical suite: 109 passed / 37 failed / 1 skipped
+  new failing node IDs versus parent: 0
+  full collection: 150 tests collected before 3 Flask/Werkzeug collection errors
+  repository compileall: PASS
+  shell syntax: 6/6 PASS
+  JavaScript syntax: 1/1 PASS
+  placeholder truth: PASS
+  bounded secret-pattern scan: 0 findings / 329 text files
+  dynamic Flask security scan: NOT_RUN (Flask/Werkzeug unavailable)
+
+Live fresh PostgreSQL install, existing split-role PostgreSQL upgrade, credential
+preservation against a real server, pg_dump restore, systemd cutover/rollback,
+reboot, interrupted-upgrade recovery, and legacy shared-role conversion remain
+deferred. No TESTED or RELEASED claim is made for these live scopes.

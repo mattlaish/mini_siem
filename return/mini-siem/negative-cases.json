@@ -1,0 +1,149 @@
+[
+  {
+    "case_id": "N-DEC-001",
+    "expected_error": "ProductConnectorError",
+    "input_fixture": "fixtures/negative/missing-contract.json",
+    "reason": "Required contract field is absent.",
+    "request": null,
+    "stage": "decoder"
+  },
+  {
+    "case_id": "N-DEC-002",
+    "expected_error": "ProductConnectorError",
+    "input_fixture": "fixtures/negative/additional-field.json",
+    "reason": "Closed page schema rejects unknown fields.",
+    "request": null,
+    "stage": "decoder"
+  },
+  {
+    "case_id": "N-DEC-003",
+    "expected_error": "ProductConnectorError",
+    "input_fixture": "fixtures/negative/non-z-time.json",
+    "reason": "Wire timestamps must end in Z.",
+    "request": null,
+    "stage": "decoder"
+  },
+  {
+    "case_id": "N-DEC-004",
+    "expected_error": "ProductConnectorError",
+    "input_fixture": "fixtures/negative/invalid-revision.json",
+    "reason": "Revision must be a positive decimal string.",
+    "request": null,
+    "stage": "decoder"
+  },
+  {
+    "case_id": "N-DEC-005",
+    "expected_error": "ProductConnectorError",
+    "input_fixture": "fixtures/negative/forbidden-secret-field.json",
+    "reason": "Secret-bearing payload fields are forbidden.",
+    "request": null,
+    "stage": "decoder"
+  },
+  {
+    "case_id": "N-DEC-006",
+    "expected_error": "ProductConnectorError",
+    "input_fixture": "fixtures/negative/delete-nonempty-payload.json",
+    "reason": "DELETE records must carry an empty payload.",
+    "request": null,
+    "stage": "decoder"
+  },
+  {
+    "case_id": "N-PAGE-001",
+    "expected_error": "ProductConnectorConflictError",
+    "input_fixture": "fixtures/negative/wrong-product.json",
+    "reason": "Response product differs from binding.",
+    "request": null,
+    "stage": "decoder"
+  },
+  {
+    "case_id": "N-PAGE-002",
+    "expected_error": "ProductConnectorConflictError",
+    "input_fixture": "fixtures/negative/wrong-source.json",
+    "reason": "Response source differs from binding.",
+    "request": null,
+    "stage": "decoder"
+  },
+  {
+    "case_id": "N-PAGE-003",
+    "expected_error": "ProductConnectorError",
+    "input_fixture": "fixtures/negative/wrong-kind.json",
+    "reason": "Response kind differs from requested lane.",
+    "request": null,
+    "stage": "decoder"
+  },
+  {
+    "case_id": "N-SYNC-001",
+    "expected_error": "ProductConnectorCursorError",
+    "input_fixture": "fixtures/negative/empty-with-more.json",
+    "reason": "A continuing page cannot be empty.",
+    "request": {
+      "capability": "LIST_ALERTS",
+      "cursor": null,
+      "page_size": 2,
+      "product_id": "dashboard-mini-siem-fixture-01",
+      "resource_kind": "ALERT",
+      "tenant_id": "tenant-fixture"
+    },
+    "stage": "page_validate"
+  },
+  {
+    "case_id": "N-SYNC-002",
+    "expected_error": "ProductConnectorCursorError",
+    "input_fixture": "fixtures/negative/cursor-no-progress.json",
+    "reason": "A continuing page must advance its cursor.",
+    "request": {
+      "capability": "LIST_ALERTS",
+      "cursor": "same-cursor",
+      "page_size": 2,
+      "product_id": "dashboard-mini-siem-fixture-01",
+      "resource_kind": "ALERT",
+      "tenant_id": "tenant-fixture"
+    },
+    "stage": "page_validate"
+  },
+  {
+    "case_id": "N-PAGE-004",
+    "expected_error": "ProductConnectorError",
+    "input_fixture": "fixtures/negative/too-many-records.json",
+    "reason": "Page exceeds the requested record limit.",
+    "request": {
+      "capability": "LIST_ALERTS",
+      "cursor": null,
+      "page_size": 2,
+      "product_id": "dashboard-mini-siem-fixture-01",
+      "resource_kind": "ALERT",
+      "tenant_id": "tenant-fixture"
+    },
+    "stage": "page_validate"
+  },
+  {
+    "case_id": "N-SYNC-003",
+    "expected_error": "ProductConnectorConflictError",
+    "input_fixture": "fixtures/negative/snapshot-drift.sequence.json",
+    "reason": "Snapshot ID changed on the second page of one snapshot chain.",
+    "request": {
+      "capability": "LIST_ALERTS",
+      "cursor": null,
+      "page_size": 2,
+      "product_id": "dashboard-mini-siem-fixture-01",
+      "resource_kind": "ALERT",
+      "tenant_id": "tenant-fixture"
+    },
+    "stage": "sync"
+  },
+  {
+    "case_id": "N-SYNC-005",
+    "expected_error": "ProductConnectorConflictError",
+    "input_fixture": "fixtures/negative/equal-revision-drift.sequence.json",
+    "reason": "The second page changes canonical content at the same identity and revision.",
+    "request": {
+      "capability": "LIST_ALERTS",
+      "cursor": null,
+      "page_size": 2,
+      "product_id": "dashboard-mini-siem-fixture-01",
+      "resource_kind": "ALERT",
+      "tenant_id": "tenant-fixture"
+    },
+    "stage": "sync"
+  }
+]

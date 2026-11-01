@@ -1,0 +1,47 @@
+{
+  "files": [
+    {
+      "path": "auth.py",
+      "sha256": "687434d321f348b630eca3b2662e47adb788383b1df097b9badb9cd835d6d071"
+    },
+    {
+      "path": "dashboard.py",
+      "sha256": "7c88c1b289874b638fcca902cdb4d47ab24bf3dc64268a5ddab4361919b631ae"
+    },
+    {
+      "path": "dashboard_connector.py",
+      "sha256": "5617d0189ad001cad560b06b9beadd9f4bc96c4ad2b6bf0e2c2163d70db2571b"
+    },
+    {
+      "path": "db.py",
+      "sha256": "92a2fbe7acf742d0e10cfe1fda6dea2cdc2bbd6f4b30ed623c5506dd1db2ee1f"
+    },
+    {
+      "path": "runtime_health.py",
+      "sha256": "ff5e7544ab2e4bb190e103961699fcff58c3cbd14ef6463e65b3e7e017ad3faf"
+    },
+    {
+      "path": "schemas/operator_workspace/control.schema.json",
+      "sha256": "d268b6cec3327f45aefc701ff007baa2f673e5356b68e0e287b8620a319cd371"
+    },
+    {
+      "path": "schemas/operator_workspace/page.schema.json",
+      "sha256": "86604d617c2b171ac52fee46f9b10aaa547a05a1cc2d8c6a7d55bb258d3a5709"
+    },
+    {
+      "path": "schemas/operator_workspace/resource-manifest.json",
+      "sha256": "83f9850f9d4da75008b9a462087c519a2ef36703d7e546a8770db132bb3d75c3"
+    },
+    {
+      "path": "tools/manage_dashboard_reader_token.py",
+      "sha256": "c75b54548d36f98ae6bca0fd9624d539445d30eaded872e878dbe00d775cde11"
+    },
+    {
+      "path": "tools/postgres_privilege_boundary.py",
+      "sha256": "6ab2e4eb4df3079dabe81b1b19db84ce2ccab3c86a62291e9281da383a36c515"
+    }
+  ],
+  "product_slug": "mini-siem",
+  "purpose": "OFFLINE_FIXTURE_ONLY",
+  "source_version": "mini-siem-dashboard-connector-rebuild-2026-10-22"
+}

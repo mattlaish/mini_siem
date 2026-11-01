@@ -1,0 +1,21 @@
+CREATE TABLE IF NOT EXISTS api_pollers (
+    id                       BIGSERIAL PRIMARY KEY,
+    name                     TEXT NOT NULL,
+    auth_scheme              TEXT DEFAULT 'oauth2_client_credentials',
+    token_url                TEXT NOT NULL DEFAULT '',
+    events_url               TEXT NOT NULL,
+    whoami_url               TEXT DEFAULT '',
+    tenant_header            TEXT DEFAULT '',
+    client_id                TEXT DEFAULT '',
+    client_secret            TEXT DEFAULT '',
+    api_key_header           TEXT DEFAULT '',
+    secret_mode              TEXT DEFAULT 'encrypted',
+    scope                    TEXT DEFAULT '',
+    interval_seconds         INTEGER DEFAULT 60,
+    initial_lookback_seconds INTEGER DEFAULT 86400,
+    enabled                  INTEGER NOT NULL DEFAULT 0,
+    cursor                   TEXT,
+    pulled_count             INTEGER DEFAULT 0,
+    last_poll_at             TEXT,
+    last_error               TEXT
+);

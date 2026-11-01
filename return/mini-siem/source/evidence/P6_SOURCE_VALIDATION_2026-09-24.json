@@ -1,0 +1,103 @@
+{
+  "broad_regression": {
+    "current": {
+      "failed": 37,
+      "passed": 215,
+      "skipped": 1
+    },
+    "direct_parent": {
+      "failed": 37,
+      "passed": 208,
+      "skipped": 1
+    },
+    "failed_node_set_identical": true,
+    "new_failed_node_ids": 0,
+    "resolved_failed_node_ids": 0
+  },
+  "contract_regression": {
+    "command_scope": [
+      "tests/test_performance_qualification_runner.py",
+      "tests/test_build_source_artifact.py",
+      "tests/test_release_gate.py"
+    ],
+    "failed": 0,
+    "passed": 19
+  },
+  "domains": {
+    "ai_provider": {
+      "detail": "Live external AI provider qualification remains deferred.",
+      "status": "NOT_RUN"
+    },
+    "alert_lifecycle_browser": {
+      "detail": "Live/browser alert lifecycle qualification remains deferred.",
+      "status": "NOT_RUN"
+    },
+    "backup_restore": {
+      "detail": "Real PostgreSQL/SQLite backup/restore qualification remains deferred.",
+      "status": "NOT_RUN"
+    },
+    "full_regression": {
+      "detail": "Broad local run retains 37 inherited failures and full provisioned regression is not complete.",
+      "status": "NOT_RUN"
+    },
+    "ingest_detection": {
+      "detail": "Real-network ingest/detection qualification remains deferred.",
+      "status": "NOT_RUN"
+    },
+    "install_upgrade_resume": {
+      "detail": "Live kill/reboot install/upgrade/resume qualification remains deferred.",
+      "status": "NOT_RUN"
+    },
+    "operations_security": {
+      "detail": "Production operations/security qualification remains deferred.",
+      "status": "NOT_RUN"
+    },
+    "performance": {
+      "detail": "P6 source integrity gaps are closed; agreed production thresholds, representative capacity curves, queue/drop/concurrency evidence and actual 24h/72h sustained runs remain deferred.",
+      "status": "NOT_RUN"
+    },
+    "postgresql": {
+      "detail": "Representative live PostgreSQL qualification remains deferred.",
+      "status": "NOT_RUN"
+    },
+    "systemd_selinux": {
+      "detail": "Representative systemd/SELinux host qualification remains deferred.",
+      "status": "BLOCKED_ENVIRONMENT"
+    }
+  },
+  "focused_regression": {
+    "command_scope": [
+      "tests/test_performance_qualification_runner.py"
+    ],
+    "failed": 0,
+    "passed": 10
+  },
+  "format": "mini-siem-p6-source-validation-v1",
+  "scope": "P6 performance source-truth audit only",
+  "short_sqlite_smoke": {
+    "cleanup_remaining_logs": 0,
+    "cleanup_removed_logs": 200,
+    "evaluation_status": "MEASURED_NO_THRESHOLDS",
+    "evidence_status": "VALID",
+    "expected_marker_rows": 200,
+    "production_sizing_evidence": false,
+    "visible_marker_rows": 200
+  },
+  "source_gaps_closed": [
+    "qualification target token-boundary safety",
+    "SQLite storage growth includes WAL",
+    "bounded sustained-run batch latency sampling",
+    "query/correlation marker observation integrity",
+    "cleanup failure invalidates evidence and CLI result",
+    "best-effort cleanup on benchmark exception",
+    "fail-closed run parameter and threshold validation"
+  ],
+  "source_gates": {
+    "changed_python_static_security_findings": 0,
+    "javascript_syntax": "PASS",
+    "placeholder_truth": "PASS",
+    "python_compileall": "PASS",
+    "shell_syntax": "PASS"
+  },
+  "status": "IMPLEMENTED_TESTING_DEFERRED"
+}

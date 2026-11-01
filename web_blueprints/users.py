@@ -18,7 +18,8 @@ def api_users_list():
 def api_users_create():
     denied = _svc.require_admin()
     if denied is not None: return denied
-    body = request.get_json(force=True, silent=True) or {}; username = (body.get("username") or "").strip(); password = body.get("password") or ""; role = (body.get("role") or "admin").strip()
+    body = request.get_json(force=True, silent=True) or {}; username = (body.get("username") or "").strip(); password = body.get("password") or ""; role = (body.get("role") or "viewer").strip()
+    if role not in {"admin", "analyst", "viewer"}: return jsonify(error="invalid role"), 400
     if not username: return jsonify({"error": "username is required"}), 400
     if len(password) < 8: return jsonify({"error": "password must be at least 8 characters"}), 400
     conn = _svc.get_conn()
@@ -42,4 +43,4 @@ def api_users_password():
     if not user: return jsonify({"error": "current password is incorrect"}), 400
     if len(new) < 8: return jsonify({"error": "new password must be at least 8 characters"}), 400
     if new == auth.DEFAULT_ADMIN_PASS: return jsonify({"error": "choose a password other than the default"}), 400
-    auth.set_password(conn, auth.current_user(), new); session["must_change"] = False; _svc.audit("password_changed", detail="via Setup page"); return jsonify({"ok": True})
+    auth.set_password(conn, auth.current_user(), new); auth.refresh_session(conn); _svc.audit("password_changed", detail="via Setup page"); return jsonify({"ok": True})

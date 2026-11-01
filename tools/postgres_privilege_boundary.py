@@ -79,7 +79,10 @@ def _assert_roles_do_not_own_protected_tables(cur, roles):
           FROM pg_class c
           JOIN pg_namespace n ON n.oid=c.relnamespace
           JOIN pg_roles r ON r.oid=c.relowner
-         WHERE n.nspname='public' AND c.relname IN ('logs','schema_migrations','ai_usage_audit','security_events','assets','identities')
+         WHERE n.nspname='public' AND c.relname IN (
+             'logs','schema_migrations','ai_usage_audit','security_events','assets','identities',
+             'dashboard_reader_tokens','dashboard_export_counters','dashboard_export_records',
+             'dashboard_export_snapshots','dashboard_export_snapshot_records')
         """
     )
     protected = cur.fetchall()
@@ -387,6 +390,31 @@ def _apply_grants(raw, *, runtime_role, ingest_role, dashboard_role, maintenance
             "GRANT INSERT ON TABLE public.ai_usage_audit TO {}"
         ).format(dashboard))
 
+        # The dashboard connector is read-only to its consumer but maintains
+        # authentication usage, revisions, and durable snapshot/cursor state.
+        # Token creation/revocation remains an owner/setup CLI operation.
+        connector_state_tables = (
+            "dashboard_export_counters", "dashboard_export_records",
+            "dashboard_export_snapshots", "dashboard_export_snapshot_records",
+        )
+        token_table = sql.Identifier("public", "dashboard_reader_tokens")
+        for role in (runtime, ingest, dashboard, maintenance):
+            cur.execute(sql.SQL(
+                "REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLE {} FROM {}"
+            ).format(token_table, role))
+        cur.execute(sql.SQL(
+            "GRANT UPDATE (last_used_at) ON TABLE {} TO {}"
+        ).format(token_table, dashboard))
+        for table_name in connector_state_tables:
+            table = sql.Identifier("public", table_name)
+            for role in (runtime, ingest, dashboard, maintenance):
+                cur.execute(sql.SQL(
+                    "REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLE {} FROM {}"
+                ).format(table, role))
+            cur.execute(sql.SQL(
+                "GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE {} TO {}"
+            ).format(table, dashboard))
+
         # Remove legacy direct privileges that could otherwise override the
         # group-role REVOKE.
         for role in (ingest, dashboard):
@@ -466,6 +494,11 @@ def _apply_grants(raw, *, runtime_role, ingest_role, dashboard_role, maintenance
         cur.execute("REVOKE ALL ON TABLE public.archive_segments FROM PUBLIC")
         cur.execute("REVOKE ALL ON TABLE public.archive_occurrence_catalog FROM PUBLIC")
         cur.execute("REVOKE ALL ON TABLE public.ai_usage_audit FROM PUBLIC")
+        cur.execute("REVOKE ALL ON TABLE public.dashboard_reader_tokens FROM PUBLIC")
+        cur.execute("REVOKE ALL ON TABLE public.dashboard_export_counters FROM PUBLIC")
+        cur.execute("REVOKE ALL ON TABLE public.dashboard_export_records FROM PUBLIC")
+        cur.execute("REVOKE ALL ON TABLE public.dashboard_export_snapshots FROM PUBLIC")
+        cur.execute("REVOKE ALL ON TABLE public.dashboard_export_snapshot_records FROM PUBLIC")
         cur.execute("REVOKE ALL ON TABLE public.security_events FROM PUBLIC")
         cur.execute("REVOKE ALL ON TABLE public.assets FROM PUBLIC")
         cur.execute("REVOKE ALL ON TABLE public.identities FROM PUBLIC")

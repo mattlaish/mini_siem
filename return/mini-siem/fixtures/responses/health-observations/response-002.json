@@ -1,0 +1,101 @@
+{
+  "contract": "operator-workspace.integration.v1",
+  "coverage": {
+    "reason_codes": [],
+    "state": "COMPLETE"
+  },
+  "generated_at": "2026-10-22T02:10:53Z",
+  "has_more": false,
+  "next_cursor": "eyJjaGVja3BvaW50IjoyLCJleHAiOjE3OTI3MjE0NTMsImxhbmUiOiJoZWFsdGgtb2JzZXJ2YXRpb25zIiwibW9kZSI6ImluY3JlbWVudGFsIiwicHJpbmNpcGFsIjoiZml4dHVyZS1yZWFkZXIiLCJzY2hlbWEiOiIxLjAiLCJzb3VyY2UiOiJtaW5pLXNpZW0tZml4dHVyZS0wMSIsInRlbmFudCI6InRlbmFudC1maXh0dXJlIiwidmlzaWJpbGl0eSI6Ijk4MDY2ZmI2N2I5NDRkZGM2MDkwMDdhZDRkYzM4NGEwZGMxYzEyNzA5ZmZjYjU5MGY2OGVlZThkMmM2YjNmZjYifS74kyf_HvLGqBEILdhrCGBKWDg49r-S7HSqWLlQ9Oyc",
+  "records": [
+    {
+      "external_id": "health-listener",
+      "operation": "UPSERT",
+      "payload": {
+        "attention": null,
+        "component": "listener",
+        "entity_refs": [],
+        "metrics": [
+          {
+            "name": "queue_depth",
+            "observed_at": "2026-10-22T02:10:53Z",
+            "quality": "MEASURED",
+            "threshold": null,
+            "threshold_operator": null,
+            "unit": "count",
+            "value": 1,
+            "window_seconds": 60
+          },
+          {
+            "name": "processed_events",
+            "observed_at": "2026-10-22T02:10:53Z",
+            "quality": "MEASURED",
+            "threshold": null,
+            "threshold_operator": null,
+            "unit": "count",
+            "value": 8,
+            "window_seconds": 60
+          },
+          {
+            "name": "failed_events",
+            "observed_at": "2026-10-22T02:10:53Z",
+            "quality": "MEASURED",
+            "threshold": null,
+            "threshold_operator": null,
+            "unit": "count",
+            "value": 0,
+            "window_seconds": 60
+          },
+          {
+            "name": "dropped_events",
+            "observed_at": "2026-10-22T02:10:53Z",
+            "quality": "MEASURED",
+            "threshold": null,
+            "threshold_operator": null,
+            "unit": "count",
+            "value": 0,
+            "window_seconds": 60
+          },
+          {
+            "name": "dropped_udp",
+            "observed_at": "2026-10-22T02:10:53Z",
+            "quality": "MEASURED",
+            "threshold": null,
+            "threshold_operator": null,
+            "unit": "count",
+            "value": 0,
+            "window_seconds": 60
+          }
+        ],
+        "observed_at": "2026-10-22T02:10:53Z",
+        "reason_codes": [],
+        "state": "HEALTHY",
+        "summary": "mini-SIEM listener and ingestion health"
+      },
+      "provenance": {
+        "derived_from": [],
+        "detail_path": null,
+        "evidence_refs": [],
+        "forwarded_by": [],
+        "origin": {
+          "external_id": "health-listener",
+          "resource_kind": "HEALTH",
+          "source_instance_id": "mini-siem-fixture-01",
+          "source_product": "SIEM"
+        },
+        "origin_event_id": "health-listener",
+        "origin_revision": "2"
+      },
+      "revision": "2",
+      "source_observed_at": "2026-10-22T02:10:53Z",
+      "source_updated_at": "2026-10-22T02:10:53Z",
+      "stream_sequence": "2"
+    }
+  ],
+  "resource_kind": "HEALTH",
+  "schema_version": "1.0",
+  "source_instance_id": "mini-siem-fixture-01",
+  "source_product": "SIEM",
+  "source_snapshot_id": null,
+  "sync_mode": "INCREMENTAL"
+}

@@ -1,0 +1,97 @@
+{
+  "contract": "operator-workspace.integration.v1",
+  "prefix": "/api/integrations/dashboard/v1",
+  "routes": {
+    "assets": {
+      "kind": "ASSET",
+      "capability": "LIST_ASSETS",
+      "mode": "STATE",
+      "interval": 300
+    },
+    "findings": {
+      "kind": "FINDING",
+      "capability": "LIST_FINDINGS",
+      "mode": "STATE",
+      "interval": 300
+    },
+    "detections": {
+      "kind": "DETECTION",
+      "capability": "LIST_DETECTIONS",
+      "mode": "HISTORY",
+      "interval": 30
+    },
+    "alerts": {
+      "kind": "ALERT",
+      "capability": "LIST_ALERTS",
+      "mode": "HISTORY",
+      "interval": 30
+    },
+    "incidents": {
+      "kind": "INCIDENT",
+      "capability": "LIST_INCIDENTS",
+      "mode": "STATE",
+      "interval": 60
+    },
+    "events": {
+      "kind": "EVENT",
+      "capability": "LIST_EVENTS",
+      "mode": "HISTORY",
+      "interval": 30
+    },
+    "flows": {
+      "kind": "FLOW",
+      "capability": "LIST_EVENTS",
+      "mode": "HISTORY",
+      "interval": 60
+    },
+    "audit-events": {
+      "kind": "AUDIT_EVENT",
+      "capability": "LIST_AUDIT_EVENTS",
+      "mode": "HISTORY",
+      "interval": 60
+    },
+    "compliance-results": {
+      "kind": "COMPLIANCE_RESULT",
+      "capability": "LIST_COMPLIANCE_RESULTS",
+      "mode": "STATE",
+      "interval": 300
+    },
+    "policies": {
+      "kind": "POLICY",
+      "capability": "OBSERVE_POLICY",
+      "mode": "STATE",
+      "interval": 300
+    },
+    "sessions": {
+      "kind": "SESSION",
+      "capability": "OBSERVE_SESSION",
+      "mode": "STATE",
+      "interval": 60
+    },
+    "reports": {
+      "kind": "SANDBOX_REPORT",
+      "capability": "LIST_REPORTS",
+      "mode": "STATE",
+      "interval": 300
+    },
+    "scans": {
+      "kind": "SCAN",
+      "capability": "SCAN_STATUS",
+      "mode": "STATE",
+      "interval": 60
+    },
+    "action-status": {
+      "kind": "ACTION_STATUS",
+      "capability": "LIST_ACTIONS",
+      "mode": "STATE",
+      "interval": 30
+    },
+    "health-observations": {
+      "kind": "HEALTH",
+      "capability": "HEALTH",
+      "mode": "STATE",
+      "interval": 60
+    }
+  }
+}
+

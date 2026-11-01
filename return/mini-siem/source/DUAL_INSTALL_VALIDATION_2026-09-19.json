@@ -1,0 +1,35 @@
+{
+  "artifact_focused_smoke_first_pass": {
+    "failed": 0,
+    "passed": 27
+  },
+  "broad_suite": {
+    "failed": 37,
+    "new_failures_vs_parent": 0,
+    "passed": 112,
+    "skipped": 1
+  },
+  "focused_tests": {
+    "failed": 0,
+    "passed": 27
+  },
+  "full_collection": {
+    "collected_before_errors": 150,
+    "collection_errors": 3,
+    "reason": "Flask/Werkzeug unavailable"
+  },
+  "live_gates": "NOT_RUN_DEFERRED",
+  "parent_broad_suite": {
+    "failed": 37,
+    "passed": 109,
+    "skipped": 1
+  },
+  "source_gates": {
+    "compileall": "PASS",
+    "javascript_syntax": "1/1 PASS",
+    "placeholder_truth": "PASS",
+    "secret_pattern_scan": "0 findings / 329 text files",
+    "shell_syntax": "6/6 PASS"
+  },
+  "status": "IMPLEMENTED_TESTING_DEFERRED"
+}

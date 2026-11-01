@@ -1,0 +1,10 @@
+{
+  "contract": "operator-workspace.integration.v1",
+  "export_ready": true,
+  "observed_at": "2026-10-22T02:10:53Z",
+  "reason_codes": [],
+  "schema_version": "1.0",
+  "source_instance_id": "mini-siem-fixture-01",
+  "source_product": "SIEM",
+  "status": "READY"
+}

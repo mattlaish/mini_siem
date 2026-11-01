@@ -1,0 +1,348 @@
+{
+  "binding_sha256": "d363deaeaa24c755a7693d8208e5afa695ef68e54c5e548bea5a1d60e21855eb",
+  "bundle_sha256": "1c3a983ff31a0c96fd98bb195f86db47bed9cf3dec65a3a246f6679c2d97b57e",
+  "catalog_audit": {
+    "cases": [
+      {
+        "actual_error": "ProductConnectorError",
+        "actual_stage": "decode",
+        "case_id": "N-DEC-001",
+        "stage": "decode",
+        "status": "PASS"
+      },
+      {
+        "actual_error": "ProductConnectorError",
+        "actual_stage": "decode",
+        "case_id": "N-DEC-002",
+        "stage": "decode",
+        "status": "PASS"
+      },
+      {
+        "actual_error": "ProductConnectorError",
+        "actual_stage": "decode",
+        "case_id": "N-DEC-003",
+        "stage": "decode",
+        "status": "PASS"
+      },
+      {
+        "actual_error": "ProductConnectorError",
+        "actual_stage": "decode",
+        "case_id": "N-DEC-004",
+        "stage": "decode",
+        "status": "PASS"
+      },
+      {
+        "actual_error": "ProductConnectorError",
+        "actual_stage": "decode",
+        "case_id": "N-DEC-005",
+        "stage": "decode",
+        "status": "PASS"
+      },
+      {
+        "actual_error": "ProductConnectorError",
+        "actual_stage": "decode",
+        "case_id": "N-DEC-006",
+        "stage": "decode",
+        "status": "PASS"
+      },
+      {
+        "actual_error": "ProductConnectorConflictError",
+        "actual_stage": "decode",
+        "case_id": "N-PAGE-001",
+        "stage": "decode",
+        "status": "PASS"
+      },
+      {
+        "actual_error": "ProductConnectorConflictError",
+        "actual_stage": "decode",
+        "case_id": "N-PAGE-002",
+        "stage": "decode",
+        "status": "PASS"
+      },
+      {
+        "actual_error": "ProductConnectorError",
+        "actual_stage": "decode",
+        "case_id": "N-PAGE-003",
+        "stage": "decode",
+        "status": "PASS"
+      },
+      {
+        "actual_error": "ProductConnectorCursorError",
+        "actual_stage": "page_validate",
+        "case_id": "N-SYNC-001",
+        "stage": "page_validate",
+        "status": "PASS"
+      },
+      {
+        "actual_error": "ProductConnectorCursorError",
+        "actual_stage": "page_validate",
+        "case_id": "N-SYNC-002",
+        "stage": "page_validate",
+        "status": "PASS"
+      },
+      {
+        "actual_error": "ProductConnectorError",
+        "actual_stage": "page_validate",
+        "case_id": "N-PAGE-004",
+        "stage": "page_validate",
+        "status": "PASS"
+      },
+      {
+        "actual_error": "ProductConnectorConflictError",
+        "actual_stage": "sync",
+        "case_id": "N-SYNC-003",
+        "stage": "sync",
+        "status": "PASS"
+      },
+      {
+        "actual_error": "ProductConnectorConflictError",
+        "actual_stage": "sync",
+        "case_id": "N-SYNC-005",
+        "stage": "sync",
+        "status": "PASS"
+      },
+      {
+        "case_id": "T-401",
+        "provider_claim_recorded": true,
+        "reason": "requires_transport_environment",
+        "status": "NOT_RUN"
+      },
+      {
+        "case_id": "T-403",
+        "provider_claim_recorded": true,
+        "reason": "requires_transport_environment",
+        "status": "NOT_RUN"
+      },
+      {
+        "case_id": "T-409",
+        "provider_claim_recorded": true,
+        "reason": "requires_transport_environment",
+        "status": "NOT_RUN"
+      },
+      {
+        "case_id": "T-429",
+        "provider_claim_recorded": true,
+        "reason": "requires_transport_environment",
+        "status": "NOT_RUN"
+      },
+      {
+        "case_id": "T-503",
+        "provider_claim_recorded": true,
+        "reason": "requires_transport_environment",
+        "status": "NOT_RUN"
+      },
+      {
+        "case_id": "T-MUTATION",
+        "provider_claim_recorded": true,
+        "reason": "requires_transport_environment",
+        "status": "NOT_RUN"
+      },
+      {
+        "case_id": "T-REDIRECT",
+        "provider_claim_recorded": true,
+        "reason": "requires_transport_environment",
+        "status": "NOT_RUN"
+      },
+      {
+        "case_id": "T-CONTENT-TYPE",
+        "provider_claim_recorded": true,
+        "reason": "requires_transport_environment",
+        "status": "NOT_RUN"
+      },
+      {
+        "case_id": "T-OVERSIZE",
+        "provider_claim_recorded": true,
+        "reason": "requires_transport_environment",
+        "status": "NOT_RUN"
+      },
+      {
+        "case_id": "T-TIMEOUT",
+        "provider_claim_recorded": true,
+        "reason": "requires_transport_environment",
+        "status": "NOT_RUN"
+      },
+      {
+        "case_id": "T-TLS",
+        "provider_claim_recorded": true,
+        "reason": "requires_transport_environment",
+        "status": "NOT_RUN"
+      }
+    ],
+    "counts": {
+      "BLOCKED": 0,
+      "FAIL": 0,
+      "NOT_RUN": 11,
+      "PASS": 14
+    },
+    "deployment_qualification": "NOT_RUN",
+    "missing_negative_stages": [],
+    "passed_negative_stages": [
+      "decode",
+      "page_validate",
+      "sync"
+    ],
+    "status": "PARTIAL",
+    "transport_execution": "NOT_RUN"
+  },
+  "consumer_files": [
+    {
+      "path": "tools/qualify_owi_connector_fixture.py",
+      "sha256": "9c98ce4e244336c7f19e9e8edc01227c6ae56a488d7f64002d6b151910585e56"
+    },
+    {
+      "path": "tools/audit_owi_return.py",
+      "sha256": "389b7e72aa2ec49d0c0557e67c1cdc8e0d48f3c873de5a53f60b9f02ed9955fe"
+    },
+    {
+      "path": "src/utm_backend/owi_fixture_validation.py",
+      "sha256": "379950fc9a697f095300c46484b18cd54d43344980efac4a3331260ba4a9514d"
+    },
+    {
+      "path": "src/utm_backend/owi_return_acceptance.py",
+      "sha256": "7e8da718111f4ec39d7d25631c725f0c41d6c436216325ace1e5c689c322cc06"
+    },
+    {
+      "path": "src/utm_backend/operator_workspace_connector_runtime.py",
+      "sha256": "bd88d7ba441545a6397c3c8eb15f7ccd6cd3496fb707c448bbcda6e39fd0477b"
+    },
+    {
+      "path": "src/utm_backend/product_connector.py",
+      "sha256": "43b8d08624643179995edfad69987641e5cbd35aaf072c138367ff5c61022198"
+    }
+  ],
+  "consumer_root": "C:\\Users\\mattlai\\Projects\\dashboard",
+  "identity_sha256": "3e82ef9a476a9750b1cd5e2f1fda5dc38f749277b5192499bb611ada298d3c40",
+  "network_io": false,
+  "positive_sequence": {
+    "accepted_revisions": [
+      "2",
+      "1"
+    ],
+    "actual_result": "PASS",
+    "case_id": "P-SYNC-001",
+    "current_revision_after_sequence": "2",
+    "network_io": false,
+    "production_registration": false
+  },
+  "production_registration": false,
+  "replay": {
+    "binding_sha256": "d363deaeaa24c755a7693d8208e5afa695ef68e54c5e548bea5a1d60e21855eb",
+    "bundle_sha256": "1c3a983ff31a0c96fd98bb195f86db47bed9cf3dec65a3a246f6679c2d97b57e",
+    "capabilities_checked": 7,
+    "complete_return_acceptance": "NOT_RUN",
+    "health_state": "READY",
+    "mode": "execute",
+    "negative_pages_checked": 6,
+    "network_io": false,
+    "pages_checked": 21,
+    "production_registration": false,
+    "records_checked": 26,
+    "resources_checked": 21,
+    "scope": "OFFLINE_FIXTURE_ONLY",
+    "status": "PASS"
+  },
+  "runs": [
+    {
+      "command": [
+        "C:\\Users\\mattlai\\AppData\\Local\\Programs\\Python\\Python312\\python.exe",
+        "-B",
+        "-m",
+        "pytest",
+        "-q",
+        "--tb=short",
+        "-p",
+        "no:cacheprovider",
+        "tests/test_dashboard_connector.py",
+        "tests/test_dashboard_return_package.py",
+        "tests/test_detection_management.py",
+        "tests/test_detection_hardening.py",
+        "tests/test_ux_improvements.py",
+        "tests/test_product_language.py",
+        "tests/test_db.py",
+        "tests/test_admin_bootstrap.py",
+        "tests/test_postgres_privilege_boundary.py",
+        "--basetemp",
+        "C:\\Users\\mattlai\\AppData\\Local\\Temp\\mini-siem-return-checks-ejj9y85h\\pytest",
+        "--junitxml",
+        "C:\\Users\\mattlai\\Projects\\mini_siem\\return\\mini-siem\\test-logs\\focused-regression.xml"
+      ],
+      "cwd": "C:\\Users\\mattlai\\Projects\\mini_siem",
+      "exit_code": 0,
+      "name": "focused-regression",
+      "started_at_utc": "2026-10-22T02:19:47.102354+00:00",
+      "stderr_ref": "focused-regression.stderr.txt",
+      "stdout_ref": "focused-regression.stdout.txt"
+    },
+    {
+      "command": [
+        "C:\\Users\\mattlai\\AppData\\Local\\Programs\\Python\\Python312\\python.exe",
+        "-B",
+        "C:\\Users\\mattlai\\Projects\\dashboard\\tools\\qualify_owi_connector_fixture.py",
+        "--binding",
+        "C:\\Users\\mattlai\\Projects\\mini_siem\\return\\mini-siem\\binding.fixture.json",
+        "--binding-sha256",
+        "d363deaeaa24c755a7693d8208e5afa695ef68e54c5e548bea5a1d60e21855eb",
+        "--bundle",
+        "C:\\Users\\mattlai\\Projects\\mini_siem\\return\\mini-siem\\fixture-bundle.json"
+      ],
+      "cwd": "C:\\Users\\mattlai\\Projects\\mini_siem",
+      "exit_code": 0,
+      "name": "dashboard-plan",
+      "started_at_utc": "2026-10-22T02:19:54.741381+00:00",
+      "stderr_ref": "dashboard-plan.stderr.txt",
+      "stdout_ref": "dashboard-plan.stdout.txt"
+    },
+    {
+      "command": [
+        "C:\\Users\\mattlai\\AppData\\Local\\Programs\\Python\\Python312\\python.exe",
+        "-B",
+        "C:\\Users\\mattlai\\Projects\\dashboard\\tools\\qualify_owi_connector_fixture.py",
+        "--binding",
+        "C:\\Users\\mattlai\\Projects\\mini_siem\\return\\mini-siem\\binding.fixture.json",
+        "--binding-sha256",
+        "d363deaeaa24c755a7693d8208e5afa695ef68e54c5e548bea5a1d60e21855eb",
+        "--bundle",
+        "C:\\Users\\mattlai\\Projects\\mini_siem\\return\\mini-siem\\fixture-bundle.json",
+        "--execute",
+        "--confirm",
+        "OFFLINE-OWI:1c3a983ff31a0c96fd98bb195f86db47bed9cf3dec65a3a246f6679c2d97b57e"
+      ],
+      "cwd": "C:\\Users\\mattlai\\Projects\\mini_siem",
+      "exit_code": 0,
+      "name": "dashboard-execute",
+      "started_at_utc": "2026-10-22T02:19:55.041993+00:00",
+      "stderr_ref": "dashboard-execute.stderr.txt",
+      "stdout_ref": "dashboard-execute.stdout.txt"
+    },
+    {
+      "command": [
+        "C:\\Users\\mattlai\\AppData\\Local\\Programs\\Python\\Python312\\python.exe",
+        "-B",
+        "C:\\Users\\mattlai\\Projects\\mini_siem\\return\\mini-siem\\tools\\verify_positive_sequences.py",
+        "--record"
+      ],
+      "cwd": "C:\\Users\\mattlai\\Projects\\mini_siem",
+      "exit_code": 0,
+      "name": "positive-sequence",
+      "started_at_utc": "2026-10-22T02:19:55.355054+00:00",
+      "stderr_ref": "positive-sequence.stderr.txt",
+      "stdout_ref": "positive-sequence.stdout.txt"
+    },
+    {
+      "command": [
+        "C:\\Users\\mattlai\\AppData\\Local\\Programs\\Python\\Python312\\python.exe",
+        "-B",
+        "-c",
+        "import hashlib,json,sys\nfrom pathlib import Path\nfrom qualify_owi_connector_fixture import build_qualification\nfrom utm_backend.operator_workspace_connector_runtime import OWIRuntimeBinding\nfrom utm_backend.owi_return_acceptance import audit_catalogs\nroot=Path(sys.argv[1])\nfiles={p.relative_to(root).as_posix():p.read_bytes() for p in root.rglob('*') if p.is_file() and '__pycache__' not in p.parts}\nbinding=OWIRuntimeBinding.from_document(json.loads(files['binding.fixture.json']),binding_sha256=hashlib.sha256(files['binding.fixture.json']).hexdigest(),purpose='OFFLINE_FIXTURE_ONLY')\nconnector,_,_,_=build_qualification(json.loads(files['fixture-bundle.json']),binding)\nprint(json.dumps(audit_catalogs(files,connector),sort_keys=True))\n",
+        "C:\\Users\\mattlai\\Projects\\mini_siem\\return\\mini-siem"
+      ],
+      "cwd": "C:\\Users\\mattlai\\Projects\\mini_siem",
+      "exit_code": 0,
+      "name": "dashboard-catalog-audit",
+      "started_at_utc": "2026-10-22T02:19:55.666089+00:00",
+      "stderr_ref": "dashboard-catalog-audit.stderr.txt",
+      "stdout_ref": "dashboard-catalog-audit.stdout.txt"
+    }
+  ],
+  "scope": "OFFLINE_FIXTURE_ONLY"
+}

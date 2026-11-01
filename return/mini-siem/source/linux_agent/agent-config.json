@@ -1,0 +1,28 @@
+{
+  "siem_host": "10.0.0.10",
+  "siem_port": 514,
+  "protocol": "udp",
+
+  "hostname": "",
+  "facility": 16,
+  "max_message_bytes": 1800,
+  "state_file": "/var/lib/mini-siem-agent/state.json",
+
+  "journald": {
+    "enabled": true,
+    "units": [],
+    "min_priority": 6,
+    "extra_args": []
+  },
+
+  "files": {
+    "enabled": false,
+    "poll_seconds": 2,
+    "paths": [
+      { "path": "/var/log/nginx/error.log", "app_name": "nginx" },
+      { "path": "/var/log/auth.log", "app_name": "authlog" }
+    ]
+  },
+
+  "heartbeat_minutes": 15
+}

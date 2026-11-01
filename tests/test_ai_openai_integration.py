@@ -1,3 +1,12 @@
+import pytest
+
+@pytest.fixture(autouse=True)
+def allow_synthetic_server(monkeypatch):
+    import outbound
+    original=outbound._allowed_origins
+    monkeypatch.setattr(outbound, "_allowed_origins", lambda: original() | {("http", "127.0.0.1", _synthetic_port)})
+
+_synthetic_port=0
 import json
 import sqlite3
 import stat
@@ -36,9 +45,11 @@ class _Handler(BaseHTTPRequestHandler):
 
 
 def _server(responses):
+    global _synthetic_port
     _Handler.responses = list(responses)
     _Handler.requests = []
     srv = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+    _synthetic_port=srv.server_port
     thread = threading.Thread(target=srv.serve_forever, daemon=True)
     thread.start()
     return srv
@@ -524,17 +535,17 @@ def test_external_mode_refuses_redirect_before_reusing_authorization_or_evidence
 def test_transient_url_error_is_retried_then_succeeds(monkeypatch):
     success = {"status": "completed", "output_text": "ready"}
     srv = _server([(200, {}, success)])
-    original = ai_soc.urllib.request.urlopen
+    original = ai_soc.outbound.open_request
     calls = {"n": 0}
     sleeps = []
 
-    def flaky(req, timeout=None):
+    def flaky(req, timeout=None, **kwargs):
         calls["n"] += 1
         if calls["n"] == 1:
             raise ai_soc.urllib.error.URLError("temporary network failure")
-        return original(req, timeout=timeout)
+        return original(req, timeout=timeout, **kwargs)
 
-    monkeypatch.setattr(ai_soc.urllib.request, "urlopen", flaky)
+    monkeypatch.setattr(ai_soc.outbound, "open_request", flaky)
     try:
         client = ai_soc.LLMClient(
             f"http://127.0.0.1:{srv.server_port}/v1",

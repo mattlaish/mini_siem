@@ -10,6 +10,8 @@
   const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
   const status = a => (a.workflow_status || 'new').toLowerCase();
   let rows = [], selected = -1, openId = null, maxId = 0;
+  let drawerDirty=false,saving=false,listSequence=0,historyBusy=false,historyLoaded=false;
+  MS.guardDraft(()=>drawerDirty);
   const picked = new Set();   // bulk selection, by alert id
 
   async function api(url, options) {
@@ -56,10 +58,17 @@
   function host(a) { return (a.detection_evidence && a.detection_evidence.fields && a.detection_evidence.fields['host.name']) || a.source_ip || '—'; }
 
   async function load(opts) {
-    const background = !!(opts && opts.background);
+    const background = !!(opts && opts.background),append=!!(opts&&opts.append);
+    if(historyBusy&&(background||append))return;
+    const p=params();if(append&&rows.length)p.set('before_id',Math.min(...rows.map(a=>a.id)));
+    if(append)historyBusy=true;const sequence=++listSequence;
     // Background polls must not keep an idle session alive.
-    const data = await api('/api/alerts?' + params(), background ? {headers: {'X-Background-Poll': '1'}} : undefined);
-    if (background && held()) {
+    let data;
+    try{data=await MS.read('Alert queue','/api/alerts?'+p,background?{headers:{'X-Background-Poll':'1'}}:undefined,()=>load());}
+    catch(e){if(append)historyBusy=false;throw e;}
+    if(sequence!==listSequence){if(append)historyBusy=false;return;}
+    if(append)historyBusy=false;
+    if (background && (held()||historyLoaded)) {
       const fresh = data.filter(a => a.id > maxId).length;
       $('aqNewPill').textContent = fresh ? `${fresh} new ↑` : '';
       $('aqNewPill').classList.toggle('show', fresh > 0);
@@ -67,7 +76,9 @@
     }
     $('aqNewPill').classList.remove('show');
     const keep = rows[selected] && rows[selected].id;
-    rows = data;
+    rows=append?[...rows,...data.filter(row=>!rows.some(old=>old.id===row.id))]:data;
+    if(append)historyLoaded=true;else if(!background)historyLoaded=false;
+    $('aqOlder').hidden=data.length<500;
     // Bulk actions only ever target alerts that are still shown.
     const shown = new Set(rows.map(a => a.id));
     [...picked].forEach(id => { if (!shown.has(id)) picked.delete(id); });
@@ -119,6 +130,7 @@
     updateBulk();
   }
   async function bulk(payload, verb) {
+    if(saving||!MS.confirmDiscard(drawerDirty))return;drawerDirty=false;
     const ids = [...picked];
     if (!ids.length) return;
     try {
@@ -146,6 +158,7 @@
   const PINNED = ['host.name', 'user.name', 'process.parent.name', 'process.name', 'process.command_line',
                   'process.path', 'process.parent.path', 'script.text', 'source.ip', 'message'];
   async function open(id) {
+    if(saving||!MS.confirmDiscard(drawerDirty))return;drawerDirty=false;
     openId = id; syncUrl();
     const drawer = $('aqDrawer');
     drawer.hidden = false; $('aqWrap').classList.add('drawer-open');
@@ -179,20 +192,24 @@
         ${events ? `<pre>${esc(events)}</pre>` : '<p class="muted">No linked events are currently available here. Check Log Search for archived evidence.</p>'}
         <p class="muted" style="font-size:11px;">${esc(ev.note || '')}</p>`;
       $('aqClose').onclick = close;
+      if($('aqForm'))['input','change'].forEach(event=>$('aqForm').addEventListener(event,()=>{drawerDirty=true;}));
       if ($('aqForm')) $('aqForm').onsubmit = async e => {
         e.preventDefault();
         const f = e.target, body = {status: f.status.value, assignee: f.assignee.value.trim(), note: f.note.value.trim()};
+        if(saving)return;saving=true;f.querySelectorAll('input,select,textarea,button').forEach(el=>el.disabled=true);
         try {
-          await save(id, body);
+          await save(id, body);drawerDirty=false;
           MS.toast(`Alert #${id} saved (${MS.label(body.status)}).`, 'success');
-          await load(); open(id);
-        } catch (err) { MS.toast(err.message, 'error'); }
+          await load();saving=false;open(id);
+        } catch (err) { MS.toast(err.message, 'error'); } finally{saving=false;f.querySelectorAll('input,select,textarea,button').forEach(el=>el.disabled=false);}
       };
     } catch (err) {
+      if(openId!==id)return;
       drawer.innerHTML = `<p class="muted">${esc(err.message)}</p>`;
     }
   }
   function close() {
+    if(saving||!MS.confirmDiscard(drawerDirty))return;drawerDirty=false;
     openId = null; syncUrl();
     $('aqDrawer').hidden = true; $('aqWrap').classList.remove('drawer-open');
   }
@@ -200,6 +217,7 @@
     return api(`/api/alerts/${id}/workflow`, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
   }
   async function acknowledge() {
+    if(saving||!MS.confirmDiscard(drawerDirty))return;drawerDirty=false;
     const a = rows[selected];
     if (!a || !canTriage) return;
     if (!(NEXT[status(a)] || []).includes('acknowledged')) { MS.toast(`Alert #${a.id} is ${status(a)}; it can't be acknowledged.`, 'error'); return; }
@@ -224,6 +242,8 @@
     else if (e.key === 'x') { togglePick(selected); e.preventDefault(); }
     else if (e.key === 'Escape' && openId) { close(); }
   });
+
+  $('aqOlder').onclick=async()=>{const b=$('aqOlder');b.disabled=true;try{await load({append:true});}catch(e){MS.toast(e.message,'error');}finally{b.disabled=false;}};
 
   // ---- wiring ---------------------------------------------------------------
   ['fStatus', 'fSeverity', 'fRule', 'fAssignee'].forEach(id => $(id).addEventListener('change', () => load()));

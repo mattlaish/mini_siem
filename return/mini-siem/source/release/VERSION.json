@@ -1,0 +1,6 @@
+{
+  "release_type": "production_candidate",
+  "phase": "12.7",
+  "status": "IMPLEMENTED_TESTING_DEFERRED",
+  "baseline": "mini_siem_phase12_6_security_release_qualification.zip"
+}

@@ -293,7 +293,7 @@ sudo systemctl restart auditd</pre>
       <div class="fld"><label>Enabled</label>
         <select id="pEnabled"><option value="1">Yes — collect logs automatically</option><option value="0" selected>No — save without collecting logs</option></select>
       </div>
-      <div class="fld full"><button id="addPollerBtn">Save and test connection</button><span class="status-line" id="pollerStatus"></span></div>
+      <div class="fld full"><button type="button" id="testPollerDraft">Test draft without saving</button> <button id="addPollerBtn">Save and test connection</button><span class="status-line" id="pollerStatus"></span></div>
     </div>
     <div class="conn-test" id="pTestResult" hidden aria-live="polite"></div>
 
@@ -590,6 +590,12 @@ sudo systemctl restart auditd</pre>
 {% block scripts %}
 <script>
 const $ = id => document.getElementById(id);
+document.addEventListener('click', e => {
+  const b=e.target.closest && e.target.closest('[data-action]'); if(!b)return;
+  if(b.dataset.action==='user-delete')delUser(b.dataset.username);
+  if(b.dataset.action==='forwarder-delete')deleteFw(Number(b.dataset.id),b.dataset.name);
+  if(b.dataset.action==='api-key-delete')delApiKey(Number(b.dataset.id),b.dataset.name);
+});
 function esc(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;'); }
 
 // Role flags only shape the page; every API call is still checked server-side.
@@ -650,7 +656,8 @@ async function act(url, opts) {
   });
   if (pick) pick.addEventListener('change', () => showSection(pick.value, true));
   // open the section from the URL hash; otherwise the first useful one for this role
-  const initial = (location.hash || '').replace('#','');
+  const bookmark = (location.hash || '').replace('#','');
+  const initial = ({api:'sec-receiver','sec-api':'sec-receiver',troubleshoot:'sec-troubleshoot'}[bookmark] || bookmark);
   const valid = links.some(a=>a.getAttribute('data-target')===initial);
   showSection(valid ? initial : (IS_ADMIN ? 'sec-listen' : 'sec-account'));
 })();
@@ -766,7 +773,7 @@ async function loadForwarders() {
         <td><div class="row-actions">
           <button class="secondary small" onclick="toggleFw(${f.id}, ${f.enabled ? 0 : 1})">${f.enabled ? 'Disable' : 'Enable'}</button>
           <button class="secondary small" onclick="testFw(${f.id}, this)">Test</button>
-          <button class="danger small" onclick="deleteFw(${f.id}, '${esc(f.name)}')">Delete</button>
+          <button class="danger small" data-action="forwarder-delete" data-id="${f.id}" data-name="${esc(f.name)}">Delete</button>
         </div></td>
       </tr>`).join('')}</tbody></table>`;
 }
@@ -848,7 +855,7 @@ async function loadApiKeys() {
       <td style="padding:6px;">${k.use_count||0}</td>
       <td style="padding:6px;text-align:right;white-space:nowrap;">
         <button class="secondary small" onclick="toggleApiKey(${k.id})">${k.enabled?'Disable':'Enable'}</button>
-        <button class="danger small" onclick="delApiKey(${k.id},'${esc(k.name)}')">Delete</button>
+        <button class="danger small" data-action="api-key-delete" data-id="${k.id}" data-name="${esc(k.name)}">Delete</button>
       </td>
     </tr>`).join('');
 }
@@ -1029,8 +1036,10 @@ function pollerState(p){
   if (!p.enabled) return ['muted', 'Off — not collecting'];
   if (p.last_error) return ['err', 'Not receiving'];
   if (!p.last_poll_at) return ['muted', 'Waiting for the first check'];
+  const age=(Date.now()-Date.parse(p.last_poll_at))/1000;
+  if(!Number.isFinite(age)||age>Math.max(120,3*Number(p.interval_seconds||60)))return ['err','Check overdue — open System Health'];
   if (!p.pulled_count) return ['ok', 'Connected · no events yet'];
-  return ['ok', 'Receiving'];
+  return ['ok', 'Connected · events collected previously'];
 }
 function renderTest(box, p, d){
   box.hidden = false;
@@ -1046,8 +1055,9 @@ function renderTest(box, p, d){
   if (d.ok && !d.events) html += '<p class="why">A quiet account can have no recent events. Once collection is on, it starts from the configured earlier-log period.</p>';
   if (d.sample) html += `<details><summary>Example event (shown only here, not stored)</summary><pre>${esc(d.sample)}${d.sample_truncated ? '\n…' : ''}</pre></details>`;
   html += '<p class="why">This test does not store events or move the collection position.</p>';
-  if (d.ok && !p.enabled) html += `<button type="button" id="pTurnOn" data-id="${p.id}">Turn on collection</button>`;
-  else if (!d.ok) html += `<button type="button" class="secondary" id="pRetest" data-id="${p.id}">Test again</button>`;
+  if (d.ok && !p.enabled && p.id) html += `<button type="button" id="pTurnOn" data-id="${p.id}">Turn on collection</button>`;
+  else if (!d.ok && p.id) html += `<button type="button" class="secondary" id="pRetest" data-id="${p.id}">Test again</button>`;
+  if(!p.id)html+='<p class="why">Draft only. No credentials, events or cursor were saved. Automatic collection was not enabled.</p>';
   box.innerHTML = html;
   const on = $('pTurnOn'), again = $('pRetest');
   if (on) on.onclick = async () => {
@@ -1074,8 +1084,8 @@ async function loadPollers(){
   const none=document.getElementById('noPollers');
   if(!tb) return;
   let rows=[];
-  try{ rows = await MS.getJSON('/api/pollers'); }
-  catch(e){ none.style.display='none'; document.getElementById('pollersTable').style.display=''; MS.failed(tb, e, loadPollers, 'cloud connections'); return; }
+  try{ rows = await MS.read('Cloud connections','/api/pollers',undefined,loadPollers); }
+  catch(e){ return; }
   tb.innerHTML='';
   if(!rows.length){ none.style.display='block'; document.getElementById('pollersTable').style.display='none'; return; }
   none.style.display='none'; document.getElementById('pollersTable').style.display='';
@@ -1136,7 +1146,24 @@ async function loadPollers(){
   if(schemeSel){ schemeSel.addEventListener('change',updScheme); updScheme(); }
   if(modeSel){ modeSel.addEventListener('change',updNote); updNote(); }
   const btn=document.getElementById('addPollerBtn');
+  let pollerDraftBusy=false;
+  const draftBtn=$('testPollerDraft');
+  if(draftBtn)draftBtn.onclick=async()=>{
+    if(!IS_ADMIN||pollerDraftBusy)return;pollerDraftBusy=true;draftBtn.disabled=true;btn.disabled=true;
+    const scheme=$('pScheme').value;
+    const body={name:$('pName').value,auth_scheme:scheme,token_url:$('pTokenUrl').value,whoami_url:$('pWhoamiUrl').value,
+      events_url:$('pEventsUrl').value,tenant_header:$('pTenantHeader').value,api_key_header:$('pApiKeyHeader').value,
+      client_id:$('pClientId').value,client_secret:scheme==='api_key'?$('pApiKey').value:$('pClientSecret').value,
+      scope:$('pScope').value,secret_mode:$('pSecretMode').value,interval_seconds:Number($('pInterval').value||60),
+      initial_lookback_seconds:Number($('pLookback').value||86400),enabled:false};
+    const box=$('pTestResult');box.hidden=false;box.textContent='Testing draft without saving…';
+    try{const d=await MS.getJSON('/api/pollers/test',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});renderTest(box,{name:body.name,enabled:false},d);}
+    catch(e){MS.failed(box,e,()=>draftBtn.click(),'the draft connection test');}
+    finally{pollerDraftBusy=false;draftBtn.disabled=false;btn.disabled=false;}
+  };
+  setInterval(()=>{if(!document.hidden)loadPollers();},15000);
   if(btn) btn.addEventListener('click', async ()=>{
+    if(pollerDraftBusy)return;pollerDraftBusy=true;draftBtn.disabled=true;
     const out=document.getElementById('pollerStatus'); out.textContent=''; out.className='status-line'; btn.disabled=true;
     const scheme=$('pScheme').value;
     // the secret field depends on scheme: OAuth uses client secret, api_key uses the key
@@ -1160,7 +1187,7 @@ async function loadPollers(){
       await loadPollers();
       if (d.id) await testPoller({id: d.id, name: body.name.trim(), enabled: body.enabled});
     }catch(e){ out.textContent=e.message; out.className='status-line err'; }
-    finally{ btn.disabled=false; }
+    finally{ pollerDraftBusy=false;btn.disabled=false;draftBtn.disabled=false; }
   });
   loadPollers();
 })();
@@ -1289,6 +1316,7 @@ async function loadAuthMethods() {
   } catch(e) { MS.failed('authMethods', e, loadAuthMethods, 'sign-in methods'); }
 }
 async function loadUsers() {
+  if (window._role !== 'admin') { document.getElementById('usersBody').textContent='User management is available to administrators only.'; return; }
   if (!IS_ADMIN) return;
   const b = document.getElementById('usersBody');
   let rows;
@@ -1299,11 +1327,11 @@ async function loadUsers() {
   b.innerHTML = rows.map(u => `
     <tr>
       <td style="padding:8px;border-bottom:1px solid var(--line);"><strong>${esc(u.username)}</strong></td>
-      <td style="padding:8px;border-bottom:1px solid var(--line);">${esc(u.role||'admin')}</td>
+      <td style="padding:8px;border-bottom:1px solid var(--line);">${esc(u.role||'viewer')}</td>
       <td style="padding:8px;border-bottom:1px solid var(--line);font-family:var(--mono);font-size:12px;">${esc(u.auth_source||'local')}</td>
       <td style="padding:8px;border-bottom:1px solid var(--line);">${u.must_change_password ? '<span class="badge b-err">must change pw</span>' : '<span class="badge b-on">active</span>'}</td>
       <td style="padding:8px;border-bottom:1px solid var(--line);text-align:right;">
-        ${isAdmin ? `<button class="danger small" onclick="delUser('${esc(u.username)}')">Delete</button>` : '<span class="muted" style="font-size:11px;">—</span>'}</td>
+        ${isAdmin ? `<button class="danger small" data-action="user-delete" data-username="${esc(u.username)}">Delete</button>` : '<span class="muted" style="font-size:11px;">—</span>'}</td>
     </tr>`).join('');
 }
 async function delUser(name) {

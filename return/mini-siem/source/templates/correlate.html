@@ -1,0 +1,398 @@
+{% extends "base.html" %}
+{% block title %}Investigations — mini-SIEM{% endblock %}
+{% block page_title %}Investigations{% endblock %}
+{% block head %}
+<style>
+  .wrap { max-width: 1200px; margin: 24px auto; padding: 0 20px; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 18px; margin-bottom: 20px; }
+  .panel h2 { margin: 0 0 4px; font-size: 15px; }
+  .panel .sub { color: var(--ink-soft); font-size: 12.5px; margin: 0 0 14px; }
+
+  .pb-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 12px; }
+  .pb-card { border: 1px solid var(--line); border-radius: 8px; padding: 14px; display: flex; flex-direction: column; gap: 8px; }
+  .pb-card .pb-head { display: flex; justify-content: space-between; gap: 8px; align-items: flex-start; }
+  .pb-card h3 { margin: 0; font-size: 13.5px; }
+  .pb-card .cat { font-family: var(--mono); font-size: 10px; text-transform: uppercase; color: var(--ink-soft); }
+  .pb-card p { margin: 0; font-size: 12.5px; color: var(--ink-soft); line-height: 1.45; flex: 1; }
+  .pb-run-row { display: flex; gap: 8px; align-items: center; }
+  .pb-run-row select { padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; font-size: 12px; }
+  .badge { font-family: var(--mono); font-size: 10px; padding: 2px 7px; border-radius: 20px; border: 1px solid var(--line); white-space: nowrap; }
+  .sev-critical { background: var(--warn-soft); color: var(--warn); border-color: var(--warn); }
+  .sev-warning { background: var(--amber-soft); color: var(--amber); border-color: var(--amber); }
+  .sev-informational { background: var(--ok-soft); color: var(--ok); border-color: var(--ok); }
+
+  button { padding: 8px 14px; border: none; border-radius: 6px; font-size: 13px; font-weight: 600; cursor: pointer; background: var(--accent); color: #fff; }
+  button:hover { background: var(--accent-dark); }
+  button.secondary { background: #fff; color: var(--accent); border: 1px solid var(--accent); }
+  button.secondary:hover { background: var(--accent-soft); }
+  button:disabled { opacity: 0.6; cursor: default; }
+
+  .form-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+  .form-grid .full { grid-column: 1 / -1; }
+  .fld label { display: block; font-size: 12px; font-weight: 600; margin-bottom: 4px; }
+  .fld label .hint { font-weight: 400; color: var(--ink-soft); }
+  .fld input, .fld select { width: 100%; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; font-size: 13px; }
+  .fld input.mono { font-family: var(--mono); font-size: 12.5px; }
+  .hidden { display: none !important; }
+
+  #resultsPanel h2 span { font-weight: 400; color: var(--ink-soft); font-size: 12.5px; }
+  .response-steps { background: var(--accent-soft); border: 1px solid var(--accent); border-radius: 8px; padding: 12px 16px 12px 32px; margin: 10px 0 16px; font-size: 13px; }
+  .response-steps li { margin-bottom: 5px; }
+  table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  thead th { text-align: left; font-family: var(--mono); font-size: 10px; text-transform: uppercase; color: var(--ink-soft); padding: 6px 8px; border-bottom: 1px solid var(--line); }
+  tbody td { padding: 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  .mono-cell { font-family: var(--mono); font-size: 12px; }
+  .sample { font-family: var(--mono); font-size: 11px; color: var(--ink-soft); margin-top: 4px; white-space: pre-wrap; word-break: break-word; }
+  .muted { color: var(--ink-soft); font-size: 12.5px; }
+  .status-line { font-size: 12.5px; margin-top: 8px; }
+  .status-line.err { color: var(--warn); }
+  .empty { padding: 30px; text-align: center; color: var(--ink-soft); font-size: 13px; }
+  details summary { cursor: pointer; font-size: 11.5px; color: var(--accent); }
+  .investigate-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .investigate-grid .full { grid-column: 1 / -1; }
+  .scope-slider { width: 100%; accent-color: var(--accent); cursor: pointer; }
+  .slider-labels { display: flex; justify-content: space-between; font-family: var(--mono); font-size: 10px; color: var(--ink-soft); margin-top: 3px; }
+  .slider-labels.five span { min-width: 1ch; text-align: center; }
+  .scope-readout { margin-top: 8px; padding: 9px 10px; background: var(--accent-soft); border-radius: 6px; font-size: 12px; line-height: 1.45; }
+  .pivot-rule { border-left: 3px solid var(--accent); background: #f7f9fc; padding: 10px 12px; font-size: 12.5px; line-height: 1.5; color: var(--ink-soft); }
+  .entity-chain { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin: 10px 0 14px; }
+  .entity-node { font-family: var(--mono); border: 1px solid var(--line); background: #fff; border-radius: 16px; padding: 5px 9px; font-size: 11.5px; }
+  .entity-arrow { color: var(--ink-soft); font-weight: 700; }
+  .scope-summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(145px,1fr)); gap: 8px; margin: 10px 0 14px; }
+  .scope-stat { border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; background: #fafbfc; }
+  .scope-stat strong { display: block; font-family: var(--mono); font-size: 11px; margin-bottom: 2px; }
+  @media (max-width: 720px) { .form-grid, .investigate-grid { grid-template-columns: 1fr; } .investigate-grid .full { grid-column: auto; } }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="wrap">
+
+  <div class="panel">
+    <h2>Playbook reports</h2>
+    <p class="sub">Run the security checks over a selected period and save the findings as a report. Run once or set a weekly or monthly schedule. Scheduled reports require mini-SIEM to stay running.</p>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;">
+      <div><label style="font-size:12px;font-weight:600;display:block;margin-bottom:4px;">Window</label>
+        <select id="repDays"><option value="1">Last 24 hours</option><option value="7" selected>Last 7 days</option><option value="30">Last 30 days</option><option value="90">Last 90 days</option></select></div>
+      <button id="runReportBtn">Run report now</button>
+      <div><label style="font-size:12px;font-weight:600;display:block;margin-bottom:4px;">Schedule</label>
+        <select id="repSched"><option value="off">Off</option><option value="weekly">Weekly (7-day window)</option><option value="monthly">Monthly (30-day window)</option></select></div>
+      <button class="secondary" id="saveSchedBtn">Save schedule</button>
+      <span class="muted" id="repStatus"></span>
+    </div>
+    <div class="table-scroll" style="max-height:220px;margin-top:14px;">
+      <table>
+        <thead><tr><th>#</th><th>Created</th><th>Trigger</th><th>Window</th><th>Summary</th><th></th></tr></thead>
+        <tbody id="reportsBody"><tr><td colspan="6" class="muted">Loading…</td></tr></tbody>
+      </table>
+    </div>
+    <div id="reportView" style="display:none;margin-top:14px;border-top:1px solid var(--line);padding-top:14px;"></div>
+  </div>
+
+
+  <div class="panel">
+    <h2>Playbooks</h2>
+    <p class="sub">Ready-to-run checks for common security concerns. Choose how far back to look, then run a check to see findings and suggested response steps.</p>
+    <div class="pb-grid" id="pbGrid"><div class="muted">Loading playbooks…</div></div>
+  </div>
+
+  <div class="panel" id="investigatePanel">
+    <h2>Investigate</h2>
+    <p class="sub">Enter an IP address, choose the time period, and decide how many related connection steps to follow. Results include activity involving that address as a sender, receiver or endpoint.</p>
+    <div class="investigate-grid">
+      <div class="fld full">
+        <label>IP to investigate</label>
+        <input type="text" id="iIp" class="mono" placeholder="e.g. 10.20.30.40" autocomplete="off" spellcheck="false">
+      </div>
+
+      <div class="fld">
+        <label>Investigation window <span class="hint">(retrospective, ending now)</span></label>
+        <input type="range" id="iStage" min="0" max="2" step="1" value="1" class="scope-slider">
+        <div class="slider-labels"><span>Short</span><span>Medium</span><span>Long</span></div>
+        <div class="scope-readout" id="iStageReadout"></div>
+      </div>
+
+      <div class="fld">
+        <label>Follow related connections <span class="hint">(number of steps)</span></label>
+        <input type="range" id="iHops" min="0" max="4" step="1" value="1" class="scope-slider">
+        <div class="slider-labels five"><span>0</span><span>1</span><span>2</span><span>3</span><span>4</span></div>
+        <div class="scope-readout" id="iHopReadout"></div>
+      </div>
+
+      <div class="fld full">
+        <div class="pivot-rule"><strong>How connections are followed:</strong> A → B alone is not enough. B is included only when it later sends traffic during the selected period. Another step requires B → C followed by C sending traffic too.</div>
+      </div>
+
+      <div class="fld full">
+        <button id="runInvestigate">Investigate IP</button>
+        <span class="status-line" id="investigateStatus"></span>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel" id="resultsPanel">
+    <h2>Results <span id="resultsMeta"></span></h2>
+    <div id="resultsBody"><div class="empty">Run a playbook or investigate an IP to see results here.</div></div>
+  </div>
+
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const $ = id => document.getElementById(id);
+
+async function loadPlaybooks() {
+  const r = await fetch('/api/playbooks');
+  const pbs = await r.json();
+  $('pbGrid').innerHTML = pbs.map(pb => `
+    <div class="pb-card">
+      <div class="pb-head">
+        <div>
+          <div class="cat">${esc(pb.category)}</div>
+          <h3>${esc(pb.name)}</h3>
+        </div>
+        <span class="badge sev-${pb.severity}">${pb.severity}</span>
+      </div>
+      <p>${esc(pb.description)}</p>
+      <div class="pb-run-row">
+        <select id="win_${pb.id}">
+          <option value="60">1h</option>
+          <option value="360">6h</option>
+          <option value="1440" ${pb.params.window_minutes >= 1440 ? 'selected' : ''}>24h</option>
+          <option value="10080">7d</option>
+        </select>
+        <button class="secondary" onclick="runPlaybook('${pb.id}')">Run</button>
+      </div>
+    </div>`).join('');
+}
+
+async function runPlaybook(id) {
+  setResults('<div class="empty">Running playbook…</div>', '');
+  const win = $('win_' + id).value;
+  const r = await fetch('/api/playbooks/run', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id, window_minutes: parseInt(win) })
+  });
+  const data = await r.json();
+  if (data.error) { setResults(`<div class="empty">Error: ${esc(data.error)}</div>`, ''); return; }
+  renderResults(data, data.playbook);
+  $('resultsPanel').scrollIntoView({ behavior: 'smooth' });
+}
+
+const INVESTIGATION_WINDOWS = [
+  { stage: 'short', label: 'Short', minutes: 30, text: 'Last 30 minutes' },
+  { stage: 'medium', label: 'Medium', minutes: 90, text: 'Last 90 minutes' },
+  { stage: 'long', label: 'Long', minutes: 300, text: 'Last 5 hours' }
+];
+
+function hopExample(hops) {
+  const nodes = ['A', 'B', 'C', 'D', 'E'];
+  return nodes.slice(0, Math.min(hops + 1, nodes.length)).join(' → ');
+}
+
+function syncInvestigateScope() {
+  const w = INVESTIGATION_WINDOWS[parseInt($('iStage').value, 10) || 0];
+  const hops = parseInt($('iHops').value, 10) || 0;
+  $('iStageReadout').innerHTML = `<strong>${w.label}</strong> · ${w.text} · ends now`;
+  $('iHopReadout').innerHTML = `<strong>${hops} hop${hops === 1 ? '' : 's'}</strong> · ${esc(hopExample(hops))} · each connected address must later send traffic during this period`;
+}
+$('iStage').addEventListener('input', syncInvestigateScope);
+$('iHops').addEventListener('input', syncInvestigateScope);
+syncInvestigateScope();
+
+$('runInvestigate').addEventListener('click', async () => {
+  const ip = $('iIp').value.trim();
+  const status = $('investigateStatus');
+  if (!ip) {
+    status.textContent = 'Enter an IP address to investigate.';
+    status.className = 'status-line err';
+    return;
+  }
+  const w = INVESTIGATION_WINDOWS[parseInt($('iStage').value, 10) || 0];
+  const hops = parseInt($('iHops').value, 10) || 0;
+  status.textContent = 'Investigating…';
+  status.className = 'status-line';
+  $('runInvestigate').disabled = true;
+  try {
+    const r = await fetch('/api/investigate/ip', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ip, stage: w.stage, hops })
+    });
+    const data = await r.json();
+    if (!r.ok || data.error) {
+      status.textContent = 'Error: ' + (data.error || `HTTP ${r.status}`);
+      status.className = 'status-line err';
+      return;
+    }
+    status.textContent = '';
+    renderInvestigation(data);
+    $('resultsPanel').scrollIntoView({ behavior: 'smooth' });
+  } finally {
+    $('runInvestigate').disabled = false;
+  }
+});
+
+function renderInvestigation(data) {
+  const mins = data.lookback_minutes || 0;
+  const span = mins >= 60 ? `${(mins / 60).toFixed(mins % 60 ? 1 : 0)}h` : `${mins}m`;
+  let html = `<p class="muted"><strong>IP investigation:</strong> ${esc(data.root_entity)}</p>`;
+  html += `<div class="scope-summary">
+    <div class="scope-stat"><strong>WINDOW</strong>${esc(data.stage_label)} · ${span}</div>
+    <div class="scope-stat"><strong>CONNECTION STEPS</strong>${data.entity_expansion_max_depth}</div>
+    <div class="scope-stat"><strong>ADDRESSES</strong>${(data.investigation_entities || []).length} / ${data.entity_expansion_max_entities}</div>
+    <div class="scope-stat"><strong>EVIDENCE</strong>${data.evidence_count} shown · ${data.candidate_count} matched</div>
+  </div>`;
+
+  const entities = data.investigation_entities || [];
+  const hops = data.entity_hops || [];
+  html += '<div class="entity-chain"><span class="entity-node"><strong>root</strong> ' + esc(data.root_entity) + '</span>'
+    + hops.map(h => `<span class="entity-node">d${h.depth}: ${esc(h.parent)} → ${esc(h.entity)}</span>`).join('')
+    + '</div>';
+
+  if (hops.length) {
+    html += '<h3 style="font-size:13px;margin:14px 0 6px;">Confirmed related connections</h3>';
+    html += tableWrap(['Step', 'Connection', 'First connection event', 'Later outgoing event'], hops.map(h => row([
+      h.depth,
+      mono(`${h.parent} → ${h.entity}`),
+      `<a href="/?ids=${h.relationship_event_id}" target="_blank">#${h.relationship_event_id}</a><div class="sample">${esc(short(h.relationship_seen_at))}</div>`,
+      `<a href="/?ids=${h.source_proof_event_id}" target="_blank">#${h.source_proof_event_id}</a><div class="sample">${esc(short(h.source_proof_seen_at))}</div>`
+    ])));
+  } else {
+    html += '<p class="muted">No additional connections met the follow-up requirement. Try a longer time period or review the original address activity.</p>';
+  }
+
+  const events = data.events || [];
+  if (events.length) {
+    html += '<h3 style="font-size:13px;margin:16px 0 6px;">Investigation evidence</h3>';
+    html += tableWrap(['#', 'Time', 'Source', 'Destination', 'Severity', 'App', 'Message'], events.map(e => row([
+      `<a href="/?ids=${e.id}" target="_blank">#${e.id}</a>`, mono(short(e.received_at)), mono(e.source_ip || '—'), mono(e.destination || '—'),
+      esc(e.severity || '—'), esc(e.app_name || '—'), `<div class="sample">${esc(e.message || '')}</div>`
+    ])));
+  } else {
+    html += '<div class="empty">No matching events. Check the IP address or choose a longer time period.</div>';
+  }
+  setResults(html, `investigate · ${data.stage_label.toLowerCase()} · ${data.requested_hops} hop(s)`);
+}
+
+function esc(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;'); }
+
+function setResults(html, meta) {
+  $('resultsBody').innerHTML = html;
+  $('resultsMeta').textContent = meta || '';
+}
+
+function renderResults(data, playbook) {
+  let html = '';
+  if (playbook) {
+    html += `<p class="muted"><strong>${esc(playbook.name)}</strong> — ${esc(playbook.description)}</p>`;
+  }
+
+  if (!data.groups || data.groups.length === 0) {
+    html += '<div class="empty">No matches in this window. That\'s a fine outcome — it means this pattern wasn\'t observed.</div>';
+    setResults(html, `type: ${data.type} · 0 hits`);
+    return;
+  }
+
+  if (playbook && playbook.response_steps) {
+    html += `<div class="response-steps"><strong>Response steps:</strong><ol>` +
+      playbook.response_steps.map(s => `<li>${esc(s)}</li>`).join('') + `</ol></div>`;
+  }
+
+  const t = data.type;
+  if (t === 'threshold' || t === 'first_seen') {
+    html += tableWrap(['Key', 'Count', 'First', 'Last', 'Evidence'],
+      data.groups.map(g => row([
+        mono(g.key), g.count, mono(short(g.first)), mono(short(g.last)), evidence(g)
+      ])));
+  } else if (t === 'sequence') {
+    html += tableWrap(['Key', 'A events', 'B (success) at', 'Span (s)', 'Evidence'],
+      data.groups.map(g => row([
+        mono(g.key), g.a_count, mono(short(g.b_time)), g.gap_seconds, evidence(g)
+      ])));
+  } else if (t === 'fanout') {
+    html += tableWrap(['Key', 'Distinct values', 'Values (sample)', 'Events', 'Evidence'],
+      data.groups.map(g => row([
+        mono(g.key), g.distinct_count, mono(g.distinct_values.join(', ')), g.count, evidence(g)
+      ])));
+  }
+
+  setResults(html, `type: ${data.type} · ${data.group_count} matching group(s)`);
+}
+
+function short(iso) { return iso ? String(iso).replace('T', ' ').slice(0, 19) : '—'; }
+function mono(v) { return `<span class="mono-cell">${esc(v)}</span>`; }
+function row(cells) { return `<tr>${cells.map(c => `<td>${c}</td>`).join('')}</tr>`; }
+function tableWrap(headers, rows) {
+  return `<table><thead><tr>${headers.map(h => `<th>${h}</th>`).join('')}</tr></thead><tbody>${rows.join('')}</tbody></table>`;
+}
+function evidence(g) {
+  const samples = (g.sample || []).map(s => `<div class="sample">#${s.id} ${esc(short(s.received_at))} — ${esc(s.message)}</div>`).join('');
+  const link = `/?ids=${(g.log_ids || []).slice(0, 200).join(',')}`;
+  return `<details><summary>${(g.log_ids || []).length} event(s) — view samples</summary>${samples}
+    <div style="margin-top:6px"><a href="${link}" target="_blank" style="font-size:11.5px">Open all in log view →</a></div></details>`;
+}
+
+loadPlaybooks();
+
+// ---- Playbook reports ----
+async function loadReports(){
+  const rows = await (await fetch('/api/reports')).json();
+  const b = document.getElementById('reportsBody');
+  if(!rows.length){ b.innerHTML='<tr><td colspan="6" class="muted">No reports yet — run one above.</td></tr>'; return; }
+  b.innerHTML = rows.map(r => `
+    <tr>
+      <td>#${r.id}</td>
+      <td>${MS.fmtTime(r.created_at)}</td>
+      <td>${esc(r.trigger)}</td>
+      <td>${r.window_days}d</td>
+      <td>${r.findings>0? '<strong style="color:var(--warn)">'+esc(r.summary)+'</strong>' : esc(r.summary)}</td>
+      <td style="white-space:nowrap;text-align:right;">
+        <button class="secondary small" onclick="viewReport(${r.id})">View</button>
+        <a class="secondary small" style="text-decoration:none;display:inline-block;padding:4px 10px;border:1px solid var(--accent);color:var(--accent);border-radius:6px;font-size:11.5px;font-weight:600;" href="/api/reports/${r.id}" download="siem-report-${r.id}.json">JSON</a>
+        <button class="danger small" onclick="delReport(${r.id})">Delete</button></td>
+    </tr>`).join('');
+}
+async function viewReport(id){
+  const d = await (await fetch('/api/reports/'+id)).json();
+  const v = document.getElementById('reportView');
+  const hits = (d.results||[]).filter(r=>r.group_count>0);
+  const clean = (d.results||[]).filter(r=>!r.group_count && !r.error);
+  v.style.display='block';
+  v.innerHTML = '<h3 style="font-size:14px;margin:0 0 8px;">Report #'+d.id+' — '+esc(d.summary)+'</h3>'
+    + (hits.length ? hits.map(r =>
+        '<div style="border:1px solid var(--warn);border-radius:8px;padding:12px;margin-bottom:10px;background:var(--warn-soft);">'
+        + '<strong>'+esc(r.name)+'</strong> <span class="muted">('+esc(r.category)+' · '+r.group_count+' group(s))</span>'
+        + '<div style="font-size:12px;margin-top:6px;">'+ (r.groups||[]).slice(0,5).map(g=>'<div class="mono">'+esc(g.key||'')+' — '+ (g.count||g.first_count||'') +' event(s)</div>').join('') +'</div>'
+        + (r.response_steps && r.response_steps.length ? '<details style="margin-top:6px;"><summary style="font-size:12px;cursor:pointer;">Response steps</summary><ol style="font-size:12px;margin:6px 0 0;">'+r.response_steps.map(s=>'<li>'+esc(s)+'</li>').join('')+'</ol></details>' : '')
+        + '</div>').join('') : '<p class="muted">No findings in this window.</p>')
+    + '<p class="muted" style="font-size:11.5px;">'+clean.length+' playbook(s) came back clean.</p>';
+  v.scrollIntoView({behavior:'smooth'});
+}
+async function delReport(id){
+  if(!confirm('Delete report #'+id+'?')) return;
+  await fetch('/api/reports/'+id, {method:'DELETE'}); loadReports();
+}
+document.getElementById('runReportBtn').addEventListener('click', async () => {
+  const st = document.getElementById('repStatus');
+  st.textContent = 'Running all playbooks…';
+  const r = await fetch('/api/reports/run', {method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({window_days: parseInt(document.getElementById('repDays').value)})});
+  const d = await r.json();
+  st.textContent = d.summary || d.error || 'done';
+  loadReports(); if(d.id) viewReport(d.id);
+});
+document.getElementById('saveSchedBtn').addEventListener('click', async () => {
+  const r = await fetch('/api/reports/schedule', {method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({schedule: document.getElementById('repSched').value})});
+  const d = await r.json();
+  document.getElementById('repStatus').textContent = d.error || ('Schedule: '+d.schedule);
+});
+(async () => {
+  const d = await (await fetch('/api/reports/schedule')).json();
+  document.getElementById('repSched').value = d.schedule || 'off';
+})();
+loadReports();
+</script>
+{% endblock %}

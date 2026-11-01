@@ -1,0 +1,68 @@
+{
+  "contract": "operator-workspace.integration.v1",
+  "coverage": {
+    "reason_codes": [],
+    "state": "COMPLETE"
+  },
+  "generated_at": "2026-10-22T02:10:53Z",
+  "has_more": false,
+  "next_cursor": "eyJjaGVja3BvaW50Ijo3LCJleHAiOjE3OTI3MjE0NTMsImxhbmUiOiJhc3NldHMiLCJtb2RlIjoiaW5jcmVtZW50YWwiLCJwcmluY2lwYWwiOiJmaXh0dXJlLXJlYWRlciIsInNjaGVtYSI6IjEuMCIsInNvdXJjZSI6Im1pbmktc2llbS1maXh0dXJlLTAxIiwidGVuYW50IjoidGVuYW50LWZpeHR1cmUiLCJ2aXNpYmlsaXR5IjoiOTgwNjZmYjY3Yjk0NGRkYzYwOTAwN2FkNGRjMzg0YTBkYzFjMTI3MDlmZmNiNTkwZjY4ZWVlOGQyYzZiM2ZmNiJ9ORL0tBK9Nfaf3SAEiIsHAK1B3NAc7M6pgyk__EqiOVM",
+  "records": [
+    {
+      "external_id": "observed-asset-8583cfd1a3cf0bb4b21325df",
+      "operation": "UPSERT",
+      "payload": {
+        "asset_type": "HOST",
+        "attention": null,
+        "criticality": "UNKNOWN",
+        "display_name": "fixture-host-6",
+        "entity_refs": [],
+        "identities": [
+          {
+            "assurance": "OBSERVED",
+            "kind": "HOSTNAME",
+            "namespace": "tenant-fixture/default",
+            "observed_at": "2026-10-01T00:00:00Z",
+            "valid_until": null,
+            "value": "fixture-host-6"
+          },
+          {
+            "assurance": "OBSERVED",
+            "kind": "IP",
+            "namespace": "tenant-fixture/default",
+            "observed_at": "2026-10-01T00:00:00Z",
+            "valid_until": null,
+            "value": "192.0.2.16"
+          }
+        ],
+        "last_seen_at": "2026-10-01T00:00:00Z",
+        "lifecycle": "ACTIVE",
+        "summary": "Observed SIEM asset 192.0.2.16"
+      },
+      "provenance": {
+        "derived_from": [],
+        "detail_path": null,
+        "evidence_refs": [],
+        "forwarded_by": [],
+        "origin": {
+          "external_id": "observed-asset-8583cfd1a3cf0bb4b21325df",
+          "resource_kind": "ASSET",
+          "source_instance_id": "mini-siem-fixture-01",
+          "source_product": "SIEM"
+        },
+        "origin_event_id": "observed-asset-8583cfd1a3cf0bb4b21325df",
+        "origin_revision": "1"
+      },
+      "revision": "1",
+      "source_observed_at": "2026-10-01T00:00:00Z",
+      "source_updated_at": "2026-10-01T00:00:00Z",
+      "stream_sequence": "7"
+    }
+  ],
+  "resource_kind": "ASSET",
+  "schema_version": "1.0",
+  "source_instance_id": "mini-siem-fixture-01",
+  "source_product": "SIEM",
+  "source_snapshot_id": "snapshot-6651fd22c12843af8f254594f9696947",
+  "sync_mode": "SNAPSHOT"
+}

@@ -1,0 +1,26 @@
+{
+  "steps": [
+    {
+      "fixture": "fixtures/negative/snapshot-drift-step-1.json",
+      "request": {
+        "capability": "LIST_ALERTS",
+        "cursor": null,
+        "page_size": 2,
+        "product_id": "dashboard-mini-siem-fixture-01",
+        "resource_kind": "ALERT",
+        "tenant_id": "tenant-fixture"
+      }
+    },
+    {
+      "fixture": "fixtures/negative/snapshot-drift-step-2.json",
+      "request": {
+        "capability": "LIST_ALERTS",
+        "cursor": "eyJjaGVja3BvaW50Ijo3LCJleHAiOjE3OTI3MjE0NTMsImxhbmUiOiJhbGVydHMiLCJtb2RlIjoic25hcHNob3QiLCJwb3MiOjIsInByaW5jaXBhbCI6ImZpeHR1cmUtcmVhZGVyIiwic2NoZW1hIjoiMS4wIiwic25hcHNob3QiOiJzbmFwc2hvdC1lZmQ5MGI3OTcwYWY0Nzc1ODg3MWI2Yjc5MzY1ZDZiMCIsInNvdXJjZSI6Im1pbmktc2llbS1maXh0dXJlLTAxIiwidGVuYW50IjoidGVuYW50LWZpeHR1cmUiLCJ2aXNpYmlsaXR5IjoiOTgwNjZmYjY3Yjk0NGRkYzYwOTAwN2FkNGRjMzg0YTBkYzFjMTI3MDlmZmNiNTkwZjY4ZWVlOGQyYzZiM2ZmNiJ9nnJ1n4FO22T1Y7oWdvp-1buW_pjHtN5r35y8CIHxmCQ",
+        "page_size": 2,
+        "product_id": "dashboard-mini-siem-fixture-01",
+        "resource_kind": "ALERT",
+        "tenant_id": "tenant-fixture"
+      }
+    }
+  ]
+}

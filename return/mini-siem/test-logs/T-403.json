@@ -1,0 +1,18 @@
+{
+  "body": {
+    "contract": "operator-workspace.integration.v1",
+    "error": {
+      "code": "FORBIDDEN",
+      "message": "The dashboard reader token lacks the required scope.",
+      "request_id": "req-f7c67e9bc3dc4dd3986f2287c1e1cdb9",
+      "retry_after_seconds": null,
+      "retryable": false
+    }
+  },
+  "headers": {
+    "Cache-Control": "no-store",
+    "Content-Type": "application/json; charset=utf-8",
+    "X-Content-Type-Options": "nosniff"
+  },
+  "status": 403
+}

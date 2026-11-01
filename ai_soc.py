@@ -50,6 +50,8 @@ DEFAULT_TIMEOUT = 120
 DEFAULT_TEST_MAX_TOKENS = 128
 REDACTION_POLICIES = {"none", "identifiers", "strict"}
 
+import outbound
+
 
 def _is_loopback_host(host: str) -> bool:
     host = (host or "").strip().lower().strip("[]")
@@ -157,8 +159,8 @@ class _RejectExternalRedirects(urllib.request.HTTPRedirectHandler):
     unsafe for the external-AI boundary because the Authorization header and
     already-redacted SIEM evidence were approved only for the configured
     endpoint.  External providers therefore must answer the configured API
-    endpoint directly.  Local/compatible mode retains urllib's normal redirect
-    behavior for backwards compatibility.
+    endpoint directly. This legacy guard remains for compatibility; chat() now
+    uses outbound.open_request, which rejects redirects in both modes.
     """
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
@@ -424,8 +426,10 @@ class LLMClient:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise TimeoutError("AI request exceeded total timeout budget")
-                open_request = self._external_opener.open if self._external_opener is not None else urllib.request.urlopen
-                with open_request(req, timeout=min(self.timeout, max(1.0, remaining))) as resp:
+                with outbound.open_request(req, timeout=min(self.timeout, max(.1, remaining)),
+                                           max_bytes=outbound.AI_LIMIT,
+                                           purpose="ai_external" if self.external_mode else "ai_local",
+                                           allow_loopback=self.external_mode and self.allow_insecure_loopback_external) as resp:
                     body = json.loads(resp.read().decode("utf-8"))
                     request_id = resp.headers.get("x-request-id", "")
                     latency_ms = int((time.monotonic() - started) * 1000)

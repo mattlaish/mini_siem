@@ -1,0 +1,119 @@
+{
+  "actions": [],
+  "auth_profile": "opaque_bearer",
+  "contract": "operator-workspace.integration.v1",
+  "resources": [
+    {
+      "bootstrap_retention_days": 30,
+      "capability": "LIST_ALERTS",
+      "cursor_ttl_seconds": 86400,
+      "enabled": true,
+      "max_page_size": 500,
+      "path": "/api/integrations/dashboard/v1/alerts",
+      "qualification": "IMPLEMENTED_UNQUALIFIED",
+      "reason_codes": [],
+      "resource_kind": "ALERT",
+      "stream_semantics": "HISTORY",
+      "sync_modes": [
+        "SNAPSHOT",
+        "INCREMENTAL"
+      ]
+    },
+    {
+      "bootstrap_retention_days": null,
+      "capability": "LIST_INCIDENTS",
+      "cursor_ttl_seconds": 86400,
+      "enabled": true,
+      "max_page_size": 500,
+      "path": "/api/integrations/dashboard/v1/incidents",
+      "qualification": "IMPLEMENTED_UNQUALIFIED",
+      "reason_codes": [],
+      "resource_kind": "INCIDENT",
+      "stream_semantics": "STATE",
+      "sync_modes": [
+        "SNAPSHOT",
+        "INCREMENTAL"
+      ]
+    },
+    {
+      "bootstrap_retention_days": null,
+      "capability": "LIST_ASSETS",
+      "cursor_ttl_seconds": 86400,
+      "enabled": true,
+      "max_page_size": 500,
+      "path": "/api/integrations/dashboard/v1/assets",
+      "qualification": "IMPLEMENTED_UNQUALIFIED",
+      "reason_codes": [],
+      "resource_kind": "ASSET",
+      "stream_semantics": "STATE",
+      "sync_modes": [
+        "SNAPSHOT",
+        "INCREMENTAL"
+      ]
+    },
+    {
+      "bootstrap_retention_days": null,
+      "capability": "HEALTH",
+      "cursor_ttl_seconds": 86400,
+      "enabled": true,
+      "max_page_size": 500,
+      "path": "/api/integrations/dashboard/v1/health-observations",
+      "qualification": "IMPLEMENTED_UNQUALIFIED",
+      "reason_codes": [],
+      "resource_kind": "HEALTH",
+      "stream_semantics": "STATE",
+      "sync_modes": [
+        "SNAPSHOT",
+        "INCREMENTAL"
+      ]
+    },
+    {
+      "bootstrap_retention_days": null,
+      "capability": "LIST_ACTIONS",
+      "cursor_ttl_seconds": 86400,
+      "enabled": false,
+      "max_page_size": 500,
+      "path": "/api/integrations/dashboard/v1/action-status",
+      "qualification": "NOT_IMPLEMENTED",
+      "reason_codes": [
+        "NOT_IMPLEMENTED"
+      ],
+      "resource_kind": "ACTION_STATUS",
+      "stream_semantics": "STATE",
+      "sync_modes": []
+    },
+    {
+      "bootstrap_retention_days": 30,
+      "capability": "LIST_AUDIT_EVENTS",
+      "cursor_ttl_seconds": 86400,
+      "enabled": false,
+      "max_page_size": 500,
+      "path": "/api/integrations/dashboard/v1/audit-events",
+      "qualification": "NOT_IMPLEMENTED",
+      "reason_codes": [
+        "NOT_IMPLEMENTED"
+      ],
+      "resource_kind": "AUDIT_EVENT",
+      "stream_semantics": "HISTORY",
+      "sync_modes": []
+    },
+    {
+      "bootstrap_retention_days": 30,
+      "capability": "LIST_EVENTS",
+      "cursor_ttl_seconds": 86400,
+      "enabled": false,
+      "max_page_size": 500,
+      "path": "/api/integrations/dashboard/v1/events",
+      "qualification": "NOT_IMPLEMENTED",
+      "reason_codes": [
+        "NOT_IMPLEMENTED"
+      ],
+      "resource_kind": "EVENT",
+      "stream_semantics": "HISTORY",
+      "sync_modes": []
+    }
+  ],
+  "schema_version": "1.0",
+  "source_instance_id": "mini-siem-fixture-01",
+  "source_product": "SIEM"
+}

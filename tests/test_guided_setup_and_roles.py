@@ -1,3 +1,4 @@
+from session_helpers import sign_in, set_role
 """Guided cloud-connection test, role-aware settings and permission checks,
 field/time-zone pickers and the shared request-recovery pattern."""
 import json
@@ -29,13 +30,12 @@ def app_db(tmp_path, monkeypatch):
 
 def client(dashboard, role="admin", user="alice"):
     c = dashboard.app.test_client()
-    with c.session_transaction() as s:
-        s.update(user=user, role=role, must_change=False, csrf_token="t")
+    sign_in(dashboard, c, user, role)
     return c
 
 
 @pytest.fixture
-def provider():
+def provider(monkeypatch):
     """A tiny Sophos-shaped provider: token -> whoami -> events."""
     state = {"token_status": 200, "seen": []}
 
@@ -61,7 +61,7 @@ def provider():
             state["seen"].append((self.path, dict(self.headers)))
             if self.path.startswith("/whoami"):
                 return self._send(200, {"id": "tenant-1", "idType": "tenant",
-                                        "apiHosts": {"dataRegion": f"http://127.0.0.1:{srv.server_port}"}})
+                                        "apiHosts": {"dataRegion": "https://api-us02.central.sophos.com"}})
             if self.path.startswith("/siem/v1/events") or self.path.startswith("/events"):
                 return self._send(200, {"items": [{"id": "e1", "name": "Malware blocked"}, {"id": "e2"}],
                                         "next_cursor": "NEXT"})
@@ -70,13 +70,25 @@ def provider():
     srv = HTTPServer(("127.0.0.1", 0), Handler)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     state["base"] = f"http://127.0.0.1:{srv.server_port}"
+    import outbound
+    import urllib.request
+    import urllib.parse
+    monkeypatch.setenv("MINISIEM_OUTBOUND_ALLOWLIST", state["base"])
+    original = outbound.open_request
+    def synthetic_transport(req, **kwargs):
+        p = urllib.parse.urlsplit(req.full_url)
+        if p.hostname in {"id.sophos.com", "api.central.sophos.com", "api-us02.central.sophos.com"}:
+            req = urllib.request.Request(state["base"] + p.path + ("?"+p.query if p.query else ""),
+                                         data=req.data, headers=dict(req.header_items()), method=req.get_method())
+        return original(req, **kwargs)
+    monkeypatch.setattr(outbound, "open_request", synthetic_transport)
     yield state
     srv.shutdown()
 
 
 def _create_sophos(c, base, **extra):
-    body = {"name": "sophos-central", "auth_scheme": "oauth2_sophos", "token_url": base + "/token",
-            "whoami_url": base + "/whoami/v1", "events_url": "/siem/v1/events", "client_id": "cid",
+    body = {"name": "sophos-central", "auth_scheme": "oauth2_sophos", "token_url": "https://id.sophos.com/api/v2/oauth2/token",
+            "whoami_url": "https://api.central.sophos.com/whoami/v1", "events_url": "/siem/v1/events", "client_id": "cid",
             "client_secret": "s3cret", "secret_mode": "encrypted", "scope": "token", "enabled": False}
     body.update(extra)
     r = c.post("/api/pollers", json=body, headers=H)
@@ -114,7 +126,7 @@ def test_connection_test_reports_where_it_stopped(app_db, provider):
     d = c.post(f"/api/pollers/{pid}/test", headers=H).get_json()
     assert not d["ok"] and len(d["steps"]) == 1
     assert d["steps"][0]["step"] == "sign_in" and "HTTP 401" in d["steps"][0]["detail"]
-    assert "invalid_client" in d["steps"][0]["detail"]                            # provider's own reason
+    assert "invalid_client" not in d["steps"][0]["detail"]  # provider bodies must not echo credentials
 
 
 def test_connection_test_api_key_scheme(app_db, provider):

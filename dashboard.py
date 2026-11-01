@@ -58,6 +58,7 @@ _CSRF_EXEMPT_ENDPOINTS = {
     "do_login",       # no authenticated session exists yet
     "saml_acs",       # legitimate cross-site POST from the identity provider
     "api_ingest",     # machine-to-machine endpoint authenticated by API key
+    "dashboard_connector.reject_mutation",  # bearer boundary; always rejects writes
 }
 
 
@@ -185,9 +186,9 @@ def _security_headers(resp):
     resp.headers.setdefault("X-Content-Type-Options", "nosniff")
     resp.headers.setdefault("X-Frame-Options", "DENY")
     resp.headers.setdefault("Referrer-Policy", "same-origin")
-    # A permissive CSP that still blocks external script injection / framing.
-    # 'unsafe-inline' is required because the UI uses inline handlers; it still
-    # stops loading script from other origins, which is the main XSS vector.
+    # Compatibility CSP: blocks external scripts/framing but still permits
+    # inline handlers. This is not a substitute for escaping untrusted data;
+    # a nonce-based policy needs a separate complete inline-script migration.
     resp.headers.setdefault(
         "Content-Security-Policy",
         "default-src 'self'; script-src 'self' 'unsafe-inline'; "
@@ -207,7 +208,7 @@ def _db_config():
 
 def admin_required(fn):
     """Guard: only 'admin' role may perform this action. Analysts and
-    viewers get 403. SSO users default to admin (see auth.current_role)."""
+    viewers get 403. Roles are read from the verified database principal."""
     from functools import wraps
 
     @wraps(fn)
@@ -393,6 +394,8 @@ def init_auth(auth_config_path=None):
     app.secret_key = explicit if explicit else auth.get_or_create_secret(conn)
     conn.close()
     auth.set_conn_factory(get_conn)
+    app.extensions["minisiem_permission_denied"] = lambda endpoint, role: audit(
+        "permission_denied", target=endpoint, detail=f"role={role}")
     auth.make_guard(app)
     if AUTH_CONFIG.get("oauth", {}).get("enabled"):
         try:
@@ -516,11 +519,16 @@ def do_login():
         audit("login_failed", target=username, detail="local login rejected", username=username or "unknown")
         return redirect(url_for("login", error="Invalid username or password."))
     _clear_login_pair(source_ip, username)
-    auth.login_user(username, "local", must_change=bool(user["must_change_password"]),
-                    role=(user["role"] if user["role"] else "viewer"))
+    try:
+        auth.login_user(username, "local", must_change=bool(user["must_change_password"]),
+                        role=(user["role"] if user["role"] else "viewer"), verified_user=user)
+    except ValueError:
+        auth.logout_user()
+        return redirect(url_for("login", error="Account changed during login. Sign in again."))
     audit("login_success", target=username, detail="local login")
     nxt = request.form.get("next") or "/"
-    return redirect(nxt if nxt.startswith("/") else "/")
+    return redirect(nxt if nxt.startswith("/") and not nxt.startswith("//")
+                    and "\\" not in nxt and not any(ord(c) < 32 for c in nxt) else "/")
 
 
 @app.route("/logout")
@@ -561,6 +569,7 @@ def do_change_password():
         conn.close()
         return redirect(url_for("change_password", error="Choose a password other than the default."))
     auth.set_password(conn, auth.current_user(), new)
+    auth.refresh_session(conn)
     conn.close()
     session["must_change"] = False
     audit("password_changed", detail="via change-password page")
@@ -582,11 +591,14 @@ def oauth_callback():
     try:
         token = _oauth.sso.authorize_access_token()
         userinfo = token.get("userinfo") or _oauth.sso.userinfo()
+        username = auth.oauth_identity(token, userinfo)
     except Exception as exc:
         return redirect(url_for("login", error=f"OAuth failed: {type(exc).__name__}"))
-    username = auth.oauth_identity(token, userinfo)
     conn = get_conn()
-    auth.upsert_sso_user(conn, username, "oauth")
+    try:
+        auth.upsert_sso_user(conn, username, "oauth")
+    except ValueError:
+        return redirect(url_for("login", error="SSO account identity conflict."))
     conn.close()
     auth.login_user(username, "oauth", must_change=False)
     audit("login_success", target=username, detail="OAuth SSO")
@@ -618,7 +630,10 @@ def saml_acs():
     except Exception as exc:
         return redirect(url_for("login", error=f"SAML error: {type(exc).__name__}"))
     conn = get_conn()
-    auth.upsert_sso_user(conn, username, "saml")
+    try:
+        auth.upsert_sso_user(conn, username, "saml")
+    except ValueError:
+        return redirect(url_for("login", error="SSO account identity conflict."))
     conn.close()
     auth.login_user(username, "saml", must_change=False)
     audit("login_success", target=username, detail="SAML SSO")
@@ -702,8 +717,8 @@ def _record_ai_usage(event: dict):
         conn.close()
 
 
-def _llm_from_config():
-    cfg = get_ai_config()
+def _llm_from_config(config=None):
+    cfg = get_ai_config() if config is None else config
     return ai_soc.LLMClient(
         cfg["ai_base_url"], cfg["ai_model"], cfg["ai_api_key"],
         api_style=cfg.get("ai_api_style", "auto"),
@@ -947,6 +962,11 @@ def _build_log_query(args, select_cols, search_backend=None):
             clauses.append(f"l.id IN ({','.join('?' * len(id_list))})")
             params.extend(id_list)
 
+    snapshot = args.get("_snapshot_id")
+    if snapshot is not None and str(snapshot).isdigit():
+        clauses.append("l.id <= ?")
+        params.append(int(snapshot))
+
     if q:
         terms = [t.strip() for t in q.split(",")] if "," in q else [q.strip()]
         if pg:
@@ -1072,7 +1092,7 @@ def _extraction_args(args):
     return fields, filters, sort, direction
 
 
-def _query_logs_extracted(args, limit, select_cols, sort_cap=100000):
+def _query_logs_extracted(args, limit, select_cols, sort_cap=100000, offset=0):
     """Query logs with extracted-field support via the indexed log_fields
     table (materialized at ingest). Field filters become indexed JOINs;
     sorting fetches (id, value) pairs from the index (capped at sort_cap)
@@ -1090,9 +1110,9 @@ def _query_logs_extracted(args, limit, select_cols, sort_cap=100000):
     base_sql, base_params = _build_log_query(args, select_cols, search_backend=search_backend)
     try:
         if not needs:
-            limited_sql = base_sql + " LIMIT ?"
+            limited_sql = base_sql + " LIMIT ? OFFSET ?"
             rows = [dict(r) for r in conn.execute(
-                limited_sql, base_params + [limit]).fetchall()]
+                limited_sql, base_params + [limit, offset]).fetchall()]
             return rows
 
         # base WHERE applies to alias l
@@ -1196,7 +1216,7 @@ def _query_logs_extracted(args, limit, select_cols, sort_cap=100000):
                     return (1, 0, str(t[1]).lower())
             present.sort(key=key, reverse=(direction == "desc"))
             ordered_ids = [i for i, _ in present] + missing
-            page_ids = ordered_ids[:limit]
+            page_ids = ordered_ids[offset:offset + limit]
             if not page_ids:
                 return []
             ph = placeholders(len(page_ids))
@@ -1216,6 +1236,8 @@ def _query_logs_extracted(args, limit, select_cols, sort_cap=100000):
             else:
                 sql += " ORDER BY l.id DESC LIMIT ?"
             params.append(limit)
+            sql += " OFFSET ?"
+            params.append(offset)
             rows = [dict(r) for r in conn.execute(sql, params).fetchall()]
 
         # batch-fetch display values for this page only
@@ -1241,10 +1263,29 @@ def _query_logs_extracted(args, limit, select_cols, sort_cap=100000):
 
 @app.route("/api/logs")
 def api_logs():
-    limit = min(int(request.args.get("limit", 200)), 1000)
+    paged = request.args.get("page") == "1"
+    try:
+        limit = min(max(int(request.args.get("limit", 200)), 1), 1000)
+        offset = int(request.args.get("offset", 0)) if paged else 0
+        if not 0 <= offset <= 100000: raise ValueError
+        snapshot = int(request.args["snapshot"]) if paged and "snapshot" in request.args else None
+        if snapshot is not None and snapshot < 0: raise ValueError
+    except (ValueError, TypeError):
+        return jsonify(error="Invalid history position or page size"), 400
+    args = request.args.copy()
+    if paged:
+        conn = get_conn()
+        relation = "security_event_logs" if getattr(conn, "backend", "sqlite") == "postgres" else "logs"
+        max_id = conn.execute("SELECT COALESCE(MAX(id),0) AS n FROM " + relation).fetchone()["n"]
+        conn.close()
+        if snapshot is None: snapshot = max_id
+        if snapshot > max_id: return jsonify(error="History snapshot is ahead of available events"), 400
+        args["_snapshot_id"] = str(snapshot)
     rows = _query_logs_extracted(
-        request.args, limit,
-        "id, received_at, source_ip, peer_ip, severity, facility, hostname, destination, app_name, message")
+        args, limit + 1 if paged else limit,
+        "id, received_at, source_ip, peer_ip, severity, facility, hostname, destination, app_name, message", offset=offset)
+    has_more = paged and len(rows) > limit and offset + limit <= 100000
+    if paged: rows = rows[:limit]
     # Enrich with endpoint_ip (stored as a field, not a base column) so the UI
     # can show it in the Net-source column for sources with no network src=
     # (e.g. Sophos, whose 'source' is the connector name). Batch-fetched for
@@ -1267,6 +1308,9 @@ def api_logs():
             summary = _event_summary(fields)
             if summary:
                 r["summary"] = summary
+    if paged:
+        return jsonify(items=rows, has_more=has_more, next_offset=offset + len(rows), snapshot=snapshot,
+                       sort_limit=100000 if (args.get("sort") or "").startswith("x_") else None)
     return jsonify(rows)
 
 
@@ -1356,9 +1400,16 @@ def _dt_stamp():
 
 @app.route("/api/alerts")
 def api_alerts():
-    limit = min(int(request.args.get("limit", 100)), 1000)
+    try:
+        limit = min(max(int(request.args.get("limit", 100)), 1), 1000)
+        before_id = int(request.args["before_id"]) if "before_id" in request.args else None
+        if before_id is not None and before_id < 1: raise ValueError
+    except (ValueError, TypeError):
+        return jsonify(error="Invalid alert history position or page size"), 400
     group = request.args.get("group", "").lower() in ("1", "true", "yes")
     where, params = _alert_filters(request.args)
+    if before_id is not None:
+        where.append("id < ?"); params.append(before_id)
     # `where` holds only fixed SQL fragments from _alert_filters; every
     # user-supplied value is in `params` and bound as a parameter.
     filter_sql = (" WHERE " + " AND ".join(where)) if where else ""
@@ -2645,6 +2696,23 @@ def api_pollers_update(pid):
 _POLLER_TEST_LOOKBACK = 3600
 
 
+@app.post("/api/pollers/test")
+@admin_required
+def api_pollers_test_draft():
+    """Test a draft without saving credentials, starting collection or ingesting."""
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict): return jsonify(error="Connection settings must be an object"), 400
+    cfg, err = _validate_poller(body, creating=True)
+    if err: return jsonify(error=err), 400
+    secret = body.get("client_secret")
+    if cfg["secret_mode"] != "encrypted" or not isinstance(secret, str) or not secret.strip():
+        return jsonify(error="Enter a credential and choose encrypted database storage to test this draft"), 400
+    result = _api_poller.test_connection(cfg, lambda row: secret,
+                                         lookback_seconds=cfg["initial_lookback_seconds"])
+    result["detail"] = "Draft test finished. No events, credentials or cursor were saved; collection was not enabled."
+    return jsonify(result), 200 if result["ok"] else 502
+
+
 @app.route("/api/pollers/<int:pid>/test", methods=["POST"])
 @admin_required
 def api_pollers_test(pid):
@@ -3206,6 +3274,7 @@ def _register_split_blueprints():
     from web_blueprints import tickets as ticket_routes
     from web_blueprints import ioc_feeds as feed_routes
     from web_blueprints import detection as detection_routes
+    import dashboard_connector
 
     services = SimpleNamespace(
         get_conn=get_conn, audit=audit, require_admin=_require_admin_now,
@@ -3218,6 +3287,9 @@ def _register_split_blueprints():
                    ticket_routes, feed_routes, detection_routes):
         module.configure(services)
         app.register_blueprint(module.bp)
+
+    dashboard_connector.configure(services)
+    app.register_blueprint(dashboard_connector.bp)
 
     # Preserve the callable interfaces used by the existing background workers.
     globals()["get_ticket_settings"] = ticket_routes.get_ticket_settings

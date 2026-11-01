@@ -1,0 +1,3138 @@
+#!/usr/bin/env python3
+"""
+mini-SIEM dashboard
+====================
+Read-only web UI over the SQLite database populated by listener.py.
+Pages:
+  /            live log search + alert feed
+  /correlate   playbooks/reports + bounded manual IP investigation
+  /setup       syslog forwarding configuration
+  /ai          AI SOC analyst (local LLM) — triage + log Q&A
+
+Usage:
+    python3 dashboard.py --db siem.db --port 8080
+"""
+
+import argparse
+import ipaddress
+import re
+import threading
+import time
+
+from flask import Flask, jsonify, render_template, request, session, redirect, url_for, g, has_request_context
+
+import severity as severity_mod
+import db as dbmod
+import alert_workflow as alert_workflow_mod
+import auth
+from sql_helpers import placeholders, identifier, where_clause
+
+import ai_soc
+import ai_worker
+import ai_config_store
+import health as health_mod
+from correlations import PLAYBOOKS, get_playbook, run_correlation
+
+app = Flask(__name__)
+# --- session cookie hardening ---
+# HttpOnly: JS can't read the session cookie (XSS can't steal it).
+# SameSite=Lax: mitigates CSRF on state-changing navigations.
+# Secure is opt-in via env because many deploys front this with a TLS
+# terminator or run on a trusted segment over plain HTTP; forcing Secure
+# there would silently break login. Set MINISIEM_COOKIE_SECURE=1 when the
+# dashboard itself is reached over HTTPS.
+import os as _os
+import secrets as _secrets
+app.config.update(
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE="Lax",
+    SESSION_COOKIE_SECURE=_os.environ.get("MINISIEM_COOKIE_SECURE", "") == "1",
+)
+
+
+# Browser CSRF protection. MINISIEM_ALLOWED_ORIGINS accepts a comma-separated
+# allowlist; the singular spelling is retained for the common one-origin case.
+# When no allowlist is configured the per-session token is still mandatory.
+_CSRF_UNSAFE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+_CSRF_EXEMPT_ENDPOINTS = {
+    "do_login",       # no authenticated session exists yet
+    "saml_acs",       # legitimate cross-site POST from the identity provider
+    "api_ingest",     # machine-to-machine endpoint authenticated by API key
+    "dashboard_connector.reject_mutation",  # independent bearer boundary
+}
+
+
+def _allowed_origins():
+    raw = (_os.environ.get("MINISIEM_ALLOWED_ORIGINS")
+           or _os.environ.get("MINISIEM_ALLOWED_ORIGIN") or "")
+    return {v.strip().rstrip("/") for v in raw.split(",") if v.strip()}
+
+
+def _csrf_token():
+    token = session.get("csrf_token")
+    if not token:
+        token = _secrets.token_urlsafe(32)
+        session["csrf_token"] = token
+    return token
+
+
+@app.context_processor
+def _csrf_template_context():
+    return {"csrf_token": _csrf_token}
+
+
+@app.before_request
+def _csrf_guard():
+    """Protect state-changing requests authenticated by a browser session."""
+    if request.method not in _CSRF_UNSAFE_METHODS:
+        return None
+    if (request.endpoint or "") in _CSRF_EXEMPT_ENDPOINTS:
+        return None
+    if not auth.current_user():
+        return None
+
+    allowed = _allowed_origins()
+    origin = (request.headers.get("Origin") or "").rstrip("/")
+    if allowed and (not origin or origin not in allowed):
+        return jsonify({"error": "invalid request origin"}), 403
+
+    supplied = (request.headers.get("X-CSRF-Token")
+                or request.form.get("csrf_token") or "")
+    expected = session.get("csrf_token") or ""
+    if not supplied or not expected or not _secrets.compare_digest(supplied, expected):
+        return jsonify({"error": "invalid or missing CSRF token"}), 403
+    return None
+
+
+# Lightweight in-process login throttling. This deliberately avoids permanent
+# account lockouts (which are easy to weaponize as a denial of service) and DB
+# writes on every attempt. Counters reset when the dashboard restarts.
+_LOGIN_PAIR_LIMIT = (5, 300)    # failures per (source IP, username), window s
+_LOGIN_IP_LIMIT = (20, 600)     # failures per source IP, window s
+_LOGIN_FAILURES_BY_PAIR = {}
+_LOGIN_FAILURES_BY_IP = {}
+_LOGIN_LIMIT_LOCK = threading.Lock()
+
+# Setup -> Troubleshoot uses a root-owned, constrained packet-capture helper.
+# Keep the helper path fixed: the dashboard must never choose an executable.
+_SYSLOG_CAPTURE_HELPER = "/usr/local/libexec/mini-siem-syslog-capture"
+_SYSLOG_CAPTURE_LOCK = threading.Lock()
+
+
+def _login_source_ip():
+    forwarded = request.headers.get("X-Forwarded-For", "")
+    return (forwarded.split(",", 1)[0].strip() if forwarded
+            else (request.remote_addr or "unknown"))
+
+
+def _prune_login_failures(store, key, now, window):
+    recent = [ts for ts in store.get(key, ()) if now - ts < window]
+    if recent:
+        store[key] = recent
+    else:
+        store.pop(key, None)
+    return recent
+
+
+def _login_retry_after(source_ip, username):
+    now = time.monotonic()
+    pair_key = (source_ip, username.lower())
+    with _LOGIN_LIMIT_LOCK:
+        pair = _prune_login_failures(
+            _LOGIN_FAILURES_BY_PAIR, pair_key, now, _LOGIN_PAIR_LIMIT[1])
+        ip_attempts = _prune_login_failures(
+            _LOGIN_FAILURES_BY_IP, source_ip, now, _LOGIN_IP_LIMIT[1])
+        waits = []
+        if len(pair) >= _LOGIN_PAIR_LIMIT[0]:
+            waits.append(_LOGIN_PAIR_LIMIT[1] - (now - pair[0]))
+        if len(ip_attempts) >= _LOGIN_IP_LIMIT[0]:
+            waits.append(_LOGIN_IP_LIMIT[1] - (now - ip_attempts[0]))
+    return max(1, int(max(waits)) + 1) if waits else 0
+
+
+def _record_login_failure(source_ip, username):
+    now = time.monotonic()
+    pair_key = (source_ip, username.lower())
+    with _LOGIN_LIMIT_LOCK:
+        pair = _prune_login_failures(
+            _LOGIN_FAILURES_BY_PAIR, pair_key, now, _LOGIN_PAIR_LIMIT[1])
+        pair.append(now)
+        _LOGIN_FAILURES_BY_PAIR[pair_key] = pair
+        ip_attempts = _prune_login_failures(
+            _LOGIN_FAILURES_BY_IP, source_ip, now, _LOGIN_IP_LIMIT[1])
+        ip_attempts.append(now)
+        _LOGIN_FAILURES_BY_IP[source_ip] = ip_attempts
+
+
+def _clear_login_pair(source_ip, username):
+    with _LOGIN_LIMIT_LOCK:
+        _LOGIN_FAILURES_BY_PAIR.pop((source_ip, username.lower()), None)
+
+
+@app.after_request
+def _security_headers(resp):
+    # Defensive response headers. Kept conservative so they don't break the
+    # dashboard's own inline scripts/styles: a report-only-friendly CSP would
+    # need nonces, so we set the high-value, low-risk headers here.
+    resp.headers.setdefault("X-Content-Type-Options", "nosniff")
+    resp.headers.setdefault("X-Frame-Options", "DENY")
+    resp.headers.setdefault("Referrer-Policy", "same-origin")
+    # A permissive CSP that still blocks external script injection / framing.
+    # 'unsafe-inline' is required because the UI uses inline handlers; it still
+    # stops loading script from other origins, which is the main XSS vector.
+    resp.headers.setdefault(
+        "Content-Security-Policy",
+        "default-src 'self'; script-src 'self' 'unsafe-inline'; "
+        "style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
+        "frame-ancestors 'none'")
+    return resp
+
+DB_PATH = "siem.db"          # sqlite fallback (back-compat / tests)
+DB_CONFIG = None             # set in main(); when None we derive from DB_PATH
+AUTH_CONFIG = None           # set by init_auth()
+_oauth = None                # Authlib registry, lazily built if oauth enabled
+
+
+def _db_config():
+    return DB_CONFIG if DB_CONFIG is not None else dbmod.config_from_path(DB_PATH)
+
+
+def admin_required(fn):
+    """Guard: only 'admin' role may perform this action. Analysts and
+    viewers get 403. SSO users default to admin (see auth.current_role)."""
+    from functools import wraps
+
+    @wraps(fn)
+    def _wrap(*args, **kwargs):
+        if auth.current_role() != "admin":
+            audit("permission_denied", target=request.endpoint or request.path,
+                  detail=f"role={auth.current_role()}")
+            return jsonify({"error": "administrator role required for this action"}), 403
+        return fn(*args, **kwargs)
+    return _wrap
+
+
+def analyst_required(fn):
+    """Guard mutating SOC workflow actions from read-only viewers."""
+    from functools import wraps
+
+    @wraps(fn)
+    def _wrap(*args, **kwargs):
+        role = auth.current_role()
+        if role not in ("admin", "analyst"):
+            audit("permission_denied", target=request.endpoint or request.path,
+                  detail=f"role={role}")
+            return jsonify({"error": "analyst or administrator role required for this action"}), 403
+        return fn(*args, **kwargs)
+    return _wrap
+
+
+class _RequestConnectionProxy:
+    """Request-scoped DB handle whose legacy ``close()`` calls are no-ops.
+
+    Existing route code often closes connections explicitly.  Keeping those
+    calls harmless lets a request reuse one connection without a broad
+    behavioral rewrite; the real connection is released by teardown.
+    """
+    def __init__(self, conn):
+        self._conn = conn
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+    def close(self):
+        return None
+
+
+def get_conn():
+    if not has_request_context():
+        return dbmod.connect(_db_config())
+    conn = g.get("_minisiem_db_conn")
+    if conn is None:
+        conn = dbmod.connect(_db_config())
+        g._minisiem_db_conn = conn
+    return _RequestConnectionProxy(conn)
+
+
+@app.teardown_appcontext
+def _close_request_connection(_exc=None):
+    conn = g.pop("_minisiem_db_conn", None)
+    if conn is not None:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+# --- HTTP log ingest -------------------------------------------------------
+# siem.py injects the listener's on_message + storage so API-received logs
+# flow through the exact same pipeline (parse->store->rules->ioc->fields->
+# forward). If no hook is set (dashboard running standalone), the API
+# receiver falls back to a direct insert with no rule/ioc processing.
+_INGEST_HOOK = None
+_INGEST_STORAGE = None
+_HTTP_PIPELINE_LOCK = threading.Lock()
+_HTTP_PIPELINE = None
+
+
+def set_ingest_hook(on_message, storage):
+    global _INGEST_HOOK, _INGEST_STORAGE
+    _INGEST_HOOK = on_message
+    _INGEST_STORAGE = storage
+
+
+def _ingest_raw(raw_line: str, source_ip: str):
+    """Push one raw syslog-format line through the pipeline."""
+    if _INGEST_HOOK is not None:
+        _INGEST_HOOK(raw_line, source_ip)
+        return True
+    global _HTTP_PIPELINE
+    import listener as _listener
+    import normalize as _normalize
+    import json
+    cfg = _db_config()
+    identity = json.dumps(cfg, sort_keys=True)
+    # Keep live threshold state across HTTP calls, using a component-local
+    # connection and the same transactional raw/projection write as syslog.
+    with _HTTP_PIPELINE_LOCK:
+        if _HTTP_PIPELINE is None or _HTTP_PIPELINE[0] != identity:
+            if _HTTP_PIPELINE:
+                _HTTP_PIPELINE[2].stop_monitor()
+                _HTTP_PIPELINE[1].close()
+            store = _listener.Storage(db_config=cfg)
+            engine = _listener.RuleEngine(store)
+            engine.start_monitor()
+            _HTTP_PIPELINE = (identity, store, engine)
+        _, store, engine = _HTTP_PIPELINE
+        event = _listener.parse_syslog(raw_line, source_ip)
+        with engine._lock:
+            engine._reload_config()
+            from windows_events import resolve_host_time
+            resolve_host_time(event, engine.config)
+        with store.lock:
+            patterns = _normalize.load_patterns_from_conn(store.conn)
+        fields = _normalize.extract_fields(event.get("message"), patterns, json_obj=event.get("_json"))
+        fields.update(event.get("_normalized", {}))
+        log_id = store.insert_log(event, fields=fields)
+        engine.process(log_id, event, fields=fields)
+    return True
+
+
+def _json_to_syslog_line(obj: dict) -> str:
+    """Turn a posted JSON log object into an RFC3164-ish syslog line the
+    existing parser understands. Recognized optional keys: severity/level,
+    hostname/host, app/app_name/program, message/msg. Unknown scalar keys are
+    appended as key=value so field extraction can pick them up."""
+    # Keep Windows source/channel and nested EventData intact for normalization.
+    if any(k in obj for k in ("EventID", "EventId", "event_id", "Event")):
+        import json
+        return json.dumps(obj, ensure_ascii=False)
+    from datetime import datetime
+    SEV = {"emergency":0,"alert":1,"critical":2,"error":3,"err":3,"warning":4,
+           "warn":4,"notice":5,"informational":6,"info":6,"debug":7}
+    sev_name = str(obj.get("severity") or obj.get("level") or "info").lower()
+    sev = SEV.get(sev_name, 6)
+    pri = 16 * 8 + sev  # local0
+    host = str(obj.get("hostname") or obj.get("host") or "-")
+    app = str(obj.get("app") or obj.get("app_name") or obj.get("program") or "api")
+    msg = obj.get("message") or obj.get("msg") or ""
+    ts = datetime.now().strftime("%b %e %H:%M:%S")
+    known = {"severity","level","hostname","host","app","app_name","program","message","msg"}
+    extras = []
+    for k, v in obj.items():
+        if k in known:
+            continue
+        if isinstance(v, (str, int, float, bool)):
+            sval = str(v)
+            if " " in sval or "=" in sval:
+                sval = '"' + sval.replace('"', "'") + '"'
+            extras.append(f"{k}={sval}")
+    body = str(msg)
+    if extras:
+        body = (body + " " if body else "") + " ".join(extras)
+    return f"<{pri}>{ts} {host} {app}: {body}"
+
+
+def audit(action: str, target: str = "", detail: str = "", username: str = None):
+    """Record an admin/user action in the SIEM's own audit trail.
+    Best-effort: auditing must never break the action being audited."""
+    from datetime import datetime, timezone
+    try:
+        who = username if username is not None else (auth.current_user() or "anonymous")
+        ip = request.remote_addr if request else ""
+        conn = get_conn()
+        conn.execute(
+            "INSERT INTO audit_log (at, username, source_ip, action, target, detail) "
+            "VALUES (?,?,?,?,?,?)",
+            (datetime.now(timezone.utc).isoformat(), who, ip, action,
+             str(target)[:200], str(detail)[:500]))
+        conn.commit()
+        conn.close()
+    except Exception as exc:
+        print(f"[audit] write failed ({action}): {exc}")
+
+
+def init_auth(auth_config_path=None):
+    """Load auth config, ensure schema + default admin, set the session
+    secret, install the request guard, and build OAuth if enabled. Call
+    once at startup (main) — and safe to call in tests."""
+    global AUTH_CONFIG, _oauth
+    AUTH_CONFIG = auth.load_auth_config(auth_config_path)
+    dbmod.ensure_runtime_ready(_db_config())
+    conn = get_conn()
+    auth.seed_default_admin(conn)
+    explicit = AUTH_CONFIG.get("session_secret") or ""
+    app.secret_key = explicit if explicit else auth.get_or_create_secret(conn)
+    conn.close()
+    auth.set_conn_factory(get_conn)
+    auth.make_guard(app)
+    if AUTH_CONFIG.get("oauth", {}).get("enabled"):
+        try:
+            _oauth = auth.build_oauth(app, AUTH_CONFIG)
+        except RuntimeError as exc:
+            print(f"[auth] OAuth not initialized: {exc}")
+            _oauth = None
+    return AUTH_CONFIG
+
+
+@app.route("/")
+def index():
+    return render_template("index.html")
+
+
+@app.route("/correlate")
+def correlate_page():
+    return render_template("correlate.html")
+
+
+@app.route("/setup")
+def setup_page():
+    return render_template("setup.html")
+
+
+@app.route("/ai")
+def ai_page():
+    return render_template("ai.html")
+
+
+@app.route("/health")
+def health_page():
+    return render_template("health.html")
+
+
+@app.route("/threatintel")
+def threatintel_page():
+    return render_template("threatintel.html")
+
+
+@app.route("/help")
+def help_page():
+    return render_template("help.html")
+
+
+# ---------------------------------------------------------------------------
+# Audit trail
+# ---------------------------------------------------------------------------
+
+@app.route("/audit")
+def audit_page():
+    return render_template("audit.html")
+
+
+@app.route("/api/audit")
+def api_audit():
+    username = (request.args.get("username") or "").strip()
+    action = (request.args.get("action") or "").strip()
+    q = (request.args.get("q") or "").strip()
+    limit = min(int(request.args.get("limit", 200)), 2000)
+    clauses, params = [], []
+    if username:
+        clauses.append("username = ?"); params.append(username)
+    if action:
+        clauses.append("action = ?"); params.append(action)
+    if q:
+        clauses.append("(target LIKE ? OR detail LIKE ?)")
+        params.extend([f"%{q}%", f"%{q}%"])
+    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+    conn = get_conn()
+    audit_sql = "SELECT * FROM audit_log " + where + " ORDER BY id DESC LIMIT ?"
+    rows = [dict(r) for r in conn.execute(audit_sql, params + [limit]).fetchall()]
+    actions = [r["action"] for r in conn.execute(
+        "SELECT DISTINCT action FROM audit_log ORDER BY action").fetchall()]
+    users = [r["username"] for r in conn.execute(
+        "SELECT DISTINCT username FROM audit_log ORDER BY username").fetchall()]
+    conn.close()
+    return jsonify({"entries": rows, "actions": actions, "users": users})
+
+
+# ---------------------------------------------------------------------------
+# Authentication routes
+# ---------------------------------------------------------------------------
+
+@app.route("/login", methods=["GET"])
+def login():
+    if auth.current_user():
+        return redirect(url_for("index"))
+    ac = AUTH_CONFIG or auth.load_auth_config()
+    return render_template(
+        "login.html",
+        local_enabled=ac.get("local_auth", {}).get("enabled", True),
+        oauth_enabled=bool(ac.get("oauth", {}).get("enabled")) and _oauth is not None,
+        oauth_name=ac.get("oauth", {}).get("provider_name", "SSO"),
+        saml_enabled=bool(ac.get("saml", {}).get("enabled")),
+        error=request.args.get("error", ""),
+        next=request.args.get("next", "/"),
+    )
+
+
+@app.route("/login", methods=["POST"])
+def do_login():
+    ac = AUTH_CONFIG or auth.load_auth_config()
+    if not ac.get("local_auth", {}).get("enabled", True):
+        return redirect(url_for("login", error="Local login is disabled."))
+    username = (request.form.get("username") or "").strip()
+    password = request.form.get("password") or ""
+    source_ip = _login_source_ip()
+    retry_after = _login_retry_after(source_ip, username)
+    if retry_after:
+        audit("login_rate_limited", target=username,
+              detail=f"source={source_ip} retry_after={retry_after}s",
+              username=username or "unknown")
+        return ("Too many login attempts. Try again later.", 429,
+                {"Retry-After": str(retry_after)})
+    conn = get_conn()
+    user = auth.verify_local(conn, username, password)
+    conn.close()
+    if not user:
+        _record_login_failure(source_ip, username)
+        audit("login_failed", target=username, detail="local login rejected", username=username or "unknown")
+        return redirect(url_for("login", error="Invalid username or password."))
+    _clear_login_pair(source_ip, username)
+    auth.login_user(username, "local", must_change=bool(user["must_change_password"]),
+                    role=(user["role"] if user["role"] else "viewer"))
+    audit("login_success", target=username, detail="local login")
+    nxt = request.form.get("next") or "/"
+    return redirect(nxt if nxt.startswith("/") else "/")
+
+
+@app.route("/logout")
+def logout():
+    audit("logout")
+    auth.logout_user()
+    return redirect(url_for("login"))
+
+
+@app.route("/auth/change-password", methods=["GET"])
+def change_password():
+    if not auth.current_user():
+        return redirect(url_for("login"))
+    return render_template("change_password.html",
+                           forced=bool(session.get("must_change")),
+                           error=request.args.get("error", ""))
+
+
+@app.route("/auth/change-password", methods=["POST"])
+def do_change_password():
+    if not auth.current_user():
+        return redirect(url_for("login"))
+    current = request.form.get("current_password") or ""
+    new = request.form.get("new_password") or ""
+    confirm = request.form.get("confirm_password") or ""
+    conn = get_conn()
+    user = auth.verify_local(conn, auth.current_user(), current)
+    if not user:
+        conn.close()
+        return redirect(url_for("change_password", error="Current password is incorrect."))
+    if len(new) < 8:
+        conn.close()
+        return redirect(url_for("change_password", error="New password must be at least 8 characters."))
+    if new != confirm:
+        conn.close()
+        return redirect(url_for("change_password", error="New passwords do not match."))
+    if new == auth.DEFAULT_ADMIN_PASS:
+        conn.close()
+        return redirect(url_for("change_password", error="Choose a password other than the default."))
+    auth.set_password(conn, auth.current_user(), new)
+    conn.close()
+    session["must_change"] = False
+    audit("password_changed", detail="via change-password page")
+    return redirect(url_for("index"))
+
+
+@app.route("/auth/oauth/login")
+def oauth_login():
+    if not _oauth:
+        return redirect(url_for("login", error="OAuth is not configured."))
+    redirect_uri = url_for("oauth_callback", _external=True)
+    return _oauth.sso.authorize_redirect(redirect_uri)
+
+
+@app.route("/auth/oauth/callback")
+def oauth_callback():
+    if not _oauth:
+        return redirect(url_for("login", error="OAuth is not configured."))
+    try:
+        token = _oauth.sso.authorize_access_token()
+        userinfo = token.get("userinfo") or _oauth.sso.userinfo()
+    except Exception as exc:
+        return redirect(url_for("login", error=f"OAuth failed: {type(exc).__name__}"))
+    username = auth.oauth_identity(token, userinfo)
+    conn = get_conn()
+    auth.upsert_sso_user(conn, username, "oauth")
+    conn.close()
+    auth.login_user(username, "oauth", must_change=False)
+    audit("login_success", target=username, detail="OAuth SSO")
+    return redirect(url_for("index"))
+
+
+@app.route("/auth/saml/login")
+def saml_login():
+    ac = AUTH_CONFIG or auth.load_auth_config()
+    try:
+        saml_auth = auth.build_saml_auth(request, ac)
+    except RuntimeError as exc:
+        return redirect(url_for("login", error=str(exc)))
+    return redirect(saml_auth.login())
+
+
+@app.route("/auth/saml/acs", methods=["POST"])
+def saml_acs():
+    ac = AUTH_CONFIG or auth.load_auth_config()
+    try:
+        saml_auth = auth.build_saml_auth(request, ac)
+        saml_auth.process_response()
+        errors = saml_auth.get_errors()
+        if errors or not saml_auth.is_authenticated():
+            return redirect(url_for("login", error="SAML authentication failed."))
+        username = saml_auth.get_nameid()
+    except RuntimeError as exc:
+        return redirect(url_for("login", error=str(exc)))
+    except Exception as exc:
+        return redirect(url_for("login", error=f"SAML error: {type(exc).__name__}"))
+    conn = get_conn()
+    auth.upsert_sso_user(conn, username, "saml")
+    conn.close()
+    auth.login_user(username, "saml", must_change=False)
+    audit("login_success", target=username, detail="SAML SSO")
+    return redirect(url_for("index"))
+
+
+@app.route("/auth/saml/metadata")
+def saml_metadata():
+    ac = AUTH_CONFIG or auth.load_auth_config()
+    try:
+        saml_auth = auth.build_saml_auth(request, ac)
+        settings = saml_auth.get_settings()
+        metadata = settings.get_sp_metadata()
+        errors = settings.validate_metadata(metadata)
+        if errors:
+            return jsonify({"error": errors}), 500
+        return app.response_class(metadata, mimetype="text/xml")
+    except RuntimeError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@app.route("/api/whoami")
+def whoami():
+    return jsonify({"user": auth.current_user(), "source": session.get("auth_source"),
+                    "role": auth.current_role()})
+
+
+AI_DEFAULTS = {
+    "ai_enabled": "false",                        # master switch, off until an endpoint is configured
+    "ai_mode": "local",                           # "local" or "external" (uses a token, sends data off-site)
+    "ai_base_url": "http://localhost:11434/v1",   # Ollama default
+    "ai_model": "qwen2.5:7b",
+    "ai_api_style": "auto",                      # auto|responses|chat_completions
+    "ai_api_key": "",                           # virtual/decrypted; never persisted plaintext
+    "ai_auto_triage": "true",                     # auto-send alerts to the LLM when AI is on
+    "ai_auto_triage_min_severity": "",            # "" = all alerts; else e.g. "warning"
+    "ai_auto_triage_max_age_hours": "0",          # 0 = no limit; else skip alerts older than N hours
+    "ai_system_prompt": "",                       # "" = use built-in SOC analyst prompt
+    "ai_user_template": "",                        # "" = default framing; supports {evidence} {rule_name} {severity} {source_ip} {description}
+    "ai_max_tokens": "900",                        # max output tokens per response
+    "ai_external_redaction": "strict",              # none|identifiers|strict; only applied in external mode
+}
+
+
+def ensure_schema():
+    """Create all tables/indexes if missing, using the active backend's
+    dialect. Idempotent; safe to call from any endpoint."""
+    dbmod.ensure_runtime_ready(_db_config())
+
+
+def ensure_app_config():
+    ensure_schema()
+
+
+def get_ai_config():
+    """Return AI settings with provider secrets decrypted in memory only."""
+    ensure_app_config()
+    conn = get_conn()
+    try:
+        return ai_config_store.load_config(conn, AI_DEFAULTS)
+    finally:
+        conn.close()
+
+
+def save_ai_config(updates: dict):
+    ensure_app_config()
+    conn = get_conn()
+    try:
+        ai_config_store.save_config(conn, AI_DEFAULTS, updates)
+    finally:
+        conn.close()
+
+
+def _record_ai_usage(event: dict):
+    """Append metadata-only LLM usage evidence; never stores prompts/API keys."""
+    ensure_app_config()
+    conn = get_conn()
+    try:
+        ai_config_store.record_usage(conn, event)
+    finally:
+        conn.close()
+
+
+def _llm_from_config():
+    cfg = get_ai_config()
+    return ai_soc.LLMClient(
+        cfg["ai_base_url"], cfg["ai_model"], cfg["ai_api_key"],
+        api_style=cfg.get("ai_api_style", "auto"),
+        usage_callback=_record_ai_usage,
+        external_mode=cfg.get("ai_mode", "local") == "external",
+        redaction_policy=cfg.get("ai_external_redaction", "strict"),
+        allow_insecure_loopback_external=_os.environ.get("MINISIEM_AI_ALLOW_INSECURE_LOOPBACK_EXTERNAL") == "1",
+    )
+
+
+_triage_worker = None
+
+
+def _triage_settings():
+    cfg = get_ai_config()
+    return {
+        "enabled": cfg["ai_enabled"] == "true",
+        "auto_triage": cfg.get("ai_auto_triage", "true") == "true",
+        "min_severity": cfg.get("ai_auto_triage_min_severity", ""),
+        "max_age_hours": int(cfg.get("ai_auto_triage_max_age_hours", "0") or 0),
+        "system_prompt": cfg.get("ai_system_prompt", ""),
+        "user_template": cfg.get("ai_user_template", ""),
+        "max_tokens": int(cfg.get("ai_max_tokens", "900") or 900),
+        "llm": _llm_from_config(),
+    }
+
+
+def start_triage_worker():
+    """Start the background auto-triage worker (idempotent)."""
+    global _triage_worker
+    if _triage_worker is None:
+        _triage_worker = ai_worker.TriageWorker(get_conn, _triage_settings)
+    _triage_worker.start()
+    return _triage_worker
+
+
+_automation_started = False
+
+
+def start_automation_workers():
+    """Start report scheduler, ticket dispatcher, and feed refresher."""
+    global _automation_started
+    if _automation_started:
+        return
+    import workers
+    workers.ReportScheduler(get_conn, lambda: cfg_get("report_schedule", "off")).start()
+    workers.TicketWorker(get_conn, get_ticket_settings).start()
+    workers.FeedRefresher(get_conn, resolve_key_fn=_resolve_feed_key).start()
+    _automation_started = True
+
+
+def ensure_forwarders_table():
+    ensure_schema()
+
+
+def _fts_token(needle):
+    """Turn a user search needle into a safe FTS5 token expression.
+    Multi-word needles become a quoted phrase; single words become a prefix
+    match (word*). Strips FTS syntax characters to avoid injection/parse
+    errors. Returns '' if nothing usable remains."""
+    if not needle:
+        return ""
+    # keep alphanumerics, spaces, dots, hyphens, underscores; drop FTS
+    # operators/quotes that would break the MATCH grammar
+    cleaned = re.sub(r'[^\w\s.\-]', ' ', needle).strip()
+    if not cleaned:
+        return ""
+    parts = cleaned.split()
+    if len(parts) == 1:
+        # single word -> prefix match so "fort" finds "fortigate"
+        return f'"{parts[0]}"*'
+    # multiple words -> exact phrase (quoted), no prefix on phrases
+    return '"' + " ".join(parts) + '"'
+
+
+def _fts_build_match(include, exclude):
+    """Assemble an FTS5 MATCH expression from include/exclude token lists.
+    include terms are AND-ed; exclude terms are NOT-ed. FTS5 requires at
+    least one positive term for a NOT to be meaningful, so a query that is
+    ONLY exclusions returns '' (caller falls back to LIKE)."""
+    if not include and not exclude:
+        return ""
+    if include and not exclude:
+        return " AND ".join(include)
+    if include and exclude:
+        return " AND ".join(include) + " NOT " + " NOT ".join(exclude)
+    # only exclusions — FTS can't express "everything except X" alone
+    return ""
+
+
+def _like_escape(value):
+    """Escape a literal for SQL LIKE with ``ESCAPE '\\'`` semantics."""
+    return str(value).replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _postgres_tsquery_token(needle):
+    """Return a conservative PostgreSQL simple-tsquery prefix token."""
+    cleaned = re.sub(r'[^\w.\-]', ' ', str(needle or '')).strip()
+    if not cleaned:
+        return ""
+    parts = [p for p in cleaned.split() if p]
+    return " & ".join(p.replace("'", "") + ":*" for p in parts)
+
+
+def _parse_field_filter(name, raw, source="chip"):
+    """Parse exact/prefix/explicit-contains semantics for extracted fields."""
+    value = str(raw or "").strip()
+    if value.startswith("*") and value.endswith("*") and len(value) > 2:
+        return {"field": name, "mode": "contains", "needle": value[1:-1].casefold(), "source": source}
+    if value.endswith("*") and not value.startswith("*"):
+        return {"field": name, "mode": "prefix", "needle": value[:-1].casefold(), "source": source}
+    return {"field": name, "mode": "exact", "needle": value.casefold(), "source": source}
+
+
+def _field_value_predicate(alias, mode, needle, backend="sqlite"):
+    """Return indexed field-value predicate and parameters.
+
+    ``value_norm`` is stored case-folded, so the needle is case-folded here too.
+    This is required for correctness on PostgreSQL (which compares with a plain
+    ``=`` / ``LIKE`` and would otherwise miss mixed-case matches coming from the
+    alias-field path, where the term is not pre-folded), and is harmless on
+    SQLite where the comparison is additionally ``COLLATE NOCASE``.
+    """
+    col = f"{alias}.value_norm"
+    needle = str(needle).casefold()
+    if mode == "exact":
+        if str(backend).startswith("postgres"):
+            return f"{col} = ?", [needle]
+        return f"{col} = ? COLLATE NOCASE", [needle]
+    pattern = _like_escape(needle) + "%" if mode == "prefix" else "%" + _like_escape(needle) + "%"
+    if str(backend).startswith("postgres"):
+        return f"{col} LIKE ? ESCAPE '\\'", [pattern]
+    return f"{col} LIKE ? COLLATE NOCASE ESCAPE '\\'", [pattern]
+
+
+def _concept_match_mode(concept, term):
+    """Choose exact/prefix/explicit-contains semantics for identity filters."""
+    raw = str(term or "").strip()
+    if raw.startswith("*") and raw.endswith("*") and len(raw) > 2:
+        return "contains", raw[1:-1]
+    if raw.endswith("*") and not raw.startswith("*"):
+        return "prefix", raw[:-1]
+    if concept == "source":
+        try:
+            ipaddress.ip_address(raw)
+            return "exact", raw
+        except ValueError:
+            if "/" in raw:
+                try:
+                    ipaddress.ip_network(raw, strict=False)
+                    return "cidr", raw
+                except ValueError:
+                    pass
+    if concept == "destination":
+        try:
+            ipaddress.ip_address(raw)
+            return "exact_ip", raw
+        except ValueError:
+            pass
+    # Host/destination text defaults to prefix so ordinary filters remain
+    # B-tree/text_pattern_ops friendly. Contains requires explicit *...*.
+    return "prefix", raw
+
+
+def _base_match_clause(column, concept, mode, needle, backend="sqlite_like"):
+    pg = str(backend).startswith("postgres")
+    if pg and concept == "source":
+        if mode == "cidr":
+            return "l.src_ip <<= ?::cidr", [needle]
+        if mode == "exact":
+            return "l.src_ip = ?::inet", [needle]
+    if pg and concept == "destination" and mode == "exact_ip":
+        return "l.dst_ip = ?::inet", [needle]
+    if mode in ("exact", "exact_ip"):
+        if pg:
+            return f"lower({column}) = ?", [needle.casefold()]
+        return f"{column} = ? COLLATE NOCASE", [needle]
+    pattern = _like_escape(needle) + "%" if mode == "prefix" else "%" + _like_escape(needle) + "%"
+    if pg:
+        return f"lower({column}) LIKE ? ESCAPE '\\'", [pattern.casefold()]
+    return f"{column} LIKE ? COLLATE NOCASE ESCAPE '\\'", [pattern]
+
+
+def _alias_match_clause(concept, mode, needle, aliases, backend="sqlite_like"):
+    if not aliases:
+        return "", []
+    ph = ",".join("?" * len(aliases))
+    # Alias fields are text/EAV. CIDR cannot be expressed safely with typed
+    # operators here; direct canonical INET remains the fast path.
+    alias_mode = "prefix" if mode == "cidr" else ("exact" if mode == "exact_ip" else mode)
+    pred, pp = _field_value_predicate("hf", alias_mode, needle, backend=backend)
+    return (f"EXISTS (SELECT 1 FROM log_fields hf WHERE hf.log_id=l.id "
+            f"AND hf.field IN ({ph}) AND {pred})"), list(aliases) + pp
+
+
+def _concept_clause(column, concept, term, negate, backend="sqlite_like"):
+    aliases = get_search_aliases().get(concept) or []
+    mode, needle = _concept_match_mode(concept, term)
+    base_sql, base_params = _base_match_clause(column, concept, mode, needle, backend)
+    alias_sql, alias_params = _alias_match_clause(concept, mode, needle.casefold(), aliases, backend)
+    sql = f"({base_sql}" + (f" OR {alias_sql}" if alias_sql else "") + ")"
+    params = base_params + alias_params
+    return (f"NOT {sql}" if negate else sql), params
+
+
+def _concept_filter_terms(raw):
+    out = []
+    for term in ([t.strip() for t in str(raw or "").split(",")] if "," in str(raw or "") else [str(raw or "").strip()]):
+        if not term:
+            continue
+        negate = term.startswith("!=") or term.startswith("!")
+        needle = (term[2:] if term.startswith("!=") else term[1:]).strip() if negate else term
+        if needle:
+            out.append((needle, negate))
+    return out
+
+
+def _build_log_query(args, select_cols, search_backend=None):
+    """Shared index-friendly WHERE builder for SQLite and PostgreSQL v2."""
+    if search_backend is None:
+        try:
+            search_backend = "postgres_v2" if _db_config().get("backend") == "postgres" else "sqlite_like"
+        except Exception:
+            search_backend = "sqlite_like"
+    pg = str(search_backend).startswith("postgres")
+    relation = "security_event_logs" if pg else "logs"
+
+    q = args.get("q", "").strip()
+    source_ip = args.get("source_ip", "").strip()
+    hostname = args.get("hostname", "").strip()
+    destination = args.get("destination", "").strip()
+    severity = args.get("severity", "").strip()
+    time_from = args.get("from", "").strip()
+    time_to = args.get("to", "").strip()
+    ids = args.get("ids", "").strip()
+
+    clauses, params = [], []
+    if ids:
+        id_list = [int(i) for i in ids.split(",") if i.strip().isdigit()][:500]
+        if id_list:
+            clauses.append(f"l.id IN ({','.join('?' * len(id_list))})")
+            params.extend(id_list)
+
+    if q:
+        terms = [t.strip() for t in q.split(",")] if "," in q else [q.strip()]
+        if pg:
+            for term in terms:
+                if not term:
+                    continue
+                neg = term.startswith("!=") or term.startswith("!")
+                needle = (term[2:] if term.startswith("!=") else term[1:]).strip() if neg else term
+                tok = _postgres_tsquery_token(needle)
+                if tok:
+                    expr = "to_tsvector('simple',COALESCE(l.message,'')) @@ to_tsquery('simple',?)"
+                    clauses.append("NOT (" + expr + ")" if neg else expr)
+                    params.append(tok)
+        elif search_backend == "sqlite_fts5":
+            include, exclude = [], []
+            for term in terms:
+                if not term:
+                    continue
+                neg = term.startswith("!=") or term.startswith("!")
+                needle = (term[2:] if term.startswith("!=") else term[1:]).strip() if neg else term
+                tok = _fts_token(needle)
+                if tok:
+                    (exclude if neg else include).append(tok)
+            match_expr = _fts_build_match(include, exclude)
+            if match_expr:
+                clauses.append("l.id IN (SELECT rowid FROM logs_fts WHERE logs_fts MATCH ?)")
+                params.append(match_expr)
+            else:
+                for term in terms:
+                    neg = term.startswith("!=") or term.startswith("!")
+                    needle = (term[2:] if term.startswith("!=") else term[1:]).strip() if neg else term
+                    if needle:
+                        clauses.append("l.message NOT LIKE ? COLLATE NOCASE ESCAPE '\\'" if neg else
+                                       "l.message LIKE ? COLLATE NOCASE ESCAPE '\\'")
+                        params.append(f"%{_like_escape(needle)}%")
+        else:
+            # SQLite without FTS5 remains fully functional via bounded LIKE
+            # search.  FTS5 is acceleration only and must never be a startup
+            # or query-time dependency.
+            for term in terms:
+                if not term:
+                    continue
+                neg = term.startswith("!=") or term.startswith("!")
+                needle = (term[2:] if term.startswith("!=") else term[1:]).strip() if neg else term
+                if needle:
+                    clauses.append("l.message NOT LIKE ? COLLATE NOCASE ESCAPE '\\'" if neg else
+                                   "l.message LIKE ? COLLATE NOCASE ESCAPE '\\'")
+                    params.append(f"%{_like_escape(needle)}%")
+
+    for needle, negate in _concept_filter_terms(source_ip):
+        sql, sp = _concept_clause("l.source_ip", "source", needle, negate, backend=search_backend)
+        clauses.append(sql); params.extend(sp)
+    for needle, negate in _concept_filter_terms(hostname):
+        sql, sp = _concept_clause("l.hostname", "host", needle, negate, backend=search_backend)
+        clauses.append(sql); params.extend(sp)
+    for needle, negate in _concept_filter_terms(destination):
+        sql, sp = _concept_clause("l.destination", "destination", needle, negate, backend=search_backend)
+        clauses.append(sql); params.extend(sp)
+
+    if severity:
+        SEV_RANK = ("emergency", "alert", "critical", "error", "warning", "notice", "informational", "debug")
+        rank_of = {s: i for i, s in enumerate(SEV_RANK)}
+        op, val = "=", severity
+        for cand in ("!=", ">=", "<=", ">", "<"):
+            if severity.startswith(cand):
+                op, val = cand, severity[len(cand):].strip(); break
+        canon = severity_mod.synonyms_of(val) or [val.lower()]
+        canon_name = canon[0] if canon else val.lower()
+        if op == "=":
+            clauses.append(f"LOWER(l.severity) IN ({','.join('?' * len(canon))})"); params.extend(canon)
+        elif op == "!=":
+            clauses.append(f"LOWER(l.severity) NOT IN ({','.join('?' * len(canon))})"); params.extend(canon)
+        elif canon_name in rank_of:
+            target = rank_of[canon_name]
+            rank_op = {">=": "<=", ">": "<", "<=": ">=", "<": ">"}[op]
+            cases = " ".join(f"WHEN '{s}' THEN {i}" for i, s in enumerate(SEV_RANK))
+            clauses.append(f"(CASE LOWER(l.severity) {cases} ELSE 99 END) {rank_op} ?"); params.append(target)
+
+    if time_from:
+        clauses.append("l.event_time >= ?::timestamptz" if pg else "l.received_at >= ?")
+        params.append(time_from)
+    if time_to:
+        clauses.append("l.event_time <= ?::timestamptz" if pg else "l.received_at <= ?")
+        params.append(time_to)
+
+    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+    SORTABLE = {"received_at": "event_time" if pg else "received_at", "source_ip": "source_ip",
+                "severity": "severity", "hostname": "hostname", "app_name": "app_name", "id": "id"}
+    sort = (args.get("sort") or "").strip()
+    direction = "ASC" if (args.get("dir") or "").lower() == "asc" else "DESC"
+    SEV_RANK = ("emergency", "alert", "critical", "error", "warning", "notice", "informational", "debug")
+    if sort == "severity":
+        cases = " ".join(f"WHEN '{s}' THEN {i}" for i, s in enumerate(SEV_RANK))
+        order = f"ORDER BY CASE LOWER(l.severity) {cases} ELSE 99 END {direction}, l.id DESC"
+    elif sort in SORTABLE:
+        order = f"ORDER BY l.{SORTABLE[sort]} {direction}, l.id DESC"
+    else:
+        order = "ORDER BY l.event_time DESC, l.id DESC" if pg else "ORDER BY l.id DESC"
+    sql = f"SELECT {select_cols} FROM {relation} l {where} {order}"
+    return sql, params
+
+
+def _extraction_args(args):
+    """Parse extracted-field params: fields=user,action ; f_<name>=substr ;
+    sort=x_<name> ; dir=asc|desc. Returns (fields, filters, sort, direction)."""
+    fields = [c.strip() for c in (args.get("fields") or "").split(",") if c.strip()][:8]
+    filters = {}
+    for k, v in args.items():
+        if k.startswith("f_") and v.strip():
+            name = k[2:].strip()
+            if name:
+                val = v.strip()
+                # a leading ! (or !=) means EXCLUDE this field=value.
+                negate = False
+                if val.startswith("!=") or val.startswith("!"):
+                    negate = True
+                    val = val[2:].strip() if val.startswith("!=") else val[1:].strip()
+                filters[name] = {"needle": val.lower(), "negate": negate}
+                if name not in fields:
+                    fields.append(name)
+    sort = (args.get("sort") or "").strip()
+    direction = "desc" if (args.get("dir") or "").lower() == "desc" else "asc"
+    return fields, filters, sort, direction
+
+
+def _query_logs_extracted(args, limit, select_cols, sort_cap=100000):
+    """Query logs with extracted-field support via the indexed log_fields
+    table (materialized at ingest). Field filters become indexed JOINs;
+    sorting fetches (id, value) pairs from the index (capped at sort_cap)
+    and orders numerically in-process; display values are batch-fetched
+    for just the returned page. No message re-scanning."""
+    fields, filters, sort, direction = _extraction_args(args)
+    needs = bool(fields or filters or sort.startswith("x_"))
+
+    conn = get_conn()
+    if getattr(conn, "backend", "sqlite") == "postgres":
+        search_backend = "postgres_v2"
+    else:
+        search_backend = "sqlite_fts5" if dbmod.fts5_available(conn) else "sqlite_like"
+    relation = "security_event_logs" if search_backend == "postgres_v2" else "logs"
+    base_sql, base_params = _build_log_query(args, select_cols, search_backend=search_backend)
+    try:
+        if not needs:
+            limited_sql = base_sql + " LIMIT ?"
+            rows = [dict(r) for r in conn.execute(
+                limited_sql, base_params + [limit]).fetchall()]
+            return rows
+
+        # base WHERE applies to alias l
+        where_part = ""
+        if " WHERE " in base_sql:
+            where_part = base_sql.split(" WHERE ", 1)[1].split(" ORDER BY ", 1)[0]
+        joins, join_params = [], []
+        extra_where, extra_params = [], []
+        ji = 0
+        # fc_op=or combines the POSITIVE field filters (the query-builder
+        # chips) with OR instead of the default AND. Negated filters (!term)
+        # always stay AND'd in regardless of this mode — "match ANY of these,
+        # but exclude that" is a coherent combination; OR-ing an exclusion
+        # in would defeat the purpose of excluding it. Default (no fc_op, or
+        # any value other than "or") is byte-identical to prior behavior, so
+        # every existing saved link/bookmark keeps working unchanged.
+        or_mode = (args.get("fc_op") or "").strip().lower() == "or"
+        or_group, or_group_params = [], []
+        for name, spec in filters.items():
+            # tolerate the older shape (plain string) as an include filter
+            if isinstance(spec, dict):
+                needle, negate = spec.get("needle", ""), spec.get("negate", False)
+            else:
+                needle, negate = spec, False
+            if negate:
+                # EXCLUDE: no row for this field matching the value.
+                spec2 = _parse_field_filter(name, needle, "query")
+                pred, pred_params = _field_value_predicate("fx", spec2["mode"], spec2["needle"], backend=search_backend)
+                extra_where.append(
+                    "NOT EXISTS (SELECT 1 FROM log_fields fx WHERE fx.log_id = l.id "
+                    "AND fx.field = ? AND " + pred + ")")
+                extra_params.extend([name] + pred_params)
+            else:
+                if or_mode:
+                    # kept in a SEPARATE accumulator (not extra_params) because
+                    # this clause is only appended to extra_where AFTER the
+                    # loop ends (it needs every chip collected first) — if its
+                    # params were interleaved into extra_params at loop time,
+                    # alongside negate params that DO land in extra_where
+                    # immediately, the final param list would be ordered by
+                    # "when appended" while the clause list is ordered by
+                    # "where appended", desyncing every ? placeholder after
+                    # the first negate+OR mix. Appending both the clause and
+                    # its params after the loop, together, keeps them aligned.
+                    spec2 = _parse_field_filter(name, needle, "query")
+                    pred, pred_params = _field_value_predicate("fo", spec2["mode"], spec2["needle"], backend=search_backend)
+                    or_group.append(
+                        "EXISTS (SELECT 1 FROM log_fields fo WHERE fo.log_id = l.id "
+                        "AND fo.field = ? AND " + pred + ")")
+                    or_group_params.extend([name] + pred_params)
+                else:
+                    spec2 = _parse_field_filter(name, needle, "query")
+                    alias = f"f{ji}"
+                    pred, pred_params = _field_value_predicate(alias, spec2["mode"], spec2["needle"], backend=search_backend)
+                    joins.append(
+                        f"JOIN log_fields {alias} ON {alias}.log_id = l.id "
+                        f"AND {alias}.field = ? AND {pred}")
+                    join_params.extend([name] + pred_params)
+                    ji += 1
+        if or_group:
+            # single positive filter behaves the same whether "AND" or "OR"
+            # is selected, so this only changes behavior with 2+ chips.
+            extra_where.append("(" + " OR ".join(or_group) + ")")
+            extra_params.extend(or_group_params)
+        # combine base WHERE with any exclusion clauses
+        where_clauses = []
+        if where_part:
+            where_clauses.append(where_part)
+        where_clauses.extend(extra_where)
+        combined_where = " AND ".join(where_clauses)
+
+        cols = ", ".join("l." + c.strip() for c in select_cols.split(","))
+        sql = f"SELECT {cols} FROM {relation} l " + " ".join(joins)
+        params = list(join_params)
+        if combined_where:
+            sql += " WHERE " + combined_where
+            if where_part:
+                params.extend(base_params)
+            params.extend(extra_params)
+
+        if sort.startswith("x_"):
+            name = sort[2:]
+            sv_sql = (f"SELECT l.id AS lid, sv.value AS sval FROM {relation} l "
+                      + " ".join(joins)
+                      + " LEFT JOIN log_fields sv ON sv.log_id = l.id AND sv.field = ?")
+            sv_params = list(join_params) + [name]
+            if combined_where:
+                sv_sql += " WHERE " + combined_where
+                if where_part:
+                    sv_params.extend(base_params)
+                sv_params.extend(extra_params)
+            sv_sql += " ORDER BY l.id DESC LIMIT ?"
+            sv_params.append(sort_cap)
+            pairs = [(r["lid"], r["sval"]) for r in conn.execute(sv_sql, sv_params).fetchall()]
+            present = [(i, v) for i, v in pairs if v not in (None, "")]
+            missing = [i for i, v in pairs if v in (None, "")]
+            def key(t):
+                try:
+                    return (0, float(t[1]), "")
+                except (TypeError, ValueError):
+                    return (1, 0, str(t[1]).lower())
+            present.sort(key=key, reverse=(direction == "desc"))
+            ordered_ids = [i for i, _ in present] + missing
+            page_ids = ordered_ids[:limit]
+            if not page_ids:
+                return []
+            ph = placeholders(len(page_ids))
+            fetch_sql = "SELECT " + cols + f" FROM {relation} l WHERE l.id IN (" + ph + ")"
+            fetched = {r["id"]: dict(r) for r in conn.execute(fetch_sql, page_ids).fetchall()}
+            rows = [fetched[i] for i in page_ids if i in fetched]
+        else:
+            # base-column sort (or default) while extracted columns are shown
+            SORTABLE = {"received_at", "source_ip", "severity", "hostname",
+                        "app_name", "id"}
+            if sort in SORTABLE:
+                sort_col = "event_time" if search_backend == "postgres_v2" and sort == "received_at" else sort
+                allowed = {"l." + c for c in SORTABLE} | {"l.event_time"}
+                safe_sort = identifier("l." + sort_col, allowed=allowed)
+                d = "ASC" if direction == "asc" else "DESC"
+                sql += " ORDER BY " + safe_sort + " " + d + ", l.id DESC LIMIT ?"
+            else:
+                sql += " ORDER BY l.id DESC LIMIT ?"
+            params.append(limit)
+            rows = [dict(r) for r in conn.execute(sql, params).fetchall()]
+
+        # batch-fetch display values for this page only
+        if rows and fields:
+            ids = [r["id"] for r in rows]
+            ph = placeholders(len(ids))
+            fph = placeholders(len(fields))
+            vals = {}
+            field_sql = ("SELECT log_id, field, value FROM log_fields WHERE log_id IN ("
+                         + ph + ") AND field IN (" + fph + ")")
+            for fr in conn.execute(field_sql, ids + fields).fetchall():
+                vals.setdefault(fr["log_id"], {})[fr["field"]] = fr["value"]
+            for r in rows:
+                got = vals.get(r["id"], {})
+                r["extracted"] = {f: got.get(f, "") for f in fields}
+        elif fields:
+            for r in rows:
+                r["extracted"] = {f: "" for f in fields}
+        return rows
+    finally:
+        conn.close()
+
+
+@app.route("/api/logs")
+def api_logs():
+    limit = min(int(request.args.get("limit", 200)), 1000)
+    rows = _query_logs_extracted(
+        request.args, limit,
+        "id, received_at, source_ip, peer_ip, severity, facility, hostname, destination, app_name, message")
+    # Enrich with endpoint_ip (stored as a field, not a base column) so the UI
+    # can show it in the Net-source column for sources with no network src=
+    # (e.g. Sophos, whose 'source' is the connector name). Batch-fetched for
+    # just this page — no per-row queries.
+    ids = [r["id"] for r in rows]
+    if ids:
+        conn = get_conn()
+        ph = placeholders(len(ids))
+        wanted = ("endpoint_ip",) + _SUMMARY_FIELDS
+        field_sql = ("SELECT log_id, field, value FROM log_fields "
+                     "WHERE field IN (" + placeholders(len(wanted)) + ") AND log_id IN (" + ph + ")")
+        per_log = {}
+        for f in conn.execute(field_sql, list(wanted) + ids).fetchall():
+            per_log.setdefault(f["log_id"], {})[f["field"]] = f["value"]
+        conn.close()
+        for r in rows:
+            fields = per_log.get(r["id"], {})
+            if fields.get("endpoint_ip"):
+                r["endpoint_ip"] = fields["endpoint_ip"]
+            summary = _event_summary(fields)
+            if summary:
+                r["summary"] = summary
+    return jsonify(rows)
+
+
+_SUMMARY_FIELDS = ("event.kind", "process.name", "process.parent.name", "process.command_line",
+                   "user.name", "script.text")
+
+
+def _event_summary(fields):
+    """One readable line for normalized Windows process/script events, whose
+    stored message is just 'EventID=4688'. Display only; nothing is rewritten."""
+    kind = fields.get("event.kind")
+    user = fields.get("user.name")
+    if kind == "process_creation" and fields.get("process.name"):
+        parts = [f"{fields.get('process.parent.name') or '?'} \u2192 {fields['process.name']}"]
+        if fields.get("process.command_line"):
+            parts.append(fields["process.command_line"][:240])
+        if user:
+            parts.append(f"as {user}")
+        return " \u00b7 ".join(parts)
+    if kind == "script_execution" and fields.get("script.text"):
+        text = " ".join(fields["script.text"].split())
+        return f"PowerShell script \u00b7 {text[:240]}" + (f" \u00b7 as {user}" if user else "")
+    return None
+
+
+@app.route("/api/logs/facets")
+def api_logs_facets():
+    """Distinct source IPs, hostnames, and destinations for the filter dropdowns."""
+    conn = get_conn()
+    srcs = [r["source_ip"] for r in conn.execute(
+        """SELECT source_ip FROM logs WHERE source_ip IS NOT NULL AND source_ip != ''
+           GROUP BY source_ip ORDER BY COUNT(*) DESC LIMIT 200""").fetchall()]
+    hosts = [r["hostname"] for r in conn.execute(
+        """SELECT hostname FROM logs WHERE hostname IS NOT NULL AND hostname != ''
+           GROUP BY hostname ORDER BY COUNT(*) DESC LIMIT 200""").fetchall()]
+    dests = [r["destination"] for r in conn.execute(
+        """SELECT destination FROM logs WHERE destination IS NOT NULL AND destination != ''
+           GROUP BY destination ORDER BY COUNT(*) DESC LIMIT 200""").fetchall()]
+    conn.close()
+    return jsonify({"sources": srcs, "hosts": hosts, "destinations": dests})
+
+
+@app.route("/api/logs/export")
+def api_logs_export():
+    """Export the currently-filtered logs as CSV or JSON."""
+    import csv
+    import io
+    import json as _json
+    fmt = request.args.get("format", "csv").lower()
+    limit = min(int(request.args.get("limit", 100000)), 500000)
+    rows = _query_logs_extracted(
+        request.args, limit,
+        "id, received_at, source_ip, severity, facility, hostname, app_name, message, raw",
+        sort_cap=500000)
+    # flatten extracted fields into x_<name> columns for CSV/JSON
+    extra_cols = []
+    for r in rows:
+        for k, v in (r.pop("extracted", {}) or {}).items():
+            col = "x_" + k
+            r[col] = v
+            if col not in extra_cols:
+                extra_cols.append(col)
+
+    stamp = _dt_stamp()
+    if fmt == "json":
+        payload = _json.dumps(rows, indent=2)
+        return app.response_class(
+            payload, mimetype="application/json",
+            headers={"Content-Disposition": f"attachment; filename=siem-logs-{stamp}.json"})
+    # CSV
+    buf = io.StringIO()
+    cols = ["id", "received_at", "source_ip", "hostname", "severity",
+            "facility", "app_name"] + extra_cols + ["message", "raw"]
+    w = csv.DictWriter(buf, fieldnames=cols, extrasaction="ignore")
+    w.writeheader()
+    for r in rows:
+        w.writerow(r)
+    return app.response_class(
+        buf.getvalue(), mimetype="text/csv",
+        headers={"Content-Disposition": f"attachment; filename=siem-logs-{stamp}.csv"})
+
+
+def _dt_stamp():
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+
+
+@app.route("/api/alerts")
+def api_alerts():
+    limit = min(int(request.args.get("limit", 100)), 1000)
+    group = request.args.get("group", "").lower() in ("1", "true", "yes")
+    where, params = _alert_filters(request.args)
+    # `where` holds only fixed SQL fragments from _alert_filters; every
+    # user-supplied value is in `params` and bound as a parameter.
+    filter_sql = (" WHERE " + " AND ".join(where)) if where else ""
+    query = "SELECT * FROM alerts" + filter_sql + " ORDER BY id DESC LIMIT ?"
+    conn = get_conn()
+    rows = [dict(r) for r in conn.execute(query, params + [limit]).fetchall()]
+    conn.close()
+    import detection
+    rows = [detection.describe_alert(row) for row in rows]
+    if not group:
+        return jsonify(rows)
+
+    # Display-only grouping by rule_name + source_ip. The rows themselves are
+    # untouched in the DB; we just collapse identical ones for the view. Each
+    # group carries a representative (newest) alert plus its members and an
+    # aggregate AI/ticket status so the badge reflects the whole group.
+    groups = {}
+    order = []
+    for a in rows:
+        key = (a.get("rule_name"), a.get("source_ip"))
+        g = groups.get(key)
+        if g is None:
+            g = {
+                "group_key": f"{a.get('rule_name')}|{a.get('source_ip')}",
+                "rule_name": a.get("rule_name"),
+                "source_ip": a.get("source_ip"),
+                "severity": a.get("severity"),
+                "description": a.get("description"),
+                "count": 0,
+                "latest": a.get("created_at"),
+                "earliest": a.get("created_at"),
+                "representative": a,       # newest (rows are DESC)
+                "members": [],
+                "ai_done": 0, "ai_pending": 0, "ai_error": 0, "ai_skipped": 0,
+                "ticketed": 0,
+            }
+            groups[key] = g
+            order.append(key)
+        g["count"] += 1
+        g["members"].append(a)
+        if a.get("created_at") and a["created_at"] < g["earliest"]:
+            g["earliest"] = a["created_at"]
+        st = (a.get("ai_status") or "pending").lower()
+        if st == "done": g["ai_done"] += 1
+        elif st == "error": g["ai_error"] += 1
+        elif st == "skipped": g["ai_skipped"] += 1
+        else: g["ai_pending"] += 1
+        if (a.get("ticket_status") or "") == "created":
+            g["ticketed"] += 1
+    return jsonify({"grouped": True, "groups": [groups[k] for k in order]})
+
+
+_OPEN_ALERT_STATES = ("new", "acknowledged", "investigating")
+
+
+def _alert_filters(args):
+    """WHERE fragments for the alert queue. Every value is bound as a
+    parameter; only fixed SQL text is concatenated."""
+    where, params = [], []
+    status = (args.get("status") or "").strip().lower()
+    if status == "open":
+        where.append("(workflow_status IS NULL OR workflow_status='' OR workflow_status IN (?,?,?))")
+        params += list(_OPEN_ALERT_STATES)
+    elif status:
+        wanted = [s for s in status.split(",") if s in alert_workflow_mod.STATES]
+        if wanted:
+            clause = "workflow_status IN (" + placeholders(len(wanted)) + ")"
+            if "new" in wanted:
+                clause = "(" + clause + " OR workflow_status IS NULL OR workflow_status='')"
+            where.append(clause)
+            params += wanted
+    severity = [s for s in (args.get("severity") or "").lower().split(",") if s]
+    if severity:
+        where.append("severity IN (" + placeholders(len(severity)) + ")")
+        params += severity
+    if args.get("rule"):
+        where.append("rule_name=?")
+        params.append(args["rule"])
+    assignee = (args.get("assignee") or "").strip()
+    if assignee == "unassigned":
+        where.append("(workflow_assignee IS NULL OR workflow_assignee='')")
+    elif assignee == "me":
+        where.append("workflow_assignee=?")
+        params.append(auth.current_user() or "")
+    elif assignee:
+        where.append("workflow_assignee=?")
+        params.append(assignee)
+    q = (args.get("q") or "").strip().lower()
+    if q:
+        pattern = "%" + _like_escape(q) + "%"
+        where.append("(LOWER(COALESCE(description,'')) LIKE ? ESCAPE '\\' OR LOWER(COALESCE(source_ip,'')) LIKE ? ESCAPE '\\'"
+                     " OR LOWER(COALESCE(rule_name,'')) LIKE ? ESCAPE '\\')")
+        params += [pattern, pattern, pattern]
+    return where, params
+
+
+@app.route("/api/alerts/rules")
+def api_alert_rules():
+    """Distinct rule names, for the queue's rule filter."""
+    conn = get_conn()
+    names = [r["rule_name"] for r in conn.execute(
+        "SELECT DISTINCT rule_name FROM alerts WHERE rule_name IS NOT NULL ORDER BY rule_name").fetchall()]
+    conn.close()
+    return jsonify(names)
+
+
+ALERT_WORKFLOW_STATES = alert_workflow_mod.STATES
+ALERT_WORKFLOW_TRANSITIONS = alert_workflow_mod.TRANSITIONS
+
+@app.route("/api/alerts/<int:alert_id>/workflow", methods=["GET"])
+def api_alert_workflow_history(alert_id):
+    conn = get_conn()
+    alert = conn.execute("SELECT * FROM alerts WHERE id=?", (alert_id,)).fetchone()
+    if not alert:
+        conn.close()
+        return jsonify({"error": "alert not found"}), 404
+    events = [dict(r) for r in conn.execute(
+        "SELECT * FROM alert_workflow_events WHERE alert_id=? ORDER BY id ASC", (alert_id,)
+    ).fetchall()]
+    conn.close()
+    return jsonify({"alert": dict(alert), "events": events})
+
+
+@app.route("/api/alerts/<int:alert_id>/workflow", methods=["POST"])
+@analyst_required
+def api_alert_workflow_update(alert_id):
+    from datetime import datetime, timezone
+    body = request.get_json(force=True, silent=True) or {}
+    requested = str(body.get("status") or "").strip().lower()
+    assignee_supplied = "assignee" in body
+    assignee = str(body.get("assignee") or "").strip()[:120]
+    note = str(body.get("note") or "").strip()[:2000]
+    if requested and requested not in ALERT_WORKFLOW_STATES:
+        return jsonify({"error": "invalid alert workflow status", "allowed": ALERT_WORKFLOW_STATES}), 400
+
+    conn = get_conn()
+    row = conn.execute("SELECT * FROM alerts WHERE id=?", (alert_id,)).fetchone()
+    if not row:
+        conn.close()
+        return jsonify({"error": "alert not found"}), 404
+    current = alert_workflow_mod.normalize(row["workflow_status"])
+    target = requested or current
+    try:
+        current, target = alert_workflow_mod.validate_transition(current, target)
+    except ValueError as exc:
+        conn.close()
+        return jsonify({
+            "error": str(exc),
+            "allowed_next": sorted(ALERT_WORKFLOW_TRANSITIONS.get(current, set())),
+        }), 409
+    actor = auth.current_user() or "unknown"
+    updated_at = datetime.now(timezone.utc).isoformat()
+    new_assignee = assignee if assignee_supplied else (row["workflow_assignee"] or "")
+    resolution_note = note if note else (row["workflow_resolution_note"] or "")
+    conn.execute(
+        """UPDATE alerts
+           SET workflow_status=?, workflow_assignee=?, workflow_updated_at=?,
+               workflow_updated_by=?, workflow_resolution_note=?
+           WHERE id=?""",
+        (target, new_assignee, updated_at, actor, resolution_note, alert_id),
+    )
+    if target != current or assignee_supplied or note:
+        conn.execute(
+            """INSERT INTO alert_workflow_events
+               (alert_id,at,actor,from_status,to_status,assignee,note)
+               VALUES (?,?,?,?,?,?,?)""",
+            (alert_id, updated_at, actor, current, target, new_assignee, note),
+        )
+    conn.commit()
+    updated = dict(conn.execute("SELECT * FROM alerts WHERE id=?", (alert_id,)).fetchone())
+    conn.close()
+    audit("alert_workflow_updated", target=f"alert:{alert_id}",
+          detail=f"{current}->{target}; assignee={new_assignee or '-'}")
+    return jsonify(updated)
+
+
+@app.route("/api/ingest-status")
+def api_ingest_status():
+    """Live 'is data arriving?' signal for the header on every page.
+
+    Combines the stored event stream (covers syslog and HTTP/API ingest) with
+    the listener's cross-process heartbeat. Read-only; never starts or
+    repairs anything.
+    """
+    from datetime import datetime, timedelta, timezone
+    import runtime_health
+    now = datetime.now(timezone.utc)
+    conn = get_conn()
+    try:
+        last = conn.execute("SELECT MAX(received_at) AS t FROM logs").fetchone()["t"]
+        since = (now - timedelta(minutes=5)).isoformat()
+        recent = conn.execute("SELECT COUNT(*) AS n FROM logs WHERE received_at >= ?", (since,)).fetchone()["n"]
+        listener = runtime_health.listener_snapshot_from_db(conn)
+    finally:
+        conn.close()
+    age = None
+    if last:
+        try:
+            last_dt = datetime.fromisoformat(str(last).replace("Z", "+00:00"))
+            if last_dt.tzinfo is None:
+                last_dt = last_dt.replace(tzinfo=timezone.utc)
+            age = max(0, int((now - last_dt).total_seconds()))
+        except ValueError:
+            age = None
+    listener_state = str(listener.get("listener") or "UNKNOWN").upper()
+    listener_up = listener_state in ("READY", "DEGRADED", "STARTING")
+    if not last:
+        state = "no_data"
+    elif age is not None and age <= 300:
+        state = "receiving"
+    elif not listener_up:
+        state = "listener_down"
+    else:
+        state = "quiet"
+    return jsonify({"state": state, "last_event_at": last, "last_event_age_seconds": age,
+                    "events_last_5m": recent, "listener": listener_state,
+                    "listen_ports": _listen_ports_configured()})
+
+
+@app.route("/api/stats")
+def api_stats():
+    """Dashboard stats that answer 'what needs me, what's missing' rather
+    than 'what's most frequent'."""
+    from datetime import datetime, timezone, timedelta
+    now = datetime.now(timezone.utc)
+    day_ago = (now - timedelta(hours=24)).isoformat()
+    # A source is "silent" only after 3 days of nothing — long enough to
+    # span a Sat/Sun off-work gap without crying wolf every Monday.
+    silence_cutoff = (now - timedelta(days=3)).isoformat()
+    # ...measured against a 2-week baseline, so a device has room to have
+    # logged before the silence window opens.
+    baseline_start = (now - timedelta(days=14)).isoformat()
+
+    conn = get_conn()
+    total_logs = conn.execute("SELECT COUNT(*) c FROM logs").fetchone()["c"]
+    total_alerts = conn.execute("SELECT COUNT(*) c FROM alerts").fetchone()["c"]
+
+    # Actionable alerts: warning and above (warning/error/critical/alert/
+    # emergency), broken down so the Total-alerts card can show the split
+    # and act as a shortcut to the ones that matter.
+    sev_counts = {}
+    for r in conn.execute(
+        "SELECT LOWER(severity) s, COUNT(*) c FROM alerts GROUP BY LOWER(severity)"):
+        sev_counts[r["s"] or "informational"] = r["c"]
+    actionable = sum(sev_counts.get(s, 0) for s in
+                     ("warning", "error", "critical", "alert", "emergency"))
+
+    # 1. Needs attention: critical+error alerts in 24h, and how many untriaged
+    high = conn.execute(
+        """SELECT COUNT(*) c FROM alerts
+           WHERE created_at >= ? AND LOWER(severity) IN ('critical','error','alert','emergency')""",
+        (day_ago,)).fetchone()["c"]
+    untriaged = conn.execute(
+        """SELECT COUNT(*) c FROM alerts
+           WHERE created_at >= ? AND LOWER(severity) IN ('critical','error','alert','emergency')
+             AND (ai_status IS NULL OR ai_status IN ('pending','error'))""",
+        (day_ago,)).fetchone()["c"]
+
+    # 2. Silent sources: logged in the past 14 days but nothing for 3 days
+    silent = [r["source_ip"] for r in conn.execute(
+        """SELECT DISTINCT source_ip FROM logs
+           WHERE received_at >= ? AND received_at < ?
+             AND source_ip IS NOT NULL AND source_ip != ''
+             AND source_ip NOT IN (
+                 SELECT DISTINCT source_ip FROM logs WHERE received_at >= ?)
+           LIMIT 50""",
+        (baseline_start, silence_cutoff, silence_cutoff)).fetchall()]
+
+    # 3. IOC matches in the last 24h
+    try:
+        ioc_hits = conn.execute(
+            "SELECT COUNT(*) c FROM ioc_matches WHERE matched_at >= ?",
+            (day_ago,)).fetchone()["c"]
+    except Exception:
+        ioc_hits = 0
+
+    conn.close()
+    return jsonify({
+        "total_logs": total_logs,
+        "listen_ports": _listen_ports_configured(),
+        "total_alerts": total_alerts,
+        "alerts_breakdown": {
+            "actionable": actionable,
+            "critical": sev_counts.get("critical", 0) + sev_counts.get("alert", 0)
+                        + sev_counts.get("emergency", 0),
+            "error": sev_counts.get("error", 0),
+            "warning": sev_counts.get("warning", 0),
+        },
+        "needs_attention": {"high_24h": high, "untriaged": untriaged},
+        "silent_sources": {"count": len(silent), "sources": silent[:10],
+                           "silence_days": 3, "baseline_days": 14},
+        "ioc_hits_24h": ioc_hits,
+    })
+
+
+# ---------------------------------------------------------------------------
+# Correlation endpoints
+# ---------------------------------------------------------------------------
+
+@app.route("/api/playbooks")
+def api_playbooks():
+    # Everything except nothing — the full definitions are useful in the UI
+    return jsonify(PLAYBOOKS)
+
+
+@app.route("/api/playbooks/run", methods=["POST"])
+def api_playbooks_run():
+    body = request.get_json(force=True, silent=True) or {}
+    pb = get_playbook(body.get("id", ""))
+    if not pb:
+        return jsonify({"error": "unknown playbook id"}), 404
+
+    params = dict(pb["params"])  # copy — never mutate the library entry
+    if body.get("window_minutes"):
+        params["window_minutes"] = int(body["window_minutes"])
+        params.pop("since", None)
+
+    conn = get_conn()
+    try:
+        result = run_correlation(conn, params)
+    except Exception as exc:
+        conn.close()
+        return jsonify({"error": str(exc)}), 400
+    conn.close()
+    result["playbook"] = {k: pb[k] for k in
+                          ("id", "name", "severity", "description", "response_steps")}
+    return jsonify(result)
+
+
+@app.route("/api/investigate/ip", methods=["POST"])
+def api_investigate_ip():
+    """Manual bounded IP investigation used by /correlate -> Investigate."""
+    body = request.get_json(force=True, silent=True) or {}
+    entity_ip = str(body.get("ip") or "").strip()
+    stage = str(body.get("stage") or "medium").strip().lower()
+    hops = body.get("hops", 1)
+
+    conn = get_conn()
+    try:
+        result = ai_soc.gather_ip_investigation(conn, entity_ip, stage=stage, max_depth=hops)
+    except ValueError as exc:
+        conn.close()
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        conn.close()
+        return jsonify({"error": f"investigation failed: {exc}"}), 500
+    conn.close()
+    audit("manual_ip_investigation", target=entity_ip,
+          detail=f"stage={stage} hops={result['requested_hops']} evidence={result['evidence_count']}")
+    return jsonify(result)
+
+
+# ---------------------------------------------------------------------------
+# Forwarder configuration endpoints (used by /setup)
+# ---------------------------------------------------------------------------
+
+VALID_SEVERITIES = {"", "emergency", "alert", "critical", "error",
+                    "warning", "notice", "informational", "debug"}
+
+
+def _validate_forwarder(body: dict):
+    import re as _re
+    name = (body.get("name") or "").strip()
+    host = (body.get("host") or "").strip()
+    protocol = (body.get("protocol") or "udp").lower()
+    filter_pattern = (body.get("filter_pattern") or "").strip()
+    min_severity = (body.get("min_severity") or "").lower()
+    origin_mode = (body.get("origin_mode") or "off").lower()
+    tcp_framing = (body.get("tcp_framing") or "newline").lower()
+    try:
+        port = int(body.get("port", 0))
+    except (TypeError, ValueError):
+        return None, "port must be a number"
+    if not name:
+        return None, "name is required"
+    if not host:
+        return None, "host is required"
+    if not (1 <= port <= 65535):
+        return None, "port must be 1-65535"
+    if protocol not in ("udp", "tcp"):
+        return None, "protocol must be udp or tcp"
+    if min_severity not in VALID_SEVERITIES:
+        return None, f"min_severity must be blank or one of {sorted(VALID_SEVERITIES - {''})}"
+    if origin_mode not in ("off", "hostname", "sd", "both"):
+        return None, "origin_mode must be off, hostname, sd, or both"
+    if tcp_framing not in ("newline", "octet"):
+        return None, "tcp_framing must be newline or octet"
+    if filter_pattern:
+        try:
+            _re.compile(filter_pattern)
+        except _re.error as exc:
+            return None, f"filter_pattern is not a valid regex: {exc}"
+    return {
+        "name": name, "host": host, "port": port, "protocol": protocol,
+        "enabled": 1 if body.get("enabled", True) else 0,
+        "filter_pattern": filter_pattern, "min_severity": min_severity,
+        "origin_mode": origin_mode,
+        "tcp_framing": tcp_framing,
+    }, None
+
+
+@app.route("/api/forwarders", methods=["GET"])
+def api_forwarders_list():
+    ensure_forwarders_table()
+    conn = get_conn()
+    rows = [dict(r) for r in conn.execute(
+        "SELECT * FROM forwarders ORDER BY id").fetchall()]
+    conn.close()
+    return jsonify(rows)
+
+
+@app.route("/api/forwarders", methods=["POST"])
+@admin_required
+def api_forwarders_create():
+    ensure_forwarders_table()
+    cfg, err = _validate_forwarder(request.get_json(force=True, silent=True) or {})
+    if err:
+        return jsonify({"error": err}), 400
+    conn = get_conn()
+    new_id = conn.insert_returning_id(
+        """INSERT INTO forwarders (name, host, port, protocol, enabled,
+                                   filter_pattern, min_severity, origin_mode, tcp_framing)
+           VALUES (?,?,?,?,?,?,?,?,?)""",
+        (cfg["name"], cfg["host"], cfg["port"], cfg["protocol"],
+         cfg["enabled"], cfg["filter_pattern"], cfg["min_severity"],
+         cfg["origin_mode"], cfg["tcp_framing"]))
+    conn.commit()
+    conn.close()
+    audit("forwarder_created", target=cfg["name"],
+          detail=f"{cfg['protocol']}://{cfg['host']}:{cfg['port']}")
+    return jsonify({"id": new_id, "ok": True})
+
+
+@app.route("/api/forwarders/<int:fw_id>", methods=["PUT"])
+@admin_required
+def api_forwarders_update(fw_id):
+    ensure_forwarders_table()
+    body = request.get_json(force=True, silent=True) or {}
+    conn = get_conn()
+    existing = conn.execute("SELECT * FROM forwarders WHERE id=?", (fw_id,)).fetchone()
+    if not existing:
+        conn.close()
+        return jsonify({"error": "not found"}), 404
+    merged = dict(existing)
+    merged.update({k: v for k, v in body.items() if k in
+                   ("name", "host", "port", "protocol", "enabled",
+                    "filter_pattern", "min_severity", "origin_mode", "tcp_framing")})
+    cfg, err = _validate_forwarder(merged)
+    if err:
+        conn.close()
+        return jsonify({"error": err}), 400
+    conn.execute(
+        """UPDATE forwarders SET name=?, host=?, port=?, protocol=?, enabled=?,
+                                 filter_pattern=?, min_severity=?, origin_mode=?,
+                                 tcp_framing=? WHERE id=?""",
+        (cfg["name"], cfg["host"], cfg["port"], cfg["protocol"], cfg["enabled"],
+         cfg["filter_pattern"], cfg["min_severity"], cfg["origin_mode"],
+         cfg["tcp_framing"], fw_id))
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/forwarders/<int:fw_id>", methods=["DELETE"])
+@admin_required
+def api_forwarders_delete(fw_id):
+    ensure_forwarders_table()
+    conn = get_conn()
+    conn.execute("DELETE FROM forwarders WHERE id=?", (fw_id,))
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/forwarders/<int:fw_id>/test", methods=["POST"])
+def api_forwarders_test(fw_id):
+    """Sends one test syslog message to the destination from the
+    dashboard process. Note: a UDP 'success' only means the packet was
+    handed to the network stack — confirm receipt on the far end."""
+    import socket as _socket
+    from datetime import datetime as _dt, timezone as _tz
+    ensure_forwarders_table()
+    conn = get_conn()
+    fw = conn.execute("SELECT * FROM forwarders WHERE id=?", (fw_id,)).fetchone()
+    conn.close()
+    if not fw:
+        return jsonify({"error": "not found"}), 404
+
+    ts = _dt.now(_tz.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    msg = f"<14>1 {ts} mini-siem-dashboard test - - - Test message for forwarder '{fw['name']}'"
+    try:
+        if fw["protocol"] == "tcp":
+            s = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+            s.settimeout(3)
+            s.connect((fw["host"], int(fw["port"])))
+            s.sendall((msg + "\n").encode())
+            s.close()
+        else:
+            s = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)
+            s.sendto(msg.encode(), (fw["host"], int(fw["port"])))
+            s.close()
+        note = ("sent (TCP connection succeeded)" if fw["protocol"] == "tcp"
+                else "sent (UDP is fire-and-forget — verify receipt on the destination)")
+        return jsonify({"ok": True, "note": note})
+    except Exception as exc:
+        return jsonify({"error": f"{type(exc).__name__}: {exc}"}), 502
+
+
+# ---------------------------------------------------------------------------
+# Health endpoints (/health page)
+# ---------------------------------------------------------------------------
+
+@app.route("/healthz")
+def healthz():
+    """Unauthenticated minimal liveness probe for external monitors —
+    intentionally exposes no data."""
+    return jsonify({"status": "ok"})
+
+
+# ---------------------------------------------------------------------------
+# User management (Setup page)
+# ---------------------------------------------------------------------------
+
+@app.route("/api/unidentified-log", methods=["GET"])
+@admin_required
+def api_unidentified_log_get():
+    """The most recent JSON event that matched no source profile or mapped
+    poorly — a sample the operator can build a mapping profile from."""
+    import json as _json
+    raw = cfg_get("last_unidentified_log", "")
+    if not raw:
+        return jsonify({"present": False})
+    try:
+        data = _json.loads(raw)
+    except ValueError:
+        return jsonify({"present": False})
+    data["present"] = True
+    return jsonify(data)
+
+
+@app.route("/api/unidentified-log", methods=["DELETE"])
+@admin_required
+def api_unidentified_log_clear():
+    cfg_set(last_unidentified_log="")
+    audit("unidentified_log_cleared")
+    return jsonify({"ok": True})
+
+
+@app.route("/api/idle-timeout", methods=["GET"])
+def api_idle_timeout_get():
+    val = cfg_get("idle_timeout_minutes", "")
+    try:
+        minutes = int(float(val)) if str(val).strip() else 0
+    except ValueError:
+        minutes = 0
+    return jsonify({"minutes": minutes})
+
+
+@app.route("/api/idle-timeout", methods=["POST"])
+@admin_required
+def api_idle_timeout_set():
+    body = request.get_json(silent=True) or {}
+    raw = body.get("minutes", "")
+    if raw in ("", None):
+        minutes = 0  # blank / 0 disables the timeout
+    else:
+        try:
+            minutes = int(float(raw))
+        except (ValueError, TypeError):
+            return jsonify({"error": "minutes must be a whole number (0 disables)"}), 400
+    if minutes < 0:
+        return jsonify({"error": "minutes cannot be negative"}), 400
+    if minutes > 100000:
+        return jsonify({"error": "that timeout is unreasonably large"}), 400
+    cfg_set(idle_timeout_minutes=str(minutes))
+    audit("idle_timeout_changed", detail=f"{minutes} min" if minutes else "disabled")
+    return jsonify({"ok": True, "minutes": minutes})
+
+
+@app.route("/api/auth/methods", methods=["GET"])
+def api_auth_methods():
+    """Report which login methods are enabled (read-only view of
+    auth-config.json) for display on the Setup page."""
+    ac = AUTH_CONFIG or auth.load_auth_config()
+    return jsonify({
+        "local": ac.get("local_auth", {}).get("enabled", True),
+        "oauth": {
+            "enabled": bool(ac.get("oauth", {}).get("enabled")),
+            "provider_name": ac.get("oauth", {}).get("provider_name", "SSO"),
+            "configured": bool(ac.get("oauth", {}).get("client_id")),
+        },
+        "saml": {
+            "enabled": bool(ac.get("saml", {}).get("enabled")),
+            "configured": bool(ac.get("saml", {}).get("idp_sso_url")),
+        },
+        "note": "Edit auth-config.json and restart to change SSO settings.",
+    })
+
+
+# ---------------------------------------------------------------------------
+# Threat intelligence (IOC) endpoints
+# ---------------------------------------------------------------------------
+
+@app.route("/api/iocs", methods=["GET"])
+def api_iocs_list():
+    conn = get_conn()
+    rows = [dict(r) for r in conn.execute(
+        """SELECT id, ioc_type, value, threat, source, severity, enabled, created_at
+           FROM iocs ORDER BY id DESC LIMIT 2000""").fetchall()]
+    conn.close()
+    return jsonify(rows)
+
+
+@app.route("/api/iocs", methods=["POST"])
+def api_iocs_create():
+    import threatintel as ti
+    body = request.get_json(force=True, silent=True) or {}
+    value = (body.get("value") or "").strip()
+    if not value:
+        return jsonify({"error": "value is required"}), 400
+    ioc_type = (body.get("ioc_type") or "").strip().lower() or ti.guess_type(value)
+    if ioc_type not in ti.IOC_TYPES:
+        return jsonify({"error": "ioc_type must be one of: " + ", ".join(sorted(ti.IOC_TYPES))}), 400
+    sev = severity_mod.normalize((body.get("severity") or "critical")) or "critical"
+    value_norm = ti.normalize_ioc(ioc_type, value)
+    from datetime import datetime, timezone
+    conn = get_conn()
+    dup = conn.execute("SELECT id FROM iocs WHERE ioc_type=? AND value_norm=?",
+                       (ioc_type, value_norm)).fetchone()
+    if dup:
+        conn.close()
+        return jsonify({"error": "this indicator already exists"}), 409
+    new_id = conn.insert_returning_id(
+        """INSERT INTO iocs (ioc_type, value, value_norm, threat, source, severity, enabled, created_at)
+           VALUES (?,?,?,?,?,?,1,?)""",
+        (ioc_type, value, value_norm, (body.get("threat") or "").strip(),
+         (body.get("source") or "manual").strip(), sev,
+         datetime.now(timezone.utc).isoformat()))
+    conn.commit()
+    conn.close()
+    audit("ioc_added", target=f"{ioc_type}: {value}", detail=body.get("threat") or "")
+    return jsonify({"id": new_id, "ok": True})
+
+
+@app.route("/api/iocs/import", methods=["POST"])
+def api_iocs_import():
+    """Bulk import from pasted feed text: one indicator per line, # for
+    comments, optional CSV form value,type,threat per line."""
+    import threatintel as ti
+    body = request.get_json(force=True, silent=True) or {}
+    text = body.get("text") or ""
+    if not text.strip():
+        return jsonify({"error": "no feed text provided"}), 400
+    sev = severity_mod.normalize((body.get("severity") or "warning")) or "warning"
+    parsed = ti.parse_feed_text(
+        text,
+        default_type=(body.get("default_type") or "").strip().lower(),
+        default_threat=(body.get("threat") or "").strip(),
+        source=(body.get("source") or "pasted feed").strip(),
+        severity=sev)
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc).isoformat()
+    conn = get_conn()
+    added, skipped = 0, 0
+    for item in parsed:
+        dup = conn.execute("SELECT id FROM iocs WHERE ioc_type=? AND value_norm=?",
+                           (item["ioc_type"], item["value_norm"])).fetchone()
+        if dup:
+            skipped += 1
+            continue
+        conn.execute(
+            """INSERT INTO iocs (ioc_type, value, value_norm, threat, source, severity, enabled, created_at)
+               VALUES (?,?,?,?,?,?,1,?)""",
+            (item["ioc_type"], item["value"], item["value_norm"], item["threat"],
+             item["source"], item["severity"], now))
+        added += 1
+    conn.commit()
+    conn.close()
+    audit("ioc_feed_imported", target=(body.get("source") or "pasted feed").strip(),
+          detail=f"{added} added, {skipped} duplicates")
+    return jsonify({"ok": True, "added": added, "skipped_duplicates": skipped})
+
+
+@app.route("/api/iocs/<int:ioc_id>", methods=["PUT"])
+def api_iocs_update(ioc_id):
+    body = request.get_json(force=True, silent=True) or {}
+    conn = get_conn()
+    if "enabled" in body:
+        conn.execute("UPDATE iocs SET enabled=? WHERE id=?",
+                     (1 if body["enabled"] else 0, ioc_id))
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/iocs/<int:ioc_id>", methods=["DELETE"])
+@admin_required
+def api_iocs_delete(ioc_id):
+    conn = get_conn()
+    row = conn.execute("SELECT ioc_type, value FROM iocs WHERE id=?", (ioc_id,)).fetchone()
+    conn.execute("DELETE FROM iocs WHERE id=?", (ioc_id,))
+    conn.commit()
+    conn.close()
+    if row:
+        audit("ioc_deleted", target=f"{row['ioc_type']}: {row['value']}")
+    return jsonify({"ok": True})
+
+
+@app.route("/api/iocs/clear", methods=["POST"])
+@admin_required
+def api_iocs_clear():
+    """Delete IOCs by source (or all) — for replacing a whole feed."""
+    body = request.get_json(force=True, silent=True) or {}
+    source = (body.get("source") or "").strip()
+    conn = get_conn()
+    if source:
+        conn.execute("DELETE FROM iocs WHERE source=?", (source,))
+    else:
+        conn.execute("DELETE FROM iocs")
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/ioc-matches", methods=["GET"])
+def api_ioc_matches():
+    limit = min(int(request.args.get("limit", 100)), 1000)
+    conn = get_conn()
+    rows = [dict(r) for r in conn.execute(
+        """SELECT id, matched_at, ioc_id, ioc_type, ioc_value, threat,
+                  log_id, source_ip, hostname, message
+           FROM ioc_matches ORDER BY id DESC LIMIT ?""", (limit,)).fetchall()]
+    conn.close()
+    return jsonify(rows)
+
+
+@app.route("/api/iocs/stats", methods=["GET"])
+def api_iocs_stats():
+    conn = get_conn()
+    def one(sql):
+        r = conn.execute(sql).fetchone()
+        return r["c"] if isinstance(r, dict) or hasattr(r, "keys") else r[0]
+    total = one("SELECT COUNT(*) AS c FROM iocs")
+    enabled = one("SELECT COUNT(*) AS c FROM iocs WHERE enabled=1")
+    matches = one("SELECT COUNT(*) AS c FROM ioc_matches")
+    by_type = {r["ioc_type"]: r["c"] for r in conn.execute(
+        "SELECT ioc_type, COUNT(*) AS c FROM iocs GROUP BY ioc_type").fetchall()}
+    conn.close()
+    return jsonify({"total": total, "enabled": enabled, "total_matches": matches,
+                    "by_type": by_type})
+
+
+# ---------------------------------------------------------------------------
+# Generic app_config accessors (reports schedule, ticket config, norm patterns)
+# ---------------------------------------------------------------------------
+
+def cfg_get(key, default=""):
+    ensure_app_config()
+    conn = get_conn()
+    row = conn.execute("SELECT value FROM app_config WHERE key=?", (key,)).fetchone()
+    conn.close()
+    return row["value"] if row and row["value"] is not None else default
+
+
+def cfg_set(**kv):
+    ensure_app_config()
+    conn = get_conn()
+    for k, v in kv.items():
+        conn.execute("INSERT INTO app_config(key,value) VALUES(?,?) "
+                     "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (k, str(v)))
+    conn.commit()
+    conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Search / correlation field aliases — one editable definition of "what does
+# 'source', 'host', and 'destination' mean" used by BOTH Log Search and the
+# correlation playbook engine, so the two never disagree about identity.
+#
+# The base columns (source_ip / hostname / destination) are always checked
+# first — they're already correct for most sources (e.g. Fortigate's src=
+# already overwrites source_ip, profiles already map host correctly). The
+# aliases below are ADDITIONAL raw field names (as they land in log_fields)
+# to also treat as meaning the same concept — the safety net for sources
+# where the concept lives under a different name (e.g. Sophos's endpoint_ip
+# is a source; Sophos's location is already handled by the host profile
+# mapping, listed here too as a fallback for un-profiled/future sources).
+#
+# This resolves entirely at QUERY TIME (not ingest time), so editing it
+# takes effect immediately on ALL existing data — no reindex, ever.
+_DEFAULT_SEARCH_ALIASES = {
+    "source": ["endpoint_ip", "src", "srcip", "src_ip"],
+    "host": ["computer", "machinename", "endpoint_name", "device", "location"],
+    "destination": ["dst", "dest", "target", "dhost", "destination_ip"],
+}
+
+
+def get_search_aliases():
+    """Returns {'source': [...], 'host': [...], 'destination': [...]}."""
+    raw = cfg_get("search_aliases", "")
+    if not raw:
+        return {k: list(v) for k, v in _DEFAULT_SEARCH_ALIASES.items()}
+    try:
+        import json as _json
+        d = _json.loads(raw)
+        out = {}
+        for concept in ("source", "host", "destination"):
+            v = d.get(concept)
+            out[concept] = v if isinstance(v, list) else list(_DEFAULT_SEARCH_ALIASES[concept])
+        return out
+    except Exception:
+        return {k: list(v) for k, v in _DEFAULT_SEARCH_ALIASES.items()}
+
+
+def set_search_aliases(d):
+    import json as _json
+    clean = {}
+    for concept in ("source", "host", "destination"):
+        vals = d.get(concept) or []
+        if isinstance(vals, str):
+            vals = [v.strip() for v in vals.split(",") if v.strip()]
+        clean[concept] = [str(v).strip().lower() for v in vals if str(v).strip()][:20]
+    cfg_set(search_aliases=_json.dumps(clean))
+    return clean
+
+
+@app.route("/api/search-aliases", methods=["GET"])
+def api_search_aliases_get():
+    return jsonify(get_search_aliases())
+
+
+@app.route("/api/search-aliases", methods=["POST"])
+@admin_required
+def api_search_aliases_set():
+    body = request.get_json(force=True, silent=True) or {}
+    saved = set_search_aliases(body)
+    audit("search_aliases_updated", detail=str(saved))
+    return jsonify(saved)
+
+
+# ---------------------------------------------------------------------------
+# API poller connectors (OAuth2 client-credentials log pullers)
+# ---------------------------------------------------------------------------
+import secretbox as _secretbox
+import api_poller as _api_poller
+
+_POLLER_MANAGER = None
+
+
+def _secretbox_master():
+    """Fetch (or lazily create) the master key used to encrypt connector
+    secrets. Stored once in app_config."""
+    m = cfg_get("secretbox_master", "")
+    if not m:
+        m = _secretbox.generate_master()
+        cfg_set(secretbox_master=m)
+    return m
+
+
+def _resolve_poller_secret(row):
+    """Return the plaintext client_secret for a poller row, honoring its
+    storage mode. 'encrypted' -> decrypt via secretbox. 'vaultgate' ->
+    not yet wired; raises so the poller records a clear error."""
+    mode = (row.get("secret_mode") or "encrypted").lower()
+    if mode == "vaultgate":
+        raise RuntimeError("VaultGate secret storage is not configured yet")
+    enc = row.get("client_secret") or ""
+    if not enc:
+        return ""
+    return _secretbox.decrypt(enc, _secretbox_master())
+
+
+def start_poller_manager():
+    """Start the background poller manager (called once at startup)."""
+    global _POLLER_MANAGER
+    if _POLLER_MANAGER is not None:
+        return
+
+    def ingest_event(event):
+        # route through the same pipeline as syslog/API ingest by emitting a
+        # JSON line the listener's parser will recognize as a JSON event. The
+        # SOURCE column shows the connector name (e.g. 'sophos-central'); the
+        # endpoint IP is folded into the JSON so it becomes a searchable field.
+        import json as _json
+        connector = event.get("_connector") or "api-poller"
+        payload = event.get("_json", event)
+        if isinstance(payload, dict) and event.get("_endpoint_ip"):
+            payload = dict(payload)
+            payload.setdefault("endpoint_ip", event["_endpoint_ip"])
+        _ingest_raw(_json.dumps(payload, ensure_ascii=False), connector)
+
+    _POLLER_MANAGER = _api_poller.PollerManager(
+        conn_factory=get_conn,
+        ingest_fn=ingest_event,
+        resolve_secret_fn=_resolve_poller_secret)
+    _POLLER_MANAGER.start()
+
+
+def _poller_public(row):
+    """Row as safe JSON — never expose the stored secret."""
+    d = dict(row)
+    d.pop("client_secret", None)
+    d["has_secret"] = bool(row.get("client_secret"))
+    return d
+
+
+@app.route("/api/pollers", methods=["GET"])
+@admin_required
+def api_pollers_list():
+    conn = get_conn()
+    rows = [dict(r) for r in conn.execute(
+        "SELECT * FROM api_pollers ORDER BY id").fetchall()]
+    conn.close()
+    return jsonify([_poller_public(r) for r in rows])
+
+
+# ---------------------------------------------------------------------------
+# Source profiles (data-driven JSON field mapping)
+# ---------------------------------------------------------------------------
+_PROFILE_MATCH_TYPES = ("source_ip", "key_present", "app_contains")
+_PROFILE_FIELDS = ("name", "match_type", "match_value", "map_host", "map_message",
+                   "map_app", "map_msgid", "map_severity", "map_timestamp",
+                   "ts_format", "priority", "enabled")
+
+
+def _validate_profile(body, creating):
+    name = (body.get("name") or "").strip()
+    match_type = (body.get("match_type") or "source_ip").lower()
+    if creating and not name:
+        return None, "name is required"
+    if match_type not in _PROFILE_MATCH_TYPES:
+        return None, f"match_type must be one of {list(_PROFILE_MATCH_TYPES)}"
+    try:
+        priority = int(body.get("priority", 100))
+    except (ValueError, TypeError):
+        return None, "priority must be a number"
+    cfg = {
+        "name": name,
+        "match_type": match_type,
+        "match_value": (body.get("match_value") or "").strip(),
+        "map_host": (body.get("map_host") or "").strip(),
+        "map_message": (body.get("map_message") or "").strip(),
+        "map_app": (body.get("map_app") or "").strip(),
+        "map_msgid": (body.get("map_msgid") or "").strip(),
+        "map_severity": (body.get("map_severity") or "").strip(),
+        "map_timestamp": (body.get("map_timestamp") or "").strip(),
+        "ts_format": (body.get("ts_format") or "").strip(),
+        "priority": priority,
+        "enabled": 1 if body.get("enabled", True) else 0,
+    }
+    return cfg, None
+
+
+@app.route("/api/profiles", methods=["GET"])
+@admin_required
+def api_profiles_list():
+    conn = get_conn()
+    rows = [dict(r) for r in conn.execute(
+        "SELECT * FROM source_profiles ORDER BY priority ASC, id ASC").fetchall()]
+    conn.close()
+    return jsonify(rows)
+
+
+@app.route("/api/profiles", methods=["POST"])
+@admin_required
+def api_profiles_create():
+    body = request.get_json(silent=True) or {}
+    cfg, err = _validate_profile(body, creating=True)
+    if err:
+        return jsonify({"error": err}), 400
+    conn = get_conn()
+    conn.execute(
+        """INSERT INTO source_profiles
+           (name, match_type, match_value, map_host, map_message, map_app,
+            map_msgid, map_severity, map_timestamp, ts_format, priority, enabled)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (cfg["name"], cfg["match_type"], cfg["match_value"], cfg["map_host"],
+         cfg["map_message"], cfg["map_app"], cfg["map_msgid"], cfg["map_severity"],
+         cfg["map_timestamp"], cfg["ts_format"], cfg["priority"], cfg["enabled"]))
+    conn.commit(); conn.close()
+    audit("profile_created", target=cfg["name"])
+    return jsonify({"ok": True})
+
+
+@app.route("/api/profiles/<int:pid>", methods=["PUT"])
+@admin_required
+def api_profiles_update(pid):
+    body = request.get_json(silent=True) or {}
+    conn = get_conn()
+    existing = conn.execute("SELECT * FROM source_profiles WHERE id=?", (pid,)).fetchone()
+    if not existing:
+        conn.close(); return jsonify({"error": "not found"}), 404
+    merged = dict(existing)
+    merged.update({k: v for k, v in body.items() if k in _PROFILE_FIELDS})
+    cfg, err = _validate_profile(merged, creating=False)
+    if err:
+        conn.close(); return jsonify({"error": err}), 400
+    conn.execute(
+        """UPDATE source_profiles SET name=?, match_type=?, match_value=?,
+               map_host=?, map_message=?, map_app=?, map_msgid=?, map_severity=?,
+               map_timestamp=?, ts_format=?, priority=?, enabled=? WHERE id=?""",
+        (cfg["name"], cfg["match_type"], cfg["match_value"], cfg["map_host"],
+         cfg["map_message"], cfg["map_app"], cfg["map_msgid"], cfg["map_severity"],
+         cfg["map_timestamp"], cfg["ts_format"], cfg["priority"], cfg["enabled"], pid))
+    conn.commit(); conn.close()
+    audit("profile_updated", target=cfg["name"])
+    return jsonify({"ok": True})
+
+
+@app.route("/api/profiles/<int:pid>", methods=["DELETE"])
+@admin_required
+def api_profiles_delete(pid):
+    conn = get_conn()
+    row = conn.execute("SELECT name FROM source_profiles WHERE id=?", (pid,)).fetchone()
+    conn.execute("DELETE FROM source_profiles WHERE id=?", (pid,))
+    conn.commit(); conn.close()
+    audit("profile_deleted", target=(row["name"] if row else str(pid)))
+    return jsonify({"ok": True})
+
+
+@app.route("/api/profiles/preview", methods=["POST"])
+@admin_required
+def api_profiles_preview():
+    """Given a raw JSON event and a profile definition (or a saved profile id),
+    show how the profile would map it — the tester behind the UI. Does not
+    store anything."""
+    import json as _json
+    import profiles as _profiles_mod
+    body = request.get_json(silent=True) or {}
+    raw = body.get("raw", "")
+    # parse the raw event (accept a JSON object or a JSON string)
+    obj = None
+    if isinstance(raw, dict):
+        obj = raw
+    elif isinstance(raw, str) and raw.strip():
+        try:
+            obj = _json.loads(raw)
+        except ValueError:
+            return jsonify({"error": "raw is not valid JSON"}), 400
+    if not isinstance(obj, dict):
+        return jsonify({"error": "raw must be a JSON object"}), 400
+
+    # profile source: an inline profile body, or a saved id
+    profile = None
+    if body.get("profile_id"):
+        conn = get_conn()
+        r = conn.execute("SELECT * FROM source_profiles WHERE id=?",
+                         (body["profile_id"],)).fetchone()
+        conn.close()
+        if not r:
+            return jsonify({"error": "profile_id not found"}), 404
+        profile = dict(r)
+    elif body.get("profile"):
+        cfg, err = _validate_profile(body["profile"], creating=False)
+        if err:
+            return jsonify({"error": err}), 400
+        profile = cfg
+    else:
+        return jsonify({"error": "supply a profile or profile_id"}), 400
+
+    mapped = _profiles_mod.apply_profile(profile, obj)
+    # also report which key won each mapping, for the UI
+    return jsonify({
+        "mapped": mapped,
+        "keys": sorted(list(obj.keys())),
+        "matches": _profile_matches(profile, obj, body.get("source", "")),
+    })
+
+
+def _profile_matches(profile, obj, source_ip):
+    """Would this profile match the given event? (mirrors profiles.match_profile
+    for a single profile.)"""
+    mt = profile.get("match_type") or "source_ip"
+    mv = (profile.get("match_value") or "").strip()
+    if mt == "source_ip":
+        return source_ip == mv
+    if mt == "key_present":
+        return bool(mv) and mv in obj
+    if mt == "app_contains":
+        app = str(obj.get("app") or obj.get("app_name") or "")
+        return bool(mv) and mv.lower() in app.lower()
+    return False
+
+
+_POLLER_SCHEMES = ("oauth2_client_credentials", "oauth2_sophos", "api_key")
+
+
+def _validate_poller(body, creating):
+    name = (body.get("name") or "").strip()
+    scheme = (body.get("auth_scheme") or "oauth2_client_credentials").lower()
+    token_url = (body.get("token_url") or "").strip()
+    events_url = (body.get("events_url") or "").strip()
+    whoami_url = (body.get("whoami_url") or "").strip()
+    tenant_header = (body.get("tenant_header") or "").strip()
+    api_key_header = (body.get("api_key_header") or "").strip()
+    client_id = (body.get("client_id") or "").strip()
+    secret_mode = (body.get("secret_mode") or "encrypted").lower()
+
+    if scheme not in _POLLER_SCHEMES:
+        return None, f"auth_scheme must be one of {list(_POLLER_SCHEMES)}"
+    if secret_mode not in ("encrypted", "vaultgate"):
+        return None, "secret_mode must be encrypted or vaultgate"
+    if creating and (not name or not events_url):
+        return None, "name and events_url are required"
+
+    # per-scheme required fields
+    if scheme in ("oauth2_client_credentials", "oauth2_sophos"):
+        if creating and (not token_url or not client_id):
+            return None, "OAuth2 schemes require a token URL and client ID"
+        for u in (token_url, whoami_url):
+            if u and not (u.startswith("http://") or u.startswith("https://")):
+                return None, "Token and Whoami URLs must start with http:// or https://"
+    if scheme == "oauth2_sophos" and creating and not whoami_url:
+        return None, "The Sophos scheme requires a Whoami URL"
+    # api_key scheme: secret is the key; header name optional (defaults X-API-Key)
+
+    # events_url: absolute, OR a path when the sophos scheme resolves the host
+    # (leading slash optional — the poller normalizes it).
+    is_abs = events_url.startswith("http://") or events_url.startswith("https://")
+    if events_url and not is_abs:
+        if not (scheme == "oauth2_sophos" and whoami_url):
+            return None, ("Events URL must be a full http(s) URL — a path is only "
+                          "allowed with the Sophos scheme (host comes from whoami)")
+    try:
+        interval = int(body.get("interval_seconds", 60))
+        lookback = int(body.get("initial_lookback_seconds", 86400))
+    except (ValueError, TypeError):
+        return None, "interval_seconds and initial_lookback_seconds must be numbers"
+    if interval < 15:
+        return None, "interval_seconds must be at least 15"
+    return {
+        "name": name, "auth_scheme": scheme,
+        "token_url": token_url, "events_url": events_url, "whoami_url": whoami_url,
+        "tenant_header": tenant_header, "api_key_header": api_key_header,
+        "client_id": client_id, "secret_mode": secret_mode,
+        "scope": (body.get("scope") or "").strip(),
+        "interval_seconds": interval,
+        "initial_lookback_seconds": lookback,
+        "enabled": 1 if body.get("enabled") else 0,
+    }, None
+
+
+@app.route("/api/pollers", methods=["POST"])
+@admin_required
+def api_pollers_create():
+    body = request.get_json(silent=True) or {}
+    cfg, err = _validate_poller(body, creating=True)
+    if err:
+        return jsonify({"error": err}), 400
+    # encrypt the secret if provided and mode is encrypted
+    secret_plain = body.get("client_secret") or ""
+    enc = ""
+    if cfg["secret_mode"] == "encrypted" and secret_plain:
+        enc = _secretbox.encrypt(secret_plain, _secretbox_master())
+    conn = get_conn()
+    conn.execute(
+        """INSERT INTO api_pollers
+           (name, auth_scheme, token_url, events_url, whoami_url, tenant_header,
+            api_key_header, client_id, client_secret, secret_mode, scope,
+            interval_seconds, initial_lookback_seconds, enabled)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (cfg["name"], cfg["auth_scheme"], cfg["token_url"], cfg["events_url"],
+         cfg["whoami_url"], cfg["tenant_header"], cfg["api_key_header"],
+         cfg["client_id"], enc, cfg["secret_mode"], cfg["scope"],
+         cfg["interval_seconds"], cfg["initial_lookback_seconds"], cfg["enabled"]))
+    conn.commit(); conn.close()
+    audit("poller_created", target=cfg["name"], detail=f"mode={cfg['secret_mode']}")
+    return jsonify({"ok": True})
+
+
+@app.route("/api/pollers/<int:pid>", methods=["PUT"])
+@admin_required
+def api_pollers_update(pid):
+    body = request.get_json(silent=True) or {}
+    conn = get_conn()
+    existing = conn.execute("SELECT * FROM api_pollers WHERE id=?", (pid,)).fetchone()
+    if not existing:
+        conn.close(); return jsonify({"error": "not found"}), 404
+    merged = dict(existing)
+    merged.update({k: v for k, v in body.items()
+                   if k in ("name", "auth_scheme", "token_url", "events_url",
+                            "whoami_url", "tenant_header", "api_key_header",
+                            "client_id", "secret_mode", "scope", "interval_seconds",
+                            "initial_lookback_seconds", "enabled")})
+    cfg, err = _validate_poller(merged, creating=False)
+    if err:
+        conn.close(); return jsonify({"error": err}), 400
+    # only re-encrypt the secret if a new one was explicitly supplied
+    if "client_secret" in body and body.get("client_secret"):
+        enc = (_secretbox.encrypt(body["client_secret"], _secretbox_master())
+               if cfg["secret_mode"] == "encrypted" else "")
+        conn.execute("UPDATE api_pollers SET client_secret=? WHERE id=?", (enc, pid))
+    conn.execute(
+        """UPDATE api_pollers SET name=?, auth_scheme=?, token_url=?, events_url=?,
+               whoami_url=?, tenant_header=?, api_key_header=?, client_id=?,
+               secret_mode=?, scope=?, interval_seconds=?,
+               initial_lookback_seconds=?, enabled=? WHERE id=?""",
+        (cfg["name"], cfg["auth_scheme"], cfg["token_url"], cfg["events_url"],
+         cfg["whoami_url"], cfg["tenant_header"], cfg["api_key_header"],
+         cfg["client_id"], cfg["secret_mode"], cfg["scope"], cfg["interval_seconds"],
+         cfg["initial_lookback_seconds"], cfg["enabled"], pid))
+    conn.commit(); conn.close()
+    audit("poller_updated", target=cfg["name"])
+    return jsonify({"ok": True})
+
+
+@app.route("/api/pollers/<int:pid>", methods=["DELETE"])
+@admin_required
+def api_pollers_delete(pid):
+    conn = get_conn()
+    row = conn.execute("SELECT name FROM api_pollers WHERE id=?", (pid,)).fetchone()
+    conn.execute("DELETE FROM api_pollers WHERE id=?", (pid,))
+    conn.commit(); conn.close()
+    audit("poller_deleted", target=(row["name"] if row else str(pid)))
+    return jsonify({"ok": True})
+
+
+# ---------------------------------------------------------------------------
+# Message normalization patterns (log search field extraction)
+# ---------------------------------------------------------------------------
+
+@app.route("/api/norm-patterns", methods=["GET"])
+def api_norm_patterns_get():
+    import json as _json
+    try:
+        pats = _json.loads(cfg_get("norm_patterns", "[]") or "[]")
+    except Exception:
+        pats = []
+    return jsonify({"patterns": pats})
+
+
+@app.route("/api/norm-patterns", methods=["POST"])
+def api_norm_patterns_set():
+    import json as _json, re as _re
+    body = request.get_json(force=True, silent=True) or {}
+    pats = body.get("patterns") or []
+    if not isinstance(pats, list):
+        return jsonify({"error": "patterns must be a list of regex strings"}), 400
+    pats = [str(p).strip() for p in pats if str(p).strip()][:50]
+    for p in pats:
+        try:
+            _re.compile(p)
+        except _re.error as exc:
+            return jsonify({"error": f"invalid regex '{p[:60]}': {exc}"}), 400
+    cfg_set(norm_patterns=_json.dumps(pats))
+    return jsonify({"ok": True, "count": len(pats)})
+
+
+def _load_norm_patterns():
+    import json as _json
+    try:
+        return _json.loads(cfg_get("norm_patterns", "[]") or "[]")
+    except Exception:
+        return []
+
+
+def extract_fields(msg: str, patterns=None) -> dict:
+    import normalize
+    return normalize.extract_fields(
+        msg, patterns if patterns is not None else _load_norm_patterns())
+
+
+_reindex_state = {"running": False, "done_logs": 0, "max_id": 0, "last_result": ""}
+
+
+@app.route("/api/norm-reindex", methods=["POST"])
+def api_norm_reindex():
+    """Backfill log_fields for all existing logs with current patterns.
+    Runs in a background thread; poll /api/norm-reindex/status."""
+    import threading
+    import normalize
+    if _reindex_state["running"]:
+        return jsonify({"error": "re-index already running"}), 409
+    _reindex_state.update({"running": True, "done_logs": 0, "max_id": 0, "last_result": ""})
+
+    def job():
+        conn = get_conn()
+        try:
+            def prog(done, last_id, max_id):
+                _reindex_state["done_logs"] = done
+                _reindex_state["max_id"] = max_id
+            logs, fields = normalize.reindex(conn, progress=prog)
+            _reindex_state["last_result"] = f"re-indexed {logs} logs, {fields} field values"
+            print(f"[fields] {_reindex_state['last_result']}")
+        except Exception as exc:
+            _reindex_state["last_result"] = f"failed: {type(exc).__name__}: {exc}"
+        finally:
+            _reindex_state["running"] = False
+            conn.close()
+
+    threading.Thread(target=job, daemon=True).start()
+    audit("norm_reindex_started")
+    return jsonify({"ok": True})
+
+
+@app.route("/api/norm-reindex/status")
+def api_norm_reindex_status():
+    return jsonify(_reindex_state)
+
+
+@app.route("/api/log-fields/<int:log_id>", methods=["GET"])
+def api_log_fields(log_id):
+    """Return the fields already extracted and stored for a log at ingest.
+    This is what the row-expand panel shows — it reflects the real stored
+    fields (JSON keys for poller sources like Sophos, key=value pairs for
+    syslog like Fortigate), not a re-scan of the message text. Falls back to
+    live message extraction only if no stored fields exist (e.g. old rows
+    ingested before field extraction ran)."""
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT field, value FROM log_fields WHERE log_id=? ORDER BY field",
+        (log_id,)).fetchall()
+    fields = {r["field"]: r["value"] for r in rows}
+    if not fields:
+        # fallback: re-extract from the message for rows with no stored fields
+        r = conn.execute("SELECT message FROM logs WHERE id=?", (log_id,)).fetchone()
+        conn.close()
+        if r and r["message"]:
+            return jsonify({"fields": extract_fields(r["message"]), "stored": False})
+        return jsonify({"fields": {}, "stored": False})
+    conn.close()
+    return jsonify({"fields": fields, "stored": True})
+
+
+@app.route("/api/norm-columns", methods=["GET"])
+def api_norm_columns_get():
+    cols = [c.strip() for c in (cfg_get("norm_columns", "") or "").split(",") if c.strip()]
+    return jsonify({"columns": cols})
+
+
+@app.route("/api/norm-columns", methods=["POST"])
+def api_norm_columns_set():
+    body = request.get_json(force=True, silent=True) or {}
+    raw = body.get("columns")
+    if isinstance(raw, str):
+        cols = [c.strip() for c in raw.split(",") if c.strip()]
+    elif isinstance(raw, list):
+        cols = [str(c).strip() for c in raw if str(c).strip()]
+    else:
+        cols = []
+    cols = cols[:8]  # keep the table sane
+    for c in cols:
+        if len(c) > 40 or not c.replace("_", "").replace(".", "").replace("-", "").isalnum():
+            return jsonify({"error": f"invalid field name '{c[:40]}' (letters, digits, _ . - only)"}), 400
+    cfg_set(norm_columns=",".join(cols))
+    return jsonify({"ok": True, "columns": cols})
+
+
+# --------------------------------------------------------------------------
+# HTTP log ingest API — for products that can only send logs over HTTP
+# --------------------------------------------------------------------------
+
+def _hash_api_key(raw: str) -> str:
+    import hashlib
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _ensure_api_keys_table():
+    conn = get_conn()
+    try:
+        conn.execute("SELECT 1 FROM api_keys LIMIT 1")
+    except Exception:
+        dbmod.ensure_runtime_ready(_db_config())
+    finally:
+        conn.close()
+
+
+def _verify_api_key(raw: str):
+    """Return the api_keys row for a valid, enabled key, or None."""
+    if not raw:
+        return None
+    h = _hash_api_key(raw)
+    conn = get_conn()
+    row = conn.execute(
+        "SELECT * FROM api_keys WHERE key_hash=? AND enabled=1", (h,)).fetchone()
+    if row:
+        from datetime import datetime, timezone
+        conn.execute("UPDATE api_keys SET last_used=?, use_count=use_count+1 WHERE id=?",
+                     (datetime.now(timezone.utc).isoformat(), row["id"]))
+        conn.commit()
+    conn.close()
+    return row
+
+
+@app.route("/api/ingest/keys", methods=["GET"])
+@admin_required
+def api_ingest_keys_list():
+    _ensure_api_keys_table()
+    conn = get_conn()
+    rows = [dict(r) for r in conn.execute(
+        "SELECT id,name,key_prefix,enabled,created_at,last_used,use_count FROM api_keys ORDER BY id DESC").fetchall()]
+    conn.close()
+    return jsonify(rows)
+
+
+@app.route("/api/ingest/keys", methods=["POST"])
+@admin_required
+def api_ingest_keys_create():
+    _ensure_api_keys_table()
+    import secrets
+    from datetime import datetime, timezone
+    name = (request.json or {}).get("name", "").strip() if request.is_json else request.form.get("name", "").strip()
+    if not name:
+        return jsonify({"error": "a name is required (e.g. the product this key is for)"}), 400
+    raw = "msk_" + secrets.token_urlsafe(32)
+    conn = get_conn()
+    conn.execute(
+        "INSERT INTO api_keys (name, key_hash, key_prefix, enabled, created_at) VALUES (?,?,?,1,?)",
+        (name, _hash_api_key(raw), raw[:12], datetime.now(timezone.utc).isoformat()))
+    conn.commit(); conn.close()
+    audit("api_key_created", target=name)
+    # the plaintext key is returned ONCE and never stored/shown again
+    return jsonify({"ok": True, "name": name, "api_key": raw,
+                    "note": "Copy this now — it will not be shown again."})
+
+
+@app.route("/api/ingest/keys/<int:kid>", methods=["DELETE"])
+@admin_required
+def api_ingest_keys_delete(kid):
+    conn = get_conn()
+    row = conn.execute("SELECT name FROM api_keys WHERE id=?", (kid,)).fetchone()
+    conn.execute("DELETE FROM api_keys WHERE id=?", (kid,))
+    conn.commit(); conn.close()
+    audit("api_key_deleted", target=(row["name"] if row else str(kid)))
+    return jsonify({"ok": True})
+
+
+@app.route("/api/ingest/keys/<int:kid>/toggle", methods=["POST"])
+@admin_required
+def api_ingest_keys_toggle(kid):
+    conn = get_conn()
+    conn.execute("UPDATE api_keys SET enabled = CASE enabled WHEN 1 THEN 0 ELSE 1 END WHERE id=?", (kid,))
+    conn.commit()
+    row = conn.execute("SELECT name,enabled FROM api_keys WHERE id=?", (kid,)).fetchone()
+    conn.close()
+    audit("api_key_toggled", target=(row["name"] if row else str(kid)),
+          detail=f"enabled={bool(row['enabled']) if row else '?'}")
+    return jsonify({"ok": True, "enabled": bool(row["enabled"]) if row else False})
+
+
+def _listen_ports_configured():
+    """Configured syslog listen ports, read from db-config.json (falls back
+    to 514). This is the CONFIGURED value; the actually-bound ports live in
+    the separate listener process. Used to label the dashboard header."""
+    import os, json as _json
+    path = _config_file_path()
+    if os.path.exists(path):
+        try:
+            with open(path) as f:
+                return _json.load(f).get("listen_ports") or [514]
+        except (ValueError, OSError):
+            pass
+    return [514]
+
+
+def _config_file_path():
+    """The db-config.json the listener reads at startup. listen_ports live
+    here (not app_config) because the listener process reads this file, not
+    the database, when it binds its sockets."""
+    import os
+    here = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(here, "db-config.json")
+
+
+@app.route("/api/listen-ports", methods=["GET"])
+@admin_required
+def api_listen_ports_get():
+    import os, json as _json
+    path = _config_file_path()
+    ports = [514]
+    if os.path.exists(path):
+        try:
+            with open(path) as f:
+                ports = _json.load(f).get("listen_ports") or [514]
+        except (ValueError, OSError):
+            pass
+    target = path if os.path.exists(path) else os.path.dirname(path)
+    return jsonify({"ports": ports, "config_writable": os.access(target, os.W_OK)})
+
+
+
+
+@app.route("/api/troubleshoot/syslog-capture", methods=["POST"])
+@admin_required
+def api_troubleshoot_syslog_capture():
+    """Run a short, constrained packet-header capture for one source IP.
+
+    The dashboard never constructs a tcpdump expression.  It invokes a
+    root-owned helper through passwordless sudo; that helper validates the IP,
+    reads only the configured syslog listen ports, caps duration/packet count,
+    and never requests packet payloads.
+    """
+    import json as _json
+    import os as _os
+    import subprocess as _subprocess
+
+    body = request.get_json(silent=True) or {}
+    raw_ip = str(body.get("source_ip") or "").strip()
+    try:
+        source_ip = str(ipaddress.ip_address(raw_ip))
+    except ValueError:
+        return jsonify({"error": "Enter a valid IPv4 or IPv6 address."}), 400
+
+    if not _os.path.isfile(_SYSLOG_CAPTURE_HELPER):
+        return jsonify({
+            "error": "Syslog capture helper is not installed. Re-run sudo ./install-services.sh."
+        }), 503
+
+    from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+    def _peer_counters():
+        try:
+            _conn = get_conn()
+            _row = dbmod.read_runtime_stats(_conn, ["listener_health"]).get("listener_health")
+            _conn.close()
+            if not _row or not _row.get("value_text"):
+                return {"accepted": 0, "failed": 0}
+            _payload = _json.loads(_row.get("value_text") or "{}")
+            _source = ((_payload.get("sources") or {}).get(source_ip) or {})
+            return {"accepted": int(_source.get("accepted") or 0), "failed": int(_source.get("failed") or 0)}
+        except Exception:
+            return {"accepted": 0, "failed": 0}
+
+    before_counters = _peer_counters()
+    capture_started = _dt.now(_tz.utc)
+
+    # One capture at a time prevents repeated browser clicks from spawning a
+    # fleet of privileged tcpdump processes.  Duration is deliberately fixed.
+    if not _SYSLOG_CAPTURE_LOCK.acquire(blocking=False):
+        return jsonify({"error": "A syslog capture is already running. Try again shortly."}), 429
+    try:
+        try:
+            completed = _subprocess.run(
+                ["sudo", "-n", _SYSLOG_CAPTURE_HELPER,
+                 "--source-ip", source_ip, "--seconds", "4"],
+                capture_output=True,
+                text=True,
+                timeout=8,
+                check=False,
+                env={"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"},
+            )
+        except (_subprocess.TimeoutExpired, OSError) as exc:
+            audit("syslog_capture_failed", target=source_ip, detail=type(exc).__name__)
+            return jsonify({"error": f"Packet capture could not run: {type(exc).__name__}"}), 503
+    finally:
+        _SYSLOG_CAPTURE_LOCK.release()
+
+    raw = (completed.stdout or "").strip()
+    try:
+        result = _json.loads(raw) if raw else {}
+    except ValueError:
+        result = {}
+    if completed.returncode != 0 or not result.get("ok"):
+        err = result.get("error") or " ".join((completed.stderr or "").splitlines()[-2:])
+        audit("syslog_capture_failed", target=source_ip,
+              detail=(err or f"helper rc={completed.returncode}")[:300])
+        return jsonify({"error": err or "Packet capture helper failed."}), 503
+
+    capture_ended = _dt.now(_tz.utc)
+    after_counters = _peer_counters()
+    accepted_delta = max(0, after_counters["accepted"] - before_counters["accepted"])
+    failed_delta = max(0, after_counters["failed"] - before_counters["failed"])
+    stored = 0
+    storage_error = ""
+    try:
+        _conn = get_conn()
+        _row = _conn.execute(
+            "SELECT COUNT(*) AS c FROM logs WHERE peer_ip=? AND received_at>=? AND received_at<=?",
+            (source_ip, (capture_started - _td(seconds=1)).isoformat(), (capture_ended + _td(seconds=2)).isoformat()),
+        ).fetchone()
+        stored = int(_row["c"] if isinstance(_row, dict) else _row[0])
+        _conn.close()
+    except Exception as exc:
+        storage_error = type(exc).__name__
+
+    seen = bool(result.get("seen"))
+    network = {"status": "PASS" if seen else "WARNING", "packets": int(result.get("packets") or 0),
+               "detail": "Matching syslog packets reached the SIEM host." if seen else "No matching packet was observed during the capture window."}
+    if accepted_delta or stored:
+        listener_stage = {"status": "PASS", "accepted": accepted_delta, "failed": failed_delta,
+                          "detail": "Listener activity from this peer was observed."}
+    elif seen:
+        listener_stage = {"status": "WARNING", "accepted": accepted_delta, "failed": failed_delta,
+                          "detail": "Packets reached the host but no accepted event from this peer was confirmed."}
+    else:
+        listener_stage = {"status": "UNKNOWN", "accepted": accepted_delta, "failed": failed_delta,
+                          "detail": "Listener correlation requires incoming packets."}
+    if failed_delta:
+        parser_stage = {"status": "WARNING", "failed": failed_delta, "detail": "Listener recorded ingest/parser failures for this peer."}
+    elif stored:
+        parser_stage = {"status": "PASS", "failed": 0, "detail": "At least one event from this peer was parsed and stored."}
+    elif seen:
+        parser_stage = {"status": "UNKNOWN", "failed": 0, "detail": "Packet observed but no parsed/stored event was confirmed in this window."}
+    else:
+        parser_stage = {"status": "UNKNOWN", "failed": 0, "detail": "No packet available to validate parsing."}
+    if storage_error:
+        storage_stage = {"status": "UNKNOWN", "stored": 0, "detail": f"Storage correlation unavailable: {storage_error}."}
+    elif stored:
+        storage_stage = {"status": "PASS", "stored": stored, "detail": "Events from this peer are present in the hot log store."}
+    elif seen:
+        storage_stage = {"status": "WARNING", "stored": 0, "detail": "No event from this peer was stored during the correlation window."}
+    else:
+        storage_stage = {"status": "UNKNOWN", "stored": 0, "detail": "Storage correlation requires incoming events."}
+    search_stage = {"status": "PASS" if stored else "UNKNOWN", "matched": stored,
+                    "detail": "Stored events are queryable by peer IP." if stored else "No newly stored event was available for search confirmation."}
+    result["pipeline"] = {"network": network, "listener": listener_stage, "parser": parser_stage,
+                          "storage": storage_stage, "search": search_stage}
+
+    audit("PIPELINE_DIAGNOSTIC_RUN", target=source_ip,
+          detail=f"seen={seen} packets={int(result.get('packets') or 0)} accepted={accepted_delta} failed={failed_delta} stored={stored}")
+    return jsonify(result)
+
+
+@app.route("/api/listen-ports", methods=["POST"])
+@admin_required
+def api_listen_ports_set():
+    import os, json as _json
+    body = request.get_json(silent=True) or {}
+    raw = body.get("ports", "")
+    if isinstance(raw, str):
+        parts = [p.strip() for p in raw.split(",") if p.strip()]
+    elif isinstance(raw, list):
+        parts = [str(p).strip() for p in raw if str(p).strip()]
+    else:
+        return jsonify({"error": "ports must be a list or comma-separated string"}), 400
+    ports = []
+    for p in parts:
+        if not p.isdigit():
+            return jsonify({"error": f"'{p}' is not a valid port number"}), 400
+        n = int(p)
+        if not (1 <= n <= 65535):
+            return jsonify({"error": f"port {n} is out of range (1-65535)"}), 400
+        if n not in ports:
+            ports.append(n)
+    if not ports:
+        return jsonify({"error": "at least one port is required"}), 400
+
+    path = _config_file_path()
+    try:
+        cfg = {}
+        if os.path.exists(path):
+            with open(path) as f:
+                cfg = _json.load(f)
+        cfg["listen_ports"] = ports
+        with open(path, "w") as f:
+            _json.dump(cfg, f, indent=2)
+    except (OSError, ValueError) as exc:
+        return jsonify({"error": f"could not write config: {exc}"}), 500
+    audit("listen_ports_changed", detail=",".join(map(str, ports)))
+    return jsonify({"ok": True, "ports": ports, "restart_required": True})
+
+
+@app.route("/api/ingest", methods=["POST"])
+def api_ingest():
+    """Receive logs over HTTP from products that can't send syslog.
+
+    Auth: header 'X-API-Key: <key>' or 'Authorization: Bearer <key>'.
+    Body (Content-Type decides):
+      * application/json  -> one object, or a list of objects, or
+                             {"logs": [...]}. Recognized keys: message/msg,
+                             severity/level, hostname/host, app/app_name.
+                             Extra scalar keys become key=value for extraction.
+      * text/plain        -> one raw syslog line per newline.
+    Returns {"ok": true, "ingested": N}.
+    """
+    _ensure_api_keys_table()
+    raw_key = request.headers.get("X-API-Key")
+    if not raw_key:
+        authz = request.headers.get("Authorization", "")
+        if authz.lower().startswith("bearer "):
+            raw_key = authz[7:].strip()
+    keyrow = _verify_api_key(raw_key)
+    if keyrow is None:
+        # do not reveal whether the endpoint exists / key format; just 401
+        return jsonify({"error": "invalid or missing API key"}), 401
+
+    src = request.headers.get("X-Forwarded-For", request.remote_addr) or "api"
+    src = src.split(",")[0].strip()
+    ctype = (request.content_type or "").lower()
+    count = 0
+    try:
+        if "application/json" in ctype:
+            payload = request.get_json(force=True, silent=True)
+            if payload is None:
+                return jsonify({"error": "invalid JSON"}), 400
+            if isinstance(payload, dict) and "logs" in payload:
+                items = payload["logs"]
+            elif isinstance(payload, list):
+                items = payload
+            else:
+                items = [payload]
+            if not isinstance(items, list):
+                return jsonify({"error": "expected an object or list of objects"}), 400
+            MAX = 1000
+            if len(items) > MAX:
+                return jsonify({"error": f"too many logs in one request (max {MAX})"}), 413
+            for obj in items:
+                if isinstance(obj, dict):
+                    line = _json_to_syslog_line(obj)
+                else:
+                    line = str(obj)
+                _ingest_raw(line, src)
+                count += 1
+        else:
+            body = request.get_data(as_text=True) or ""
+            for line in body.splitlines():
+                if line.strip():
+                    _ingest_raw(line, src)
+                    count += 1
+    except Exception as exc:
+        return jsonify({"error": f"ingest failed: {type(exc).__name__}"}), 500
+    return jsonify({"ok": True, "ingested": count})
+
+
+
+def _require_admin_now():
+    if auth.current_role() != "admin":
+        audit("permission_denied", target=request.endpoint or request.path,
+              detail=f"role={auth.current_role()}")
+        return jsonify({"error": "administrator role required for this action"}), 403
+    return None
+
+
+def _register_split_blueprints():
+    """Register the deliberately limited dashboard split.
+
+    Only AI, DB health/backup, users, reports, ticketing, and IOC feeds live
+    outside dashboard.py.  Other routes intentionally remain here.
+    """
+    from types import SimpleNamespace
+    from web_blueprints import ai as ai_routes
+    from web_blueprints import db_health as db_health_routes
+    from web_blueprints import users as user_routes
+    from web_blueprints import reports as report_routes
+    from web_blueprints import tickets as ticket_routes
+    from web_blueprints import ioc_feeds as feed_routes
+    from web_blueprints import detection as detection_routes
+    import dashboard_connector
+
+    services = SimpleNamespace(
+        get_conn=get_conn, audit=audit, require_admin=_require_admin_now,
+        db_config=_db_config, cfg_get=cfg_get, cfg_set=cfg_set,
+        get_ai_config=get_ai_config, save_ai_config=save_ai_config,
+        llm_from_config=_llm_from_config, secretbox_master=_secretbox_master,
+    )
+    for module in (ai_routes, db_health_routes, user_routes, report_routes,
+                   ticket_routes, feed_routes, detection_routes):
+        module.configure(services)
+        app.register_blueprint(module.bp)
+
+    dashboard_connector.configure(services)
+    app.register_blueprint(dashboard_connector.bp)
+
+    # Preserve the callable interfaces used by the existing background workers.
+    globals()["get_ticket_settings"] = ticket_routes.get_ticket_settings
+    globals()["_resolve_feed_key"] = feed_routes.resolve_feed_key
+
+
+_register_split_blueprints()
+
+def main():
+    global DB_PATH, DB_CONFIG
+    ap = argparse.ArgumentParser(description="mini-SIEM dashboard")
+    ap.add_argument("--db", default="siem.db")
+    ap.add_argument("--db-config", default=None, help="path to db-config.json (sqlite/postgres selector)")
+    ap.add_argument("--db-credentials", default=None, help="PostgreSQL component credential overlay (user/password only)")
+    ap.add_argument("--auth-config", default=None, help="path to auth-config.json (login/OAuth/SAML)")
+    ap.add_argument("--host", default="127.0.0.1")
+    ap.add_argument("--port", type=int, default=8080)
+    args = ap.parse_args()
+    DB_PATH = args.db
+    DB_CONFIG = dbmod.load_config(args.db_config, sqlite_fallback=args.db,
+                                  credentials_path=args.db_credentials)
+    print(f"[db] backend: {dbmod.describe(DB_CONFIG)}")
+    dbmod.ensure_runtime_ready(DB_CONFIG)
+    init_auth(args.auth_config)
+    print("[auth] login enabled; default admin/admin on first run (change forced)")
+    start_triage_worker()
+    start_automation_workers()
+    start_poller_manager()
+    from waitress import serve
+    serve(app, host=args.host, port=args.port, threads=8)
+
+
+if __name__ == "__main__":
+    main()

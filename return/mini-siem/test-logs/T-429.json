@@ -1,0 +1,19 @@
+{
+  "body": {
+    "contract": "operator-workspace.integration.v1",
+    "error": {
+      "code": "RATE_LIMITED",
+      "message": "Dashboard reader request rate exceeded.",
+      "request_id": "req-a6269ae78631470c8129a9691fb84cb0",
+      "retry_after_seconds": 1,
+      "retryable": true
+    }
+  },
+  "headers": {
+    "Cache-Control": "no-store",
+    "Content-Type": "application/json; charset=utf-8",
+    "Retry-After": "1",
+    "X-Content-Type-Options": "nosniff"
+  },
+  "status": 429
+}

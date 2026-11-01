@@ -1,0 +1,11 @@
+{
+  "binding_sha256": "d363deaeaa24c755a7693d8208e5afa695ef68e54c5e548bea5a1d60e21855eb",
+  "bundle_sha256": "1c3a983ff31a0c96fd98bb195f86db47bed9cf3dec65a3a246f6679c2d97b57e",
+  "execute_confirmation": "OFFLINE-OWI:1c3a983ff31a0c96fd98bb195f86db47bed9cf3dec65a3a246f6679c2d97b57e",
+  "mode": "plan",
+  "negative_pages": 6,
+  "network_io": false,
+  "production_registration": false,
+  "requests": 21,
+  "scope": "OFFLINE_FIXTURE_ONLY"
+}

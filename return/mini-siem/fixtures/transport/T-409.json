@@ -1,0 +1,12 @@
+{
+  "authorization": "fixture-secret-ref",
+  "fault_injection": "delete the referenced durable snapshot before replay",
+  "json": null,
+  "method": "GET",
+  "path": "/api/integrations/dashboard/v1/alerts",
+  "query": {
+    "cursor": "evicted-snapshot-cursor-ref",
+    "limit": 1
+  },
+  "transport": {}
+}

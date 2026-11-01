@@ -1,5 +1,36 @@
 # mini-SIEM
 
+## Connector recovery completed — 2026-10-28
+
+The previously missing Dashboard reader connector, owner token tool, schemas and
+return-package tools have been restored from the exact historical ZIP and merged
+with the current security/workflow fixes. The original package is available at
+`return/mini-siem-return-package.zip`; it remains the October 22 delivery, **not a
+new package of the current source**. Do not deploy its old source snapshot over this
+application. See [recovery details](RECOVERY_2026-10-28.md) and
+[return-artifact boundaries](return/README.md).
+
+Deploy matching complete source, preserve configs and back up the database. This
+connector needs five new tables initialized by the database owner; PostgreSQL
+split-role grants must be refreshed before restart. No production setup or reader
+token issuance was performed by this recovery. Local merged suite: 479 PASS /
+the same 47 existing FAIL / 3 SKIP; live deployment remains unqualified.
+
+## Current local recovery — 2026-10-27
+
+Security and operator-workflow changes lost in a local overwrite have been
+reconstructed and merged, preserving the newer guided setup, role-aware Settings,
+pickers and bulk alert triage. Deploy the matching complete source/static/template
+set, including `outbound.py`, and restart both processes. Old browser sessions
+require sign-in again; internal ticket/feed/API destinations may need an exact
+`MINISIEM_OUTBOUND_ALLOWLIST` origin. No database schema change is required.
+
+See [SECURITY_HARDENING.md](SECURITY_HARDENING.md) for configuration and limits,
+and [RECOVERY_2026-10-27.md](RECOVERY_2026-10-27.md) for provenance and validation.
+The missing Dashboard reader connector and old return package are **not** restored
+by this merge. Local validation: 446 PASS / the same 47 existing FAIL / 3 SKIP;
+this is not production qualification or a newly generated delivery package.
+
 ## Daily use
 
 - **Live logs & alerts:** confirm incoming activity, search events and open their

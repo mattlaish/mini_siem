@@ -1,5 +1,15 @@
 # Sophos Central Poller Integration Bundle
 
+## Historical snapshot — security recovery notice (2026-10-27)
+
+This portable directory and its ZIP are not the current hardened application.
+The application now uses the shared `outbound.py` destination/transport policy;
+that dependency and its corresponding poller changes have not been rebuilt and
+qualified in this portable bundle. Do not copy only the current application
+`api_poller.py` into another SIEM or represent this older snapshot as hardened.
+Rebuild and test the complete portable dependency set before a new delivery.
+See the application `SECURITY_HARDENING.md` and `RECOVERY_2026-10-27.md`.
+
 This directory is a portable snapshot of mini-SIEM's production-verified
 Sophos Central SIEM API poller. The owner confirmed that the original
 integration collected 4,739 real events from 2026-08-05 through 2026-08-20.

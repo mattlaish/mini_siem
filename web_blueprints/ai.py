@@ -96,11 +96,32 @@ def api_ai_config_set():
 def api_ai_test():
     denied = _svc.require_admin()
     if denied is not None: return denied
-    if not _ai_enabled(): return jsonify({"ok": False, "error": "AI Analyst is turned off. Enable it first."}), 400
-    cfg = _svc.get_ai_config()
+    body = request.get_json(silent=True)
+    if body is None: body = {}
+    if not isinstance(body, dict): return jsonify(error="Connection settings must be an object"), 400
+    current = _svc.get_ai_config()
+    cfg = dict(current)
+    fields = {"ai_base_url", "ai_model", "ai_mode", "ai_api_style", "ai_api_key", "ai_external_redaction"}
+    for key in fields & body.keys():
+        if not isinstance(body[key], str): return jsonify(error="Connection values must be text"), 400
+        cfg[key] = body[key].strip()
+    if cfg.get("ai_mode", "local") not in {"local", "external"}:
+        return jsonify(error="Invalid AI mode"), 400
+    if cfg.get("ai_api_style", "auto") not in {"auto", "responses", "chat_completions"}:
+        return jsonify(error="Invalid API style"), 400
+    if cfg.get("ai_external_redaction", "strict") not in ai_soc.REDACTION_POLICIES:
+        return jsonify(error="Invalid redaction policy"), 400
+    if (current.get("ai_api_key") and not body.get("ai_api_key")
+            and cfg.get("ai_base_url", "").rstrip("/") != current.get("ai_base_url", "").rstrip("/")):
+        return jsonify(error="A saved key is not sent to a changed address. Re-enter it to test that destination."), 400
+    if not cfg.get("ai_api_key"): cfg["ai_api_key"] = current.get("ai_api_key", "")
+    if cfg.get("ai_mode") == "external":
+        try:
+            ai_soc.validate_external_endpoint(cfg.get("ai_base_url", ""), allow_insecure_loopback=os.environ.get("MINISIEM_AI_ALLOW_INSECURE_LOOPBACK_EXTERNAL") == "1")
+        except ValueError as exc: return jsonify(error=str(exc)), 400
     if cfg.get("ai_mode") == "external" and not cfg.get("ai_api_key"):
         return jsonify({"ok": False, "error": "External mode needs an API token — none is set."}), 400
-    ok, detail = _svc.llm_from_config().test()
+    ok, detail = _svc.llm_from_config(cfg).test()
     return jsonify({"ok": True, "detail": detail}) if ok else (jsonify({"ok": False, "error": detail}), 502)
 
 

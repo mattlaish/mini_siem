@@ -1,3 +1,4 @@
+from session_helpers import sign_in, set_role
 """Bulk/group alert triage, background-tab alert check, near-miss replay
 ("why didn't this rule fire?") and the label/guard fixes."""
 import json
@@ -31,8 +32,7 @@ def app_db(tmp_path, monkeypatch):
 
 def client(dashboard, role="analyst", user="alice"):
     c = dashboard.app.test_client()
-    with c.session_transaction() as s:
-        s.update(user=user, role=role, must_change=False, csrf_token="t")
+    sign_in(dashboard, c, user, role)
     return c
 
 

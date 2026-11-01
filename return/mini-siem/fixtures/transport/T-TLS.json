@@ -1,0 +1,14 @@
+{
+  "authorization": "fixture-secret-ref",
+  "fault_injection": null,
+  "json": null,
+  "method": "GET",
+  "path": "/api/integrations/dashboard/v1/health",
+  "query": {},
+  "transport": {
+    "scheme": "https",
+    "trust_bundle_ref": "fixture-ca-reference",
+    "verify_hostname": true,
+    "verify_peer": true
+  }
+}

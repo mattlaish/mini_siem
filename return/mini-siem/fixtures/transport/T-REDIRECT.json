@@ -1,0 +1,9 @@
+{
+  "authorization": "fixture-secret-ref",
+  "fault_injection": null,
+  "json": null,
+  "method": "GET",
+  "path": "/api/integrations/dashboard/v1/unknown",
+  "query": {},
+  "transport": {}
+}

@@ -17,10 +17,10 @@
     <ol style="margin:0;padding-left:20px;font-size:13px;line-height:1.7;">
       <li><strong>Syslog</strong> (UDP/TCP) to <code id="frTarget">this host</code>. Quick test from a Linux host:
         <code id="frLogger" style="display:block;margin:4px 0 8px;"></code></li>
-      <li><strong>HTTP/JSON</strong>: create a key in <a href="/setup#api">Setup → API log receiver</a>, then
+      <li><strong>HTTP/JSON</strong>: create a key in <a href="/setup#sec-receiver">Setup → API log receiver</a>, then
         <code id="frCurl" style="display:block;margin:4px 0 8px;white-space:pre-wrap;word-break:break-all;"></code></li>
       <li><strong>Windows</strong>: forward Security 4688, Sysmon 1 and PowerShell 4104 with NXLog (see <a href="/help">Help</a>), then add the host on <a href="/execution-windows">Execution Windows</a>.</li>
-      <li>Not arriving? Use <a href="/setup">Setup → Troubleshoot</a> to capture what reaches the listener.</li>
+      <li>Not arriving? Use <a href="/setup#sec-troubleshoot">Settings → Check log delivery</a> to capture what reaches the listener.</li>
     </ol>
   </div>
 
@@ -115,6 +115,7 @@
         <tbody id="logsBody" aria-live="polite" aria-relevant="additions"><tr><td colspan="8" class="muted">Loading…</td></tr></tbody>
       </table>
     </div>
+    <p><button type="button" id="logsOlder" hidden>Load more matching events</button> <span id="logsPageStatus" class="muted"></span></p>
     <details style="margin-top:12px;">
       <summary style="font-size:12.5px;font-weight:600;cursor:pointer;">Searchable fields and display columns</summary>
       <p class="muted" style="font-size:12px;margin:8px 0;">Click any log row above to extract fields from its message. <span class="mono">key=value</span> and <span class="mono">key: value</span> pairs are extracted automatically. Add custom regex patterns below (one per line, Python syntax) using <strong>named groups</strong> to pull fields from messages that don't use key=value, e.g. <span class="mono">(?P&lt;user&gt;\S+) logged in from (?P&lt;ip&gt;[\d.]+)</span></p>
@@ -154,8 +155,7 @@
 {% block scripts %}
 <script>
 async function loadStats() {
-  const r = await fetch('/api/stats');
-  const d = await r.json();
+  const d = await MS.read('Overview statistics','/api/stats',undefined,()=>loadStats());
   document.getElementById('statLogs').textContent = d.total_logs;
   document.getElementById('statAlerts').textContent = d.total_alerts;
   // First-run checklist: only while nothing has ever been received.
@@ -208,14 +208,14 @@ async function loadStats() {
 
 async function loadAiQueue() {
   try {
-    const q = await (await fetch('/api/ai/queue/stats')).json();
+    const q = await MS.read('AI queue','/api/ai/queue/stats',undefined,()=>loadAiQueue());
     const bar = document.getElementById('aiQueueBar');
     if ((q.queued + q.failed) > 0) {
       bar.style.display = 'inline';
       document.getElementById('aiQueueText').textContent =
         `AI triage: ${q.queued} queued` + (q.failed ? `, ${q.failed} failed` : '');
     } else { bar.style.display = 'none'; }
-  } catch(e){}
+  } catch(e){return false;}
 }
 if (document.getElementById('aiRetryBtn')) document.getElementById('aiRetryBtn').addEventListener('click', async () => {
   const d = await (await fetch('/api/ai/queue/retry', {method:'POST'})).json();
@@ -325,11 +325,11 @@ async function loadAlerts(opts) {
   const background = !!(opts && opts.background === true);
   const grouped = document.getElementById('groupToggle').checked;
   let data;
-  try { data = await MS.getJSON('/api/alerts?limit=200' + (grouped ? '&group=1' : '')); }
+  try { data = await MS.read('Overview alerts','/api/alerts?limit=200' + (grouped ? '&group=1' : ''),background?{headers:{'X-Background-Poll':'1'}}:undefined,()=>loadAlerts()); }
   catch (e) {
     // A failed timed refresh keeps the rows already shown (refreshAll flags them
     // as stale); a failed first or manual load says so instead of looking empty.
-    if (!background || !_alertsLoaded) MS.failed('alertsBody', e, () => loadAlerts(), 'alerts');
+    // Keep the displayed alerts; shared feedback offers Retry.
     return false;
   }
   _alertsLoaded = true;
@@ -360,20 +360,20 @@ async function loadAlerts(opts) {
         ? `${MS.timeHTML(g.latest, true)} <span class="muted" style="font-size:11px;">(${g.count} over ${_span(g.earliest, g.latest)})</span>`
         : MS.timeHTML(g.latest, true);
       const head = `
-        <tr class="alert-row grp-head" data-gi="${gi}" data-logids="${rep.log_ids||''}" title="${multi?'Click ▸ to expand. ':''}Double-click to open related logs">
+        <tr class="alert-row grp-head" data-gi="${gi}" data-logids="${_esc(rep.log_ids)}" title="${multi?'Click ▸ to expand. ':''}Double-click to open related logs">
           <td class="msg-cell">${countBadge}${timespan}</td>
           <td>${escapeAlert(g.rule_name)}</td>
-          <td><span class="badge sev-${g.severity}">${escapeAlert(MS.alertSeverity(g.severity))}</span></td>
+          <td><span class="badge sev-${_esc(g.severity)}">${escapeAlert(MS.alertSeverity(g.severity))}</span></td>
           <td class="msg-cell">${escapeAlert(g.source_ip || '—')}</td>
           <td>${escapeAlert(g.description)}</td>
           <td>${multi ? _groupWorkflowControl(g) : _workflowControl(rep)}</td>
           <td>${multi ? _groupAiBadge(g) : _aiBadge(rep.ai_status)}</td>
         </tr>`;
       const children = multi ? g.members.map(m => `
-        <tr class="alert-row grp-child grp-child-${gi}" data-logids="${m.log_ids||''}" style="display:none;background:var(--canvas);" title="Double-click to open related logs">
+        <tr class="alert-row grp-child grp-child-${gi}" data-logids="${_esc(m.log_ids)}" style="display:none;background:var(--canvas);" title="Double-click to open related logs">
           <td class="msg-cell" style="padding-left:34px;">${MS.timeHTML(m.created_at)}</td>
           <td class="muted">${escapeAlert(m.rule_name)}</td>
-          <td><span class="badge sev-${m.severity}">${escapeAlert(MS.alertSeverity(m.severity))}</span></td>
+          <td><span class="badge sev-${_esc(m.severity)}">${escapeAlert(MS.alertSeverity(m.severity))}</span></td>
           <td class="msg-cell">${escapeAlert(m.source_ip || '—')}</td>
           <td>${escapeAlert(m.description)}</td>
           <td>${_workflowControl(m)}</td>
@@ -395,10 +395,10 @@ async function loadAlerts(opts) {
     rows.forEach(a => window._alertCache[a.id] = a);
     if (!rows.length) { body.innerHTML = '<tr><td colspan="7" class="muted">No alerts yet.</td></tr>'; return; }
     body.innerHTML = rows.map(a => `
-      <tr class="alert-row" data-logids="${a.log_ids||''}" title="Double-click to open the related logs in log search">
+      <tr class="alert-row" data-logids="${_esc(a.log_ids)}" title="Double-click to open the related logs in log search">
         <td class="msg-cell">${MS.timeHTML(a.created_at, true)}</td>
         <td>${escapeAlert(a.rule_name)}</td>
-        <td><span class="badge sev-${a.severity}">${escapeAlert(MS.alertSeverity(a.severity))}</span></td>
+        <td><span class="badge sev-${_esc(a.severity)}">${escapeAlert(MS.alertSeverity(a.severity))}</span></td>
         <td class="msg-cell">${escapeAlert(a.source_ip || '—')}</td>
         <td>${escapeAlert(a.description)}</td>
         <td>${_workflowControl(a)}</td>
@@ -499,7 +499,7 @@ function openAiModal(id) {
   if (!a) return;
   document.getElementById('aiModalTitle').textContent = a.rule_name;
   document.getElementById('aiModalMeta').innerHTML =
-    `<span class="badge sev-${a.severity}">${escapeAlert(MS.alertSeverity(a.severity))}</span>
+    `<span class="badge sev-${_esc(a.severity)}">${escapeAlert(MS.alertSeverity(a.severity))}</span>
      &nbsp;·&nbsp; source: <span style="font-family:var(--mono);">${escapeAlert(a.source_ip || '—')}</span>
      &nbsp;·&nbsp; ${MS.timeHTML(a.created_at)}
      ${a.ai_triaged_at ? '&nbsp;·&nbsp; analyzed ' + MS.timeHTML(a.ai_triaged_at) : ''}`;
@@ -555,7 +555,7 @@ function renderFieldChips() {
   bar.innerHTML = '<span class="muted" style="font-size:11px;align-self:center;">field filters:</span>' + opToggle
     + fieldChips.map((c, i) =>
         `<span style="display:inline-flex;align-items:center;gap:6px;background:var(--accent-soft);color:var(--accent);font-size:12px;font-family:var(--mono);padding:3px 8px;border-radius:6px;">`
-        + `${c.field}=${c.value}`
+        + `${_esc(c.field)}=${_esc(c.value)}`
         + `<span class="chip-del" data-i="${i}" style="cursor:pointer;font-weight:700;" title="Remove">×</span></span>`).join('');
   bar.querySelectorAll('.chip-del').forEach(el => el.addEventListener('click', () => {
     fieldChips.splice(parseInt(el.dataset.i), 1);
@@ -656,7 +656,7 @@ async function removeXColumn(name) {
 }
 
 function flashColumn(name) {
-  const el = document.querySelector(`.xcol-head[data-col="${name}"]`);
+  const el = [...document.querySelectorAll('.xcol-head')].find(node => node.dataset.col === name);
   if (!el) return;
   const orig = el.style.background;
   el.style.background = 'var(--amber-soft)';
@@ -690,9 +690,9 @@ function renderXColumns() {
     + xCols.map(c => {
         const active = xSort === 'x_' + c;
         return `<th style="white-space:nowrap;">`
-          + `<span class="xcol-head" data-col="${c}" style="cursor:pointer;color:var(--accent);" title="Click to sort by ${c}">${c}</span>`
+          + `<span class="xcol-head" data-col="${_esc(c)}" style="cursor:pointer;color:var(--accent);" title="Click to sort by ${_esc(c)}">${_esc(c)}</span>`
           + sortMark(active, xDir)
-          + `<span class="xcol-del" data-col="${c}" title="Remove ${c} column" style="cursor:pointer;color:var(--ink-soft);margin-left:6px;font-weight:400;">×</span>`
+          + `<span class="xcol-del" data-col="${_esc(c)}" title="Remove ${_esc(c)} column" style="cursor:pointer;color:var(--ink-soft);margin-left:6px;font-weight:400;">×</span>`
           + `</th>`;
       }).join('');
   head.querySelectorAll('.base-head').forEach(el => el.addEventListener('click', () => {
@@ -718,7 +718,7 @@ function renderXColumns() {
   if (!xCols.length) { bar.style.display = 'none'; bar.innerHTML = ''; return; }
   bar.style.display = 'flex';
   bar.innerHTML = xCols.map(c =>
-    `<input type="text" class="xcol-filter" data-col="${c}" placeholder="filter ${c}…" style="max-width:160px;">`).join('')
+    `<input type="text" class="xcol-filter" data-col="${_esc(c)}" placeholder="filter ${_esc(c)}…" style="max-width:160px;">`).join('')
     + '<span class="muted" style="align-self:center;font-size:11.5px;">Searches all saved events. Update fields in earlier logs after changing extraction patterns.</span>';
   bar.querySelectorAll('.xcol-filter').forEach(inp => inp.addEventListener('change', loadLogs));
 }
@@ -761,9 +761,9 @@ function currentFilterParams() {
 async function loadFacets() {
   try {
     const f = await (await fetch('/api/logs/facets')).json();
-    document.getElementById('srcList').innerHTML = (f.sources || []).map(s => `<option value="${s}">`).join('');
-    document.getElementById('hostList').innerHTML = (f.hosts || []).map(h => `<option value="${h}">`).join('');
-    document.getElementById('destList').innerHTML = (f.destinations || []).map(d => `<option value="${d}">`).join('');
+    document.getElementById('srcList').innerHTML = (f.sources || []).map(s => `<option value="${_esc(s)}">`).join('');
+    document.getElementById('hostList').innerHTML = (f.hosts || []).map(h => `<option value="${_esc(h)}">`).join('');
+    document.getElementById('destList').innerHTML = (f.destinations || []).map(d => `<option value="${_esc(d)}">`).join('');
   } catch (e) { /* non-fatal */ }
 }
 
@@ -810,18 +810,33 @@ function _restoreFromUrl() {
   const sort = u.get('sort');
   if (sort) { if (sort.startsWith('x_')) { xSort = sort; xDir = u.get('dir') || 'asc'; } else { baseSort = sort; baseDir = u.get('dir') || 'desc'; } }
 }
-let _logsLoaded = false;
+let _logsLoaded = false,logRows=[],logPage=null,logQuery='',logSequence=0,historyBusy=false;
+document.getElementById('logsOlder').onclick=async()=>{const b=document.getElementById('logsOlder');b.disabled=true;try{await loadLogs({append:true});}catch(e){MS.toast(e.message,'error');}finally{b.disabled=false;}};
 async function loadLogs(opts) {
   const background = !!(opts && opts.background === true);
-  const params = currentFilterParams();
-  params.set('limit', 200);
+  const append=!!(opts&&opts.append);
+  if(background&&historyBusy)return;
+  if(append&&historyBusy)return;
+  const params=currentFilterParams();params.set('limit',200);params.set('page',1);
+  const query=params.toString();
+  if(append&&logPage&&logQuery===query){params.set('offset',logPage.next_offset);params.set('snapshot',logPage.snapshot);}else if(append)return;
+  if(append)historyBusy=true;
+  const sequence=++logSequence;
   const held = background ? logsHeldReason() : '';
   let rows;
-  try { rows = await MS.getJSON('/api/logs?' + params.toString()); }
+  try { rows = await MS.read('Log search','/api/logs?' + params.toString(),background?{headers:{'X-Background-Poll':'1'}}:undefined,()=>loadLogs()); }
   catch (e) {
-    if (!background || !_logsLoaded) MS.failed('logsBody', e, () => loadLogs(), 'events');
+    if(append)historyBusy=false;
     return false;
   }
+  if(sequence!==logSequence){if(append)historyBusy=false;return;}
+  if(append)historyBusy=false;
+  if(background&&logRows.length>200){
+    const fresh=(rows.items||[]).filter(row=>row.id>_logsMaxId).length;
+    const pill=document.getElementById('logsNewPill');pill.textContent=fresh?`${fresh} new events ↑`:'';pill.classList.toggle('show',fresh>0);
+    return;
+  }
+  const page=rows;rows=page.items||[];
   _logsLoaded = true;
   const pill = document.getElementById('logsNewPill');
   const note = document.getElementById('logsHeldNote');
@@ -834,19 +849,23 @@ async function loadLogs(opts) {
   }
   pill.classList.remove('show'); note.textContent = '';
   if (!background) _syncUrl();
+  rows=append?[...logRows,...rows.filter(row=>!logRows.some(old=>old.id===row.id))]:rows;
+  logRows=rows;logPage=page;logQuery=query;
+  document.getElementById('logsOlder').hidden=!page.has_more;
+  document.getElementById('logsPageStatus').textContent=`${rows.length} matching events loaded`+(page.sort_limit?' · Field sorting covers the newest 100,000 matches; narrow the date range for older results.':'');
   renderXColumns();  // redraw header so the active-sort triangle reflects current sort
   _logsMaxId = Math.max(0, ...rows.map(l => l.id));
   const body = document.getElementById('logsBody');
   const ncols = 8 + xCols.length;
   if (!rows.length) { body.innerHTML = `<tr><td colspan="${ncols}" class="muted">No matching events.</td></tr>`; return; }
   const xcells = l => xCols.map(c =>
-    `<td class="mono" style="font-size:12px;">${String((l.extracted||{})[c] ?? '').replace(/</g,'&lt;') || '—'}</td>`).join('');
+    `<td class="mono" style="font-size:12px;">${_esc((l.extracted||{})[c]) || '—'}</td>`).join('');
   body.innerHTML = rows.map(l => `
     <tr class="log-row" data-id="${l.id}" title="Click to extract fields from this message">
       <td class="msg-cell">${MS.timeHTML(l.received_at)}</td>
-      <td class="msg-cell">${l.peer_ip || l.source_ip || '—'}</td>
-      <td class="msg-cell">${l.endpoint_ip ? l.endpoint_ip + ' <span style="color:var(--ink-soft);font-size:10px;">(endpoint)</span>' : (l.source_ip || '—')}</td>
-      <td>${l.severity ? `<span class="badge sev-${l.severity}">${l.severity}</span>` : '—'}</td>
+      <td class="msg-cell">${_esc(l.peer_ip || l.source_ip) || '—'}</td>
+      <td class="msg-cell">${l.endpoint_ip ? _esc(l.endpoint_ip) + ' <span style="color:var(--ink-soft);font-size:10px;">(endpoint)</span>' : (_esc(l.source_ip) || '—')}</td>
+      <td>${l.severity ? `<span class="badge sev-${_esc(l.severity)}">${_esc(l.severity)}</span>` : '—'}</td>
       <td>${_esc(l.hostname) || '—'}</td>
       <td class="msg-cell">${_esc(l.destination) || '—'}</td>
       <td>${_esc(l.app_name) || '—'}</td>
@@ -889,14 +908,14 @@ async function loadLogs(opts) {
         + (hidden.length ? `<details><summary class="field-section" style="cursor:pointer;">Source fields duplicating the above (${hidden.length})</summary>${table(hidden)}</details>` : '');
       function fieldRow([k,v]) {
             const active = xCols.includes(k);
-            const vEsc = String(v).replace(/"/g,'&quot;');
+            const vEsc = _esc(v), kEsc = _esc(k);
             return `<tr>`
-              + `<td style="padding:2px 4px 2px 4px;"><span class="fieldfilter" draggable="true" data-field="${k}" data-value="${vEsc}" title="Drag into the filter bar, or click, to filter by ${k}=${vEsc}" `
+              + `<td style="padding:2px 4px 2px 4px;"><span class="fieldfilter" draggable="true" data-field="${kEsc}" data-value="${vEsc}" title="Drag into the filter bar, or click, to filter by ${kEsc}=${vEsc}" `
               + `style="cursor:grab;color:var(--ink-soft);font-weight:700;padding:0 4px;user-select:none;">+</span></td>`
-              + `<td style="padding:2px 14px 2px 0;"><span class="fieldpick" data-field="${k}" data-value="${vEsc}" title="${active ? 'Already a column' : 'Add as column'}" `
+              + `<td style="padding:2px 14px 2px 0;"><span class="fieldpick" data-field="${kEsc}" data-value="${vEsc}" title="${active ? 'Already a column' : 'Add as column'}" `
               + `style="font-family:var(--mono);color:${active ? 'var(--ink-soft)' : 'var(--accent)'};cursor:pointer;text-decoration:${active ? 'none' : 'underline dotted'};">`
-              + `${k}${active ? ' ✓' : ''}</span></td>`
-              + `<td style="font-family:var(--mono);padding:2px 4px;">${String(v).replace(/</g,'&lt;')}</td></tr>`;
+              + `${kEsc}${active ? ' ✓' : ''}</span></td>`
+              + `<td style="font-family:var(--mono);padding:2px 4px;">${vEsc}</td></tr>`;
       }
       body.querySelectorAll('.fieldpick').forEach(el => el.addEventListener('click', (e) => {
         e.stopPropagation();

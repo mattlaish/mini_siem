@@ -1,0 +1,153 @@
+{
+  "action_plane": {
+    "credential_ref": null,
+    "enabled": false,
+    "profiles": []
+  },
+  "alternative_same_host_port": 19406,
+  "auth": {
+    "audience": null,
+    "credential_ref": "secret://systemd/mini-siem-fixture-reader-token",
+    "issuer": null,
+    "principal_ref": "dashboard-mini-siem-fixture-reader",
+    "profile": "opaque_bearer",
+    "scopes": [
+      "dashboard:read:health",
+      "dashboard:read:capabilities",
+      "dashboard:read:alerts",
+      "dashboard:read:incidents",
+      "dashboard:read:assets",
+      "dashboard:read:health-observations"
+    ],
+    "tenant_selector": null
+  },
+  "base_path": "/api/integrations/dashboard/v1",
+  "contract": "operator-workspace.integration.v1",
+  "deployment_role": "PRODUCT_AUTHORITY",
+  "enabled": false,
+  "endpoints": {
+    "capabilities": "/api/integrations/dashboard/v1/capabilities",
+    "health": "/api/integrations/dashboard/v1/health",
+    "resources": [
+      {
+        "capability": "LIST_ALERTS",
+        "enabled": true,
+        "kind": "ALERT",
+        "path": "/api/integrations/dashboard/v1/alerts",
+        "poll_interval_seconds": 30,
+        "required": true,
+        "stream_semantics": "HISTORY",
+        "sync_modes": [
+          "SNAPSHOT",
+          "INCREMENTAL"
+        ]
+      },
+      {
+        "capability": "LIST_INCIDENTS",
+        "enabled": true,
+        "kind": "INCIDENT",
+        "path": "/api/integrations/dashboard/v1/incidents",
+        "poll_interval_seconds": 60,
+        "required": true,
+        "stream_semantics": "STATE",
+        "sync_modes": [
+          "SNAPSHOT",
+          "INCREMENTAL"
+        ]
+      },
+      {
+        "capability": "LIST_ASSETS",
+        "enabled": true,
+        "kind": "ASSET",
+        "path": "/api/integrations/dashboard/v1/assets",
+        "poll_interval_seconds": 300,
+        "required": true,
+        "stream_semantics": "STATE",
+        "sync_modes": [
+          "SNAPSHOT",
+          "INCREMENTAL"
+        ]
+      },
+      {
+        "capability": "HEALTH",
+        "enabled": true,
+        "kind": "HEALTH",
+        "path": "/api/integrations/dashboard/v1/health-observations",
+        "poll_interval_seconds": 60,
+        "required": true,
+        "stream_semantics": "STATE",
+        "sync_modes": [
+          "SNAPSHOT",
+          "INCREMENTAL"
+        ]
+      },
+      {
+        "capability": "LIST_EVENTS",
+        "enabled": false,
+        "kind": "EVENT",
+        "path": "/api/integrations/dashboard/v1/events",
+        "poll_interval_seconds": 30,
+        "required": false,
+        "stream_semantics": "HISTORY",
+        "sync_modes": []
+      },
+      {
+        "capability": "LIST_AUDIT_EVENTS",
+        "enabled": false,
+        "kind": "AUDIT_EVENT",
+        "path": "/api/integrations/dashboard/v1/audit-events",
+        "poll_interval_seconds": 60,
+        "required": false,
+        "stream_semantics": "HISTORY",
+        "sync_modes": []
+      },
+      {
+        "capability": "LIST_ACTIONS",
+        "enabled": false,
+        "kind": "ACTION_STATUS",
+        "path": "/api/integrations/dashboard/v1/action-status",
+        "poll_interval_seconds": 30,
+        "required": false,
+        "stream_semantics": "STATE",
+        "sync_modes": []
+      }
+    ]
+  },
+  "evidence": {
+    "artifact_sha256": null,
+    "qualified_at": null,
+    "source_version": "mini-siem-dashboard-connector-rebuild-2026-10-22",
+    "test_results_ref": "test-results.md"
+  },
+  "integration_instance_id": "dashboard-mini-siem-fixture-01",
+  "limits": {
+    "connect_timeout_seconds": 5,
+    "max_page_size": 500,
+    "max_response_bytes": 4194304,
+    "page_size": 100,
+    "read_timeout_seconds": 10,
+    "request_deadline_seconds": 30
+  },
+  "network_profile": "DEDICATED_HOST_443",
+  "origin": "https://mini-siem-fixture.invalid:443",
+  "product_slug": "mini-siem",
+  "qualification": "IMPLEMENTED_UNQUALIFIED",
+  "resolved_address_allowlist": [
+    "192.0.2.6"
+  ],
+  "schema_version": "1.0",
+  "source_instance_id": "mini-siem-fixture-01",
+  "source_product": "SIEM",
+  "status": "RETURNED_UNQUALIFIED",
+  "tenant_id": "tenant-fixture",
+  "tls": {
+    "client_certificate_ref": null,
+    "client_private_key_ref": null,
+    "minimum_version": "1.2",
+    "revocation_policy": "PLATFORM_MANAGED_REQUIRED",
+    "trust_bundle_ref": "secret://systemd/mini-siem-fixture-ca",
+    "verify_hostname": true,
+    "verify_peer": true
+  },
+  "ui_origin": null
+}

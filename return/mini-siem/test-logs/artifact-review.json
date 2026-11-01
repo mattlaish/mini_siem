@@ -1,0 +1,224 @@
+{
+  "full_regression_comparison": {
+    "baseline_counts": {
+      "errors": 0,
+      "failures": 47,
+      "passed": 323,
+      "skipped": 3,
+      "tests": 373
+    },
+    "baseline_failed_tests": [
+      [
+        "tests.test_ai_openai_integration",
+        "test_ai_secret_master_is_outside_db_and_owner_only"
+      ],
+      [
+        "tests.test_ai_openai_integration",
+        "test_config_store_migrates_plaintext_key_and_audits_metadata_only"
+      ],
+      [
+        "tests.test_ai_openai_integration",
+        "test_config_store_new_key_never_writes_plaintext"
+      ],
+      [
+        "tests.test_ai_openai_integration",
+        "test_decrypt_missing_master_fails_without_creating_replacement"
+      ],
+      [
+        "tests.test_backup_restore_readiness",
+        "test_sqlite_online_backup_is_verified_private_unique_and_rotated"
+      ],
+      [
+        "tests.test_build_source_artifact",
+        "test_zip_non_entrypoint_preserves_regular_mode"
+      ],
+      [
+        "tests.test_dashboard_live_refresh",
+        "test_auto_refresh_polls_only_logs_and_stats_at_split_intervals"
+      ],
+      [
+        "tests.test_dashboard_live_refresh",
+        "test_background_refresh_is_non_overlapping_and_pauses_when_hidden"
+      ],
+      [
+        "tests.test_dashboard_live_refresh",
+        "test_timeline_is_on_demand_not_rebuilt_by_log_poll"
+      ],
+      [
+        "tests.test_evidence_archive_phase6",
+        "test_archive_move_evicts_only_verified_hot_copy_and_preserves_evidence_rollups"
+      ],
+      [
+        "tests.test_evidence_archive_phase6",
+        "test_phase6_removes_age_delete_configuration_and_freezes_ioc_architecture"
+      ],
+      [
+        "tests.test_ingest_performance",
+        "test_forwarder_enqueue_is_non_blocking_when_sender_is_slow"
+      ],
+      [
+        "tests.test_ingest_performance",
+        "test_log_and_fields_share_one_batched_transaction"
+      ],
+      [
+        "tests.test_ingest_performance",
+        "test_reindex_batches_deletes_and_inserts"
+      ],
+      [
+        "tests.test_ingest_performance",
+        "test_write_fields_uses_one_executemany_call"
+      ],
+      [
+        "tests.test_log_search_logic",
+        "test_field_or_preserves_duplicate_field_names"
+      ],
+      [
+        "tests.test_log_search_logic",
+        "test_host_and_destination_support_or"
+      ],
+      [
+        "tests.test_log_search_logic",
+        "test_message_text_and_field_filter_are_conjunctive"
+      ],
+      [
+        "tests.test_log_search_logic",
+        "test_negations_remain_conjunctive_in_or_mode"
+      ],
+      [
+        "tests.test_log_search_logic",
+        "test_source_or_is_scoped_to_source_and_other_filters_stay_and"
+      ],
+      [
+        "tests.test_performance_phase3",
+        "test_dashboard_log_refresh_uses_incremental_dom_and_event_delegation"
+      ],
+      [
+        "tests.test_performance_phase3",
+        "test_per_event_stdout_is_off_by_default"
+      ],
+      [
+        "tests.test_performance_phase4",
+        "test_alert_counter_uses_runtime_rollup"
+      ],
+      [
+        "tests.test_performance_phase4",
+        "test_dashboard_uses_incremental_cursor_and_timeline_virtualization"
+      ],
+      [
+        "tests.test_performance_phase4",
+        "test_db_writer_microbatches_and_rollups_are_transactional"
+      ],
+      [
+        "tests.test_performance_phase4",
+        "test_db_writer_shutdown_flushes_partial_tail_without_waiting_full_delay"
+      ],
+      [
+        "tests.test_performance_phase4",
+        "test_phase4_schema_has_cursor_and_rollup_indexes"
+      ],
+      [
+        "tests.test_performance_phase4",
+        "test_post_processing_never_runs_before_log_id_is_persisted"
+      ],
+      [
+        "tests.test_performance_phase4",
+        "test_received_at_id_cursor_is_stable_across_equal_timestamps"
+      ],
+      [
+        "tests.test_performance_phase4",
+        "test_recent_rollup_counts_are_exact_across_partial_boundary_hours"
+      ],
+      [
+        "tests.test_performance_phase5",
+        "test_dashboard_exposes_phase5_health_query_and_archive_status"
+      ],
+      [
+        "tests.test_performance_phase5",
+        "test_domain_suffix_lookup_matches_subdomains_but_not_bare_tld"
+      ],
+      [
+        "tests.test_performance_phase5",
+        "test_fresh_sqlite_uses_incremental_auto_vacuum_without_full_vacuum"
+      ],
+      [
+        "tests.test_performance_phase5",
+        "test_nested_phase5_config_merges_with_defaults"
+      ],
+      [
+        "tests.test_postgres_backup_restore",
+        "test_manifest_helpers_are_checksum_and_atomic_json"
+      ],
+      [
+        "tests.test_postgres_bootstrap_preflight",
+        "test_resume_secret_payload_is_stable_and_root_only"
+      ],
+      [
+        "tests.test_syslog_troubleshoot",
+        "test_helper_capture_reports_header_only_packet_summary"
+      ],
+      [
+        "tests.test_text_search_backend",
+        "test_postgres_auto_falls_back_to_ilike_without_indexes"
+      ],
+      [
+        "tests.test_text_search_backend",
+        "test_postgres_auto_prefers_indexed_fts"
+      ],
+      [
+        "tests.test_text_search_backend",
+        "test_postgres_fts_sql_keeps_other_filters_conjunctive"
+      ],
+      [
+        "tests.test_text_search_backend",
+        "test_postgres_optional_search_ddl_is_once_per_process_and_uses_persisted_mode"
+      ],
+      [
+        "tests.test_text_search_backend",
+        "test_postgres_search_ddl_respects_selected_mode"
+      ],
+      [
+        "tests.test_text_search_backend",
+        "test_postgres_trigram_uses_ilike_contains_semantics"
+      ],
+      [
+        "tests.test_text_search_backend",
+        "test_text_search_environment_override"
+      ],
+      [
+        "tests.test_timeline_dialog_structure",
+        "test_timeline_desktop_and_mobile_sizing_and_horizontal_scrolling"
+      ],
+      [
+        "tests.test_timeline_dialog_structure",
+        "test_timeline_event_can_locate_log_outside_current_page"
+      ],
+      [
+        "tests.test_timeline_dialog_structure",
+        "test_timeline_uses_native_dialog_not_custom_overlay"
+      ]
+    ],
+    "baseline_report_sha256": "cb6fd30239b77c8ff6fc10de84e9f84e54a7cd19a2d11809c079766c61ebc8b5",
+    "current_counts": {
+      "errors": 0,
+      "failures": 47,
+      "passed": 339,
+      "skipped": 3,
+      "tests": 389
+    },
+    "new_failed_tests": [],
+    "resolved_failed_tests": []
+  },
+  "high_confidence_secret_hits": [],
+  "not_a_production_qualification": true,
+  "python_syntax_checked": 156,
+  "reviewed_expanded_bytes": 3280535,
+  "reviewed_members": 504,
+  "runtime_config_included": false,
+  "secret_scan_scope": [
+    "private_key_material",
+    "opaque_reader_token",
+    "openai_key_shape"
+  ],
+  "source_files_matched": 393,
+  "status": "PASS"
+}

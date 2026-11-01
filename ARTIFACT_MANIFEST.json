@@ -1,49 +1,65 @@
 {
-  "artifact": "mini_siem-local-operator-language-2026-10-18",
-  "artifact_kind": "Local source manifest; no archive created",
-  "generated_at_utc": "2026-10-18T15:48:37.9350499+00:00",
-  "parent": "artifact-manifest-sha256:c0f1aba29e0094c1dd4b49e85f855495c1de47b78baa91a54d8cd06d4ae78378",
-  "status": "IMPLEMENTED_TESTING_DEFERRED",
+  "artifact": "mini_siem-local-connector-recovery-2026-10-28",
+  "artifact_kind": "Current local merged source; historical return ZIP separately restored unchanged",
+  "generated_at_utc": "2026-10-28T13:51:29.133715+00:00",
+  "parent": "artifact-manifest-sha256:3e13e2dc14ab6fd29cfff4ea8b415b9cab4c255d10c87e940c4a646ae185cfeb",
+  "status": "RECOVERED_LOCALLY_VALIDATED_LIVE_QUALIFICATION_PENDING",
   "scope": [
-    "Operator language, task-focused help and small usability improvements; existing backend behavior retained"
+    "Recover actual Dashboard connector source, schemas, tests, owner token CLI and package tools",
+    "Selective schema/auth/blueprint/privilege integration preserving October 27 security and workflow fixes",
+    "Restore exact historical October 22 return artifact; not a new current-source delivery"
   ],
   "validation": {
-    "source_target": "C:\\Users\\mattlai\\Projects\\mini_siem",
+    "source_root": "C:\\Users\\mattlai\\Projects\\mini_siem",
     "baseline": {
-      "passed": 306,
+      "passed": 446,
       "failed": 47,
       "skipped": 3
     },
-    "updated": {
-      "passed": 323,
+    "final": {
+      "passed": 479,
       "failed": 47,
       "skipped": 3
     },
-    "new_failing_tests": [],
-    "product_language_tests": {
-      "passed": 17,
-      "failed": 0
+    "focused": {
+      "passed": 123,
+      "failed": 0,
+      "skipped": 0
     },
-    "python_syntax_files": 145,
-    "javascript_syntax_files": 5,
-    "rendered_inline_js_blocks": 7,
-    "rendered_authenticated_routes": 11,
-    "existing_template_control_ids": "PRESERVED",
-    "explicit_select_values": "PRESERVED",
-    "placeholder_truth": "PASS",
-    "browser": "Synthetic localhost QA: weekday draft/save, sample summary, Sophos fields, AI-off setup, readable labels; no captured errors",
-    "excluded": [
-      "tests/test_systemd_host_qualification.py: Windows lacks pwd"
-    ],
-    "not_run": [
-      "live PostgreSQL",
-      "real provider/NXLog/network delivery",
-      "production browser qualification"
-    ],
-    "git_operations": "NONE"
+    "new_failing_identities": [],
+    "python_syntax": 165,
+    "static_js_syntax": 5,
+    "rendered_routes": 11,
+    "inline_js_syntax": 7,
+    "placeholder_truth": "PLACEHOLDER TRUTH GATE: PASS\nreclassified executable/test paths: 39\nallowed incomplete examples: 1",
+    "credential_pattern_hits": [],
+    "unchanged_pre_merge_files": 377,
+    "live_pg_tls_provider_idp_nxlog_systemd": "NOT_RUN",
+    "git_operations": "NONE",
+    "production_state_changes": "NONE",
+    "dashboard_source_changes": "NONE"
   },
-  "manifest_hash_scope": "All listed safe source files except ARTIFACT_MANIFEST.json itself; credentials and binary archives excluded",
-  "file_count_excluding_manifest": 378,
+  "historical_archive": {
+    "path": "return/mini-siem-return-package.zip",
+    "bytes": 1063223,
+    "sha256": "b54d5041d30ba646b188a7a917d502aa6f674b4e25540007d1d456c84ae25c34",
+    "identity_scope": "October 22 included source only, NOT current application",
+    "revalidation": {
+      "pages": 21,
+      "records": 26,
+      "negative_pages": 6,
+      "catalog": {
+        "BLOCKED": 0,
+        "FAIL": 0,
+        "NOT_RUN": 11,
+        "PASS": 14
+      },
+      "live_qualification": "NOT_RUN",
+      "full_R3_G1": "PARTIAL"
+    }
+  },
+  "manifest_hash_scope": "Listed current safe application source/docs and seven return tools; excludes this manifest, historical source/fixtures/ZIP, credentials/runtime state and caches/Git",
+  "file_count_excluding_manifest": 405,
   "files": [
     {
       "path": ".github/workflows/test.yml",
@@ -67,8 +83,8 @@
     },
     {
       "path": "AI_HANDOFF.md",
-      "size": 16782,
-      "sha256": "626a3142eecb6e99844f6876a8c1572ec9a7596d355ae0baa804ee760dc885aa"
+      "size": 30338,
+      "sha256": "61b5670ae4ee6f5a6c75b82379e318322b5f16b9b37af88ae1b087e96ee81a38"
     },
     {
       "path": "AI_HANDOVER.md",
@@ -82,8 +98,8 @@
     },
     {
       "path": "ai_soc.py",
-      "size": 61203,
-      "sha256": "2e1b6174257b47074d7dfb0d8cea3008d981dae31a5ddc8a91d7dd088c3ccde1"
+      "size": 61430,
+      "sha256": "62674a96f6dd423f97f2a626ac4a60e8ce040a4d0864fab209f527a2af70e37e"
     },
     {
       "path": "ai_usage.py",
@@ -127,8 +143,8 @@
     },
     {
       "path": "api_poller.py",
-      "size": 12476,
-      "sha256": "164aa0be2b6c35602a11741a387754be3c29d43d9cee5e4f239c525b939f3864"
+      "size": 15857,
+      "sha256": "d20c3dc8c44dd49645a67a666b62619ad765013e17cbd738396f4971cfda5724"
     },
     {
       "path": "archive.py",
@@ -137,8 +153,8 @@
     },
     {
       "path": "auth.py",
-      "size": 14057,
-      "sha256": "3c49b6467fc996f7e384afe6298de6a4db184c456075e244404a4eeab619edeb"
+      "size": 17969,
+      "sha256": "80b110f88b6656040a54a0192c4b31cb84f480fa532db1ae8cb5bbf04d127b35"
     },
     {
       "path": "backup_restore.py",
@@ -162,8 +178,8 @@
     },
     {
       "path": "dashboard.py",
-      "size": 130401,
-      "sha256": "ee54957aa78c5ec927862a2c4416262b384a2ccf293383e875b37b5b1ff1e298"
+      "size": 139681,
+      "sha256": "437e53fc5cf2086f9c2b87d84ff06ab3c7b43861e74d3e3e85e0eadbfd55eb49"
     },
     {
       "path": "db-config.example.json",
@@ -177,8 +193,8 @@
     },
     {
       "path": "db.py",
-      "size": 56523,
-      "sha256": "5a1a84afc28d499b0be56f8cdd5910b83a6d2c97d2c659024d68742048099275"
+      "size": 59245,
+      "sha256": "92a2fbe7acf742d0e10cfe1fda6dea2cdc2bbd6f4b30ed623c5506dd1db2ee1f"
     },
     {
       "path": "DEPLOYMENT.md",
@@ -592,8 +608,8 @@
     },
     {
       "path": "integrations/sophos_poller_bundle/INTEGRATION.md",
-      "size": 6044,
-      "sha256": "733680f64e2c893251684b083714e885f4830667ba76df7e2156ec4a8f35c368"
+      "size": 6655,
+      "sha256": "ae6bc1da6a281dab47b402b358c4e0c534d9816c8d2e12efa52d4597a342dd8b"
     },
     {
       "path": "integrations/sophos_poller_bundle/schema.postgresql.sql",
@@ -767,8 +783,8 @@
     },
     {
       "path": "patch.md",
-      "size": 39473,
-      "sha256": "61220b37809250779816646ffc9ec83c0964106378ca01c9203bb26a9ea26708"
+      "size": 46317,
+      "sha256": "8c82392052e5bd75cb10b57929b3b5da7418bdc9463017936f45e5798c16125b"
     },
     {
       "path": "performance_runtime_v2/benchmark_runner.py",
@@ -977,8 +993,8 @@
     },
     {
       "path": "README.md",
-      "size": 50119,
-      "sha256": "edc390550add2d70ac497d28ac7bfaa0218770fd4333507a2065157d28dc15dd"
+      "size": 52005,
+      "sha256": "3eff0ff3fe2489828d203f8dff9b39fa0ba88f6011932ddc577aed82aec62f37"
     },
     {
       "path": "RELEASE_BASELINE_STATUS.md",
@@ -1072,8 +1088,8 @@
     },
     {
       "path": "requirements-dev.txt",
-      "size": 37,
-      "sha256": "62cc9560e23208ea92bf1665c48e381b29b03dd69e89a88e8a1978dd3953767d"
+      "size": 58,
+      "sha256": "33f85a816c5db7154c5b40b688af686906ac252f97807e6f1a78198ae9f40036"
     },
     {
       "path": "requirements.txt",
@@ -1122,8 +1138,8 @@
     },
     {
       "path": "rules.py",
-      "size": 11990,
-      "sha256": "79af4805e2769adf49be81eaafe5fe5d04982e4affe2561eda3b20eb6038fb08"
+      "size": 14599,
+      "sha256": "748c9ac206c0506816d6b15f854f03e087a87db566a2dc6e5fa45e55584dc188"
     },
     {
       "path": "RUNTIME_HEALTH_HANDOFF.md",
@@ -1307,23 +1323,23 @@
     },
     {
       "path": "static/ai_usage.js",
-      "size": 2921,
-      "sha256": "8635f6cf10b5a84386743a3948712b8599702edcdd9d77e3cd59beeffdabe11f"
+      "size": 3149,
+      "sha256": "9316d6954753399df60335d52ce6878d81427d0f74babc4ff264d1abfceed9c9"
     },
     {
       "path": "static/alerts.js",
-      "size": 12211,
-      "sha256": "bd0375b42ae59739802bc6a4857eccfa7a3a903b368548d5085db41cb6dd7fce"
+      "size": 17197,
+      "sha256": "1c15f9c18c0776722114b9e035791d5ccdd2032ee18a446d8baab6f3aaded153"
     },
     {
       "path": "static/app.css",
-      "size": 14037,
-      "sha256": "791591f8b46d92363c597c80b49f87f8008d14e11baa936e0272048799fb1caf"
+      "size": 14768,
+      "sha256": "4621608f79484274f1b5e15879852703422aa3bb2b925e030540ff8aa9551ca0"
     },
     {
       "path": "static/app.js",
-      "size": 13993,
-      "sha256": "5a4587e1a1d8d4192d57089d45efc85b73daaef412fd84aa21ab1ad2d857a275"
+      "size": 25792,
+      "sha256": "fa56eeb032f3a842773ed06a9309e96f675ca0ddf182760fffaf44711c869b26"
     },
     {
       "path": "static/csrf.js",
@@ -1332,8 +1348,8 @@
     },
     {
       "path": "static/detection.js",
-      "size": 17724,
-      "sha256": "992750edc0ff04f6e729e5b859ef8af746387b9ef169b363d7197f442f49a0db"
+      "size": 25676,
+      "sha256": "71fa000486706b75abbfc4a6edd1ca8830be23dc7eead876d69cb4430d976e72"
     },
     {
       "path": "SYSLOG-RELAY.md",
@@ -1347,23 +1363,23 @@
     },
     {
       "path": "templates/ai.html",
-      "size": 25441,
-      "sha256": "2b0c9ced0887de2e4ad1a323def66a9232b2845b2aa1497a6eabd8d72c857db0"
+      "size": 26805,
+      "sha256": "893205b4c5a603614b3c8844d6796d4eb9149c5718def504cb3a4fdac05b08c2"
     },
     {
       "path": "templates/alerts.html",
-      "size": 5264,
-      "sha256": "7b51708a75967e12e17da4e5e215b7a27929b64eb25f7d54daf1741436df6d58"
+      "size": 6437,
+      "sha256": "d265ffb589426bf15980210334950bfeeadc48bc9a0c80189927304bef0bade7"
     },
     {
       "path": "templates/audit.html",
-      "size": 5165,
-      "sha256": "2c24ad6bac447c3a3daf8702d1fd69b82cc2bbebdb16a3d83249f4c9a128668c"
+      "size": 5324,
+      "sha256": "c130ddf986dde71e503614efdac61096787562c79ea32ad8c962085df9c5fda8"
     },
     {
       "path": "templates/base.html",
-      "size": 2906,
-      "sha256": "078e9837daf8cba60b94ba9a4d762bab3870676df4891df04a5c098eea820e2e"
+      "size": 3054,
+      "sha256": "a8bdf0cae183cd0486678fc59084792fef6959b221d66182741fb54a2572c7f4"
     },
     {
       "path": "templates/change_password.html",
@@ -1372,18 +1388,18 @@
     },
     {
       "path": "templates/correlate.html",
-      "size": 22052,
-      "sha256": "4b617f752cc474409b8d8bee36cae6a292c0cca06df7575ce1d8a07cd2842ec7"
+      "size": 22871,
+      "sha256": "27b8c81ec7a3ce8b8918c61f0636552c7d04881131f81768eed16600a50a3e83"
     },
     {
       "path": "templates/detection.html",
-      "size": 7854,
-      "sha256": "56b40ccd00ec77abd2f944cd384646b4573393f973dcc1b06c11aa7201b9de25"
+      "size": 8106,
+      "sha256": "a128cebbd11a5f603e6c1ca31df4ed9c43e77799893923628647072a95f0849f"
     },
     {
       "path": "templates/health.html",
-      "size": 21281,
-      "sha256": "a520f33d4bab57a6bc39146468b083465918784b43665ac23e9674fc8ed0020b"
+      "size": 22677,
+      "sha256": "be698c6c417e77ea4e0126360b2445ae6152fb0b6987b58aa49dc23b7b4fde4c"
     },
     {
       "path": "templates/help.html",
@@ -1392,8 +1408,8 @@
     },
     {
       "path": "templates/index.html",
-      "size": 56825,
-      "sha256": "e8a2df3890c020a6a4f9bace43e91e9b19c4c3f02f8b2755674de4414c753aa2"
+      "size": 64704,
+      "sha256": "c2f05e527c79a6e75ee3b27030442ee5514c2560bc9f36ba3dee25a31808208a"
     },
     {
       "path": "templates/login.html",
@@ -1402,13 +1418,13 @@
     },
     {
       "path": "templates/setup.html",
-      "size": 76054,
-      "sha256": "cb79a8b9745668c4ce72c98ba0f39c10032a93390f19e368c214263b8d947e1a"
+      "size": 91078,
+      "sha256": "3f777deb0d96723040c6ecd3e9aa5aa1f0c6c3b5abc965b2201beaeff4822a4f"
     },
     {
       "path": "templates/threatintel.html",
-      "size": 18356,
-      "sha256": "7a7740b2a263996459bfab65a61c78fd93c89165a75352ba823b6a3dba3404ca"
+      "size": 20592,
+      "sha256": "d7860fc513c0b399cdb3c02c19c537c488f07e3c4b5312637d8990c301599ee8"
     },
     {
       "path": "TEST_STATUS_RECONCILIATION.md",
@@ -1457,8 +1473,8 @@
     },
     {
       "path": "tests/test_ai_openai_integration.py",
-      "size": 22100,
-      "sha256": "3bbb2073cda61b4e8e23cade5f01926aaca933ef7bdeec346b1fc55088d429e5"
+      "size": 22462,
+      "sha256": "7a053aef7f2b6e89b5d2193661ee9721ff87181fb929a15995009d68d9f98cbf"
     },
     {
       "path": "tests/test_alert_lifecycle.py",
@@ -1497,13 +1513,13 @@
     },
     {
       "path": "tests/test_detection_hardening.py",
-      "size": 17483,
-      "sha256": "bb32f06f209c35a3be0a8944debdddbd963af14b18234afd461d803a1b01e0db"
+      "size": 17353,
+      "sha256": "1be2d40610078ed2b8c248938aff090c6c74eb168f16834bf96965fe1e8b43ac"
     },
     {
       "path": "tests/test_detection_management.py",
-      "size": 18102,
-      "sha256": "4b549275439586f486dd3e7d2e5cf29c11d72b50b4f431f90fd8ed41ca270ef0"
+      "size": 18059,
+      "sha256": "815794fd8ac2b31a112195e2daf767ce08cea77d4152ca6ca3ac3dfb0ed07da4"
     },
     {
       "path": "tests/test_event_storage_v2.py",
@@ -1632,8 +1648,8 @@
     },
     {
       "path": "tests/test_product_language.py",
-      "size": 6409,
-      "sha256": "46ba0db34093e7acbb822d8014bdfb6529c46964c97e910cba1038dbe8e8816e"
+      "size": 6492,
+      "sha256": "1ae819f05505498d27456b455597110d17316d3ccc08bdee32e96b1d4f58d8fa"
     },
     {
       "path": "tests/test_release_gate.py",
@@ -1662,8 +1678,8 @@
     },
     {
       "path": "tests/test_syslog_troubleshoot.py",
-      "size": 3227,
-      "sha256": "9ffbe8797e508816fc79a565bcc244346371d8fc2dd57f7c08e9feb64e951b14"
+      "size": 3378,
+      "sha256": "0399f48dfdd1dd754fae066fa999ffbfd891e437215b3175a484bfd17b54977c"
     },
     {
       "path": "tests/test_systemd_host_qualification.py",
@@ -1687,8 +1703,8 @@
     },
     {
       "path": "tests/test_ux_improvements.py",
-      "size": 6884,
-      "sha256": "57a5c2aa3d4d918a8db0c0ac30d6972c554b8c6a8d3ee33846f9a4d628590793"
+      "size": 6855,
+      "sha256": "593ba3e106398f88c42f537b86eb61fd40c5f4a1b067ff5a370a7bea950801e0"
     },
     {
       "path": "tests/test_warning_ai_context.py",
@@ -1727,8 +1743,8 @@
     },
     {
       "path": "tools/check_placeholder_truth.py",
-      "size": 4088,
-      "sha256": "0d359c4903dcc4883a046b27a77f1dd7e8ee4bc16080c8578ee0a08242a81557"
+      "size": 4441,
+      "sha256": "01bd8cacea0fd39b3c6cff374b58b2113c7dfbfa77373514a04f1a4da032ad66"
     },
     {
       "path": "tools/fresh_install_state.py",
@@ -1777,8 +1793,8 @@
     },
     {
       "path": "tools/postgres_privilege_boundary.py",
-      "size": 31926,
-      "sha256": "836dcf5225f666b26c9c905de6bf2548c243b13aeff5f2b0f3bdfe481a3629d1"
+      "size": 33881,
+      "sha256": "11a2534e28839525b50886f9838aa4ce546cb9956268f545efc61892c2bf19c0"
     },
     {
       "path": "tools/postgres_privilege_check.py",
@@ -1817,8 +1833,8 @@
     },
     {
       "path": "UX_REVIEW.md",
-      "size": 6998,
-      "sha256": "136b40d9369ef1872d011e10a8450c6a2dc949e4a3d0e167b957ef52f9636b9e"
+      "size": 7196,
+      "sha256": "8d1eb90cd6f18aa041108bfbb101dec38bb1b2b90b11366f4fb91caf30eff3a8"
     },
     {
       "path": "validation_completion/DATABASE_RBAC_VALIDATION.md",
@@ -1847,8 +1863,8 @@
     },
     {
       "path": "web_blueprints/ai.py",
-      "size": 11976,
-      "sha256": "e04cbd0f222c2ccbaea1178150f1027503618d7d211b1f1796aa84738ec96b47"
+      "size": 13725,
+      "sha256": "526fdd9bed82a8d7cb51e9acb7d0422bcce752fc9c9c3607afab37379e81682c"
     },
     {
       "path": "web_blueprints/db_health.py",
@@ -1857,28 +1873,28 @@
     },
     {
       "path": "web_blueprints/detection.py",
-      "size": 7048,
-      "sha256": "65fecac98337821dbd279339f5137de70f0855999a737b6f5e0076021aadf869"
+      "size": 9449,
+      "sha256": "fa0c878600ac4986e4c19b0a7aa8fa961e9fe494203f790b1edb4dddcccec19a"
     },
     {
       "path": "web_blueprints/ioc_feeds.py",
-      "size": 3157,
-      "sha256": "ce776445d4e07ef7e20dfe77708cfaae9e43535a85b269d272563a7db78f6d00"
+      "size": 3375,
+      "sha256": "e4e1e0f4fbe20c4d32dd5bb65868dd99ba55518f7f508dc942eaaf3cef8f9c1a"
     },
     {
       "path": "web_blueprints/reports.py",
-      "size": 1833,
-      "sha256": "2cf6f9d7fde52b0266778740834d0caaaf206d9c1239b84fbe9d35d90428b88c"
+      "size": 1979,
+      "sha256": "3d6e664ab0e4bfddae253339aefff9ed85288b319e8503619af4000f05c4ddc2"
     },
     {
       "path": "web_blueprints/tickets.py",
-      "size": 2349,
-      "sha256": "e6b9d3ef34467f67e075d1bd5c7bdeb6a96f4b36e812309ec9a4a952215123c3"
+      "size": 2421,
+      "sha256": "10591ce60065d73cfd7bf35054a50868b79da9eada1993f7a7e1c9130ee4277f"
     },
     {
       "path": "web_blueprints/users.py",
-      "size": 2974,
-      "sha256": "7498ab088bc0a3728e9d447eb8420b4740dcfdc0b143862b4cb9123cbd18a38f"
+      "size": 3064,
+      "sha256": "3672216dc82a4da9de42b080048a678bd975b0bd34f13d2db9d795930f2b47c1"
     },
     {
       "path": "wef/nxlog.conf",
@@ -1932,8 +1948,143 @@
     },
     {
       "path": "workers.py",
-      "size": 21772,
-      "sha256": "22d46aad0463a67191db8dcc597d56575810ef30be93b2db322ecfad8735a9a4"
+      "size": 21793,
+      "sha256": "6ea3ad895438393bd67d291e2cd7383217f3a43af9268546c6d2b6494fc2a9c5"
+    },
+    {
+      "path": "RECOVERY_2026-10-27.md",
+      "size": 5993,
+      "sha256": "f14b45c9cf840600dd340b548c2c3e2e2c058bf0b6d4da81ca74d9bbb0ba8398"
+    },
+    {
+      "path": "SECURITY_HARDENING.md",
+      "size": 7065,
+      "sha256": "f62eeec69bb8b52b30721a3e307ca3f550befad90db3043e8b274e98ed51e73b"
+    },
+    {
+      "path": "outbound.py",
+      "size": 8382,
+      "sha256": "8dedbd2ff3ff44a34f147468562687ca998f4b553f74a9bdc0057ca0b6ae4eb7"
+    },
+    {
+      "path": "tests/session_helpers.py",
+      "size": 1304,
+      "sha256": "160a40bc2e2ee368bbbc9729c314a21b4faedb36d1447d669d9d2f781cac2fb0"
+    },
+    {
+      "path": "tests/test_guided_setup_and_roles.py",
+      "size": 13343,
+      "sha256": "51d3155f118b7850721fd5139be382446bd60253479f3b154d8374fdb98f84a6"
+    },
+    {
+      "path": "tests/test_security_exposure.py",
+      "size": 14189,
+      "sha256": "b359d61c8acb3e8af224c4ee425e03a7c78e1a68a24be195e124dd52afe360af"
+    },
+    {
+      "path": "tests/test_security_ui_runtime.py",
+      "size": 3791,
+      "sha256": "896433b857e2bf4848755efb8b50354d9dbb5383fd57f6e981c34853c26d6865"
+    },
+    {
+      "path": "tests/test_triage_and_near_miss.py",
+      "size": 11079,
+      "sha256": "3210e5ecb5df29cc3ec8b88099ad106bf795ebf1f1b11178a2b49e037edf1e2f"
+    },
+    {
+      "path": "tests/test_workflow_recovery.py",
+      "size": 6574,
+      "sha256": "a6168344dd526b947de8631df7a42cdb0099242609d906f6918b39a1ac209da8"
+    },
+    {
+      "path": "tests/test_workflow_ui_runtime.py",
+      "size": 8536,
+      "sha256": "4e9fc18add6901a6561c4335683ee16ffb7fc8dce076635a559ea02cd04ff1b7"
+    },
+    {
+      "path": "RECOVERY_2026-10-28.md",
+      "size": 7085,
+      "sha256": "0b6292fcfb2301765b1e2c552a96196ddf79f24b3df8d8ed8be3157dcf9dd0bf"
+    },
+    {
+      "path": "dashboard_connector.py",
+      "size": 34487,
+      "sha256": "5617d0189ad001cad560b06b9beadd9f4bc96c4ad2b6bf0e2c2163d70db2571b"
+    },
+    {
+      "path": "return/README.md",
+      "size": 1678,
+      "sha256": "ca23a7482cc5e1f7566b7336245524a4e8eb7809985ddbc91a15ea58483c2a8f"
+    },
+    {
+      "path": "return/mini-siem/tools/build_return_package.py",
+      "size": 9334,
+      "sha256": "507960167d290aa05042a040f61b56336511003cf39a724d2d02d0df5783be13"
+    },
+    {
+      "path": "return/mini-siem/tools/generate_fixture_bundle.py",
+      "size": 34967,
+      "sha256": "98b9c8df19e27fd1a43ec8300ca2d2bbbe48b439d1439d56f7800bcc5d4f7cab"
+    },
+    {
+      "path": "return/mini-siem/tools/review_payload.py",
+      "size": 3990,
+      "sha256": "43deae5678f147d791a2b5856b1fac6412198ed0097c39d67cfa5ccf27dcff28"
+    },
+    {
+      "path": "return/mini-siem/tools/run_full_regression.py",
+      "size": 2519,
+      "sha256": "f28d2251564131851c40d7677e5694772778130d464515f9cf200ca48d870255"
+    },
+    {
+      "path": "return/mini-siem/tools/run_offline_checks.py",
+      "size": 5762,
+      "sha256": "81f5d2bf4ff4e37718f2da1b9af4be11226cda7e40067b08904c5a9521677581"
+    },
+    {
+      "path": "return/mini-siem/tools/validate_return.py",
+      "size": 13321,
+      "sha256": "399a9f6e0fc1ccae427c367e2cf67c8c243784061fca3de326bb923ea743b36d"
+    },
+    {
+      "path": "return/mini-siem/tools/verify_positive_sequences.py",
+      "size": 2959,
+      "sha256": "afbf7f689a90e913375e35b1f6f902f4796faff1143a3192586d45b73ecf5024"
+    },
+    {
+      "path": "schemas/operator_workspace/control.schema.json",
+      "size": 9017,
+      "sha256": "d268b6cec3327f45aefc701ff007baa2f673e5356b68e0e287b8620a319cd371"
+    },
+    {
+      "path": "schemas/operator_workspace/page.schema.json",
+      "size": 62171,
+      "sha256": "86604d617c2b171ac52fee46f9b10aaa547a05a1cc2d8c6a7d55bb258d3a5709"
+    },
+    {
+      "path": "schemas/operator_workspace/resource-manifest.json",
+      "size": 2136,
+      "sha256": "83f9850f9d4da75008b9a462087c519a2ef36703d7e546a8770db132bb3d75c3"
+    },
+    {
+      "path": "tests/test_dashboard_connector.py",
+      "size": 9884,
+      "sha256": "ccba0990b5ae934c3d2fdf51d2feacb25ff4785ae54a7e6cb100b2eb84234d6c"
+    },
+    {
+      "path": "tests/test_dashboard_connector_recovery.py",
+      "size": 7787,
+      "sha256": "620d2e4840472e106baaa434647d74475143dfd2bd1b4d968aca2816d4dd6d96"
+    },
+    {
+      "path": "tests/test_dashboard_return_package.py",
+      "size": 4392,
+      "sha256": "296e6a5202b3739897dba9db1e59170dab6c1df5698fcd0618004a5856a64c43"
+    },
+    {
+      "path": "tools/manage_dashboard_reader_token.py",
+      "size": 3205,
+      "sha256": "c75b54548d36f98ae6bca0fd9624d539445d30eaded872e878dbe00d775cde11"
     }
   ]
 }

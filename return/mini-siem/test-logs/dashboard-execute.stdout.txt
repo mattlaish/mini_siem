@@ -1,0 +1,16 @@
+{
+  "binding_sha256": "d363deaeaa24c755a7693d8208e5afa695ef68e54c5e548bea5a1d60e21855eb",
+  "bundle_sha256": "1c3a983ff31a0c96fd98bb195f86db47bed9cf3dec65a3a246f6679c2d97b57e",
+  "capabilities_checked": 7,
+  "complete_return_acceptance": "NOT_RUN",
+  "health_state": "READY",
+  "mode": "execute",
+  "negative_pages_checked": 6,
+  "network_io": false,
+  "pages_checked": 21,
+  "production_registration": false,
+  "records_checked": 26,
+  "resources_checked": 21,
+  "scope": "OFFLINE_FIXTURE_ONLY",
+  "status": "PASS"
+}

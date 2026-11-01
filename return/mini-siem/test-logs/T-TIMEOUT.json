@@ -1,0 +1,8 @@
+{
+  "actual_result": "NOT_RUN",
+  "case_id": "T-TIMEOUT",
+  "executed": false,
+  "fabricated_result": false,
+  "preflight": "offline Flask fixture has no network cancellation boundary",
+  "required_environment": "deployed HTTP client/server deadline and cancellation path"
+}

@@ -1,0 +1,184 @@
+{
+  "contract": "operator-workspace.integration.v1",
+  "coverage": {
+    "reason_codes": [],
+    "state": "COMPLETE"
+  },
+  "generated_at": "2026-10-22T02:10:53Z",
+  "has_more": true,
+  "next_cursor": "eyJjaGVja3BvaW50Ijo3LCJleHAiOjE3OTI3MjE0NTMsImxhbmUiOiJpbmNpZGVudHMiLCJtb2RlIjoic25hcHNob3QiLCJwb3MiOjIsInByaW5jaXBhbCI6ImZpeHR1cmUtcmVhZGVyIiwic2NoZW1hIjoiMS4wIiwic25hcHNob3QiOiJzbmFwc2hvdC1iMmI1NDNiYTk3NzQ0NTQ1OGM2ODU4NmFkODVhNTcyOSIsInNvdXJjZSI6Im1pbmktc2llbS1maXh0dXJlLTAxIiwidGVuYW50IjoidGVuYW50LWZpeHR1cmUiLCJ2aXNpYmlsaXR5IjoiOTgwNjZmYjY3Yjk0NGRkYzYwOTAwN2FkNGRjMzg0YTBkYzFjMTI3MDlmZmNiNTkwZjY4ZWVlOGQyYzZiM2ZmNiJ9m2dqNOAZYRGTvEbHHCbF57p9Z2Z86WcqNuGZl7_cJrA",
+  "records": [
+    {
+      "external_id": "incident-alert-1",
+      "operation": "UPSERT",
+      "payload": {
+        "attention": {
+          "code": "SIEM.CORRELATED_SECURITY_ALERT",
+          "confidence": 0.8,
+          "reason_codes": [
+            "SIEM_RULE_MATCH"
+          ],
+          "recommended_action_codes": [],
+          "severity": "HIGH",
+          "status": "ACKNOWLEDGED"
+        },
+        "closed_at": null,
+        "entity_refs": [
+          {
+            "confidence": 0.8,
+            "network_namespace": "tenant-fixture/default",
+            "observed_at": "2026-09-01T00:00:00Z",
+            "ref": {
+              "external_id": "observed-asset-f5f92e61dbba7bc9fd13f6f1",
+              "resource_kind": "ASSET",
+              "source_instance_id": "mini-siem-fixture-01",
+              "source_product": "SIEM"
+            },
+            "role": "SUBJECT",
+            "valid_until": null
+          }
+        ],
+        "member_refs": [
+          {
+            "external_id": "alert-1",
+            "resource_kind": "ALERT",
+            "source_instance_id": "mini-siem-fixture-01",
+            "source_product": "SIEM"
+          }
+        ],
+        "opened_at": "2026-09-01T00:00:00Z",
+        "severity": "HIGH",
+        "status": "OPEN",
+        "summary": "fixture-correlation-0 alert for 192.0.2.10",
+        "title": "fixture-correlation-0 alert for 192.0.2.10"
+      },
+      "provenance": {
+        "derived_from": [
+          {
+            "external_id": "alert-1",
+            "resource_kind": "ALERT",
+            "source_instance_id": "mini-siem-fixture-01",
+            "source_product": "SIEM"
+          }
+        ],
+        "detail_path": null,
+        "evidence_refs": [
+          {
+            "detail_path": null,
+            "kind": "OBSERVATION",
+            "ref": {
+              "external_id": "log-1",
+              "resource_kind": "EVENT",
+              "source_instance_id": "mini-siem-fixture-01",
+              "source_product": "SIEM"
+            },
+            "revision": "1",
+            "summary": "SIEM source event supporting this alert"
+          }
+        ],
+        "forwarded_by": [],
+        "origin": {
+          "external_id": "incident-alert-1",
+          "resource_kind": "INCIDENT",
+          "source_instance_id": "mini-siem-fixture-01",
+          "source_product": "SIEM"
+        },
+        "origin_event_id": "incident-alert-1",
+        "origin_revision": "1"
+      },
+      "revision": "1",
+      "source_observed_at": "2026-09-01T00:00:00Z",
+      "source_updated_at": "2026-10-22T02:10:53Z",
+      "stream_sequence": "1"
+    },
+    {
+      "external_id": "incident-alert-2",
+      "operation": "UPSERT",
+      "payload": {
+        "attention": {
+          "code": "SIEM.CORRELATED_SECURITY_ALERT",
+          "confidence": 0.8,
+          "reason_codes": [
+            "SIEM_RULE_MATCH"
+          ],
+          "recommended_action_codes": [],
+          "severity": "HIGH",
+          "status": "OPEN"
+        },
+        "closed_at": null,
+        "entity_refs": [
+          {
+            "confidence": 0.8,
+            "network_namespace": "tenant-fixture/default",
+            "observed_at": "2026-09-06T00:00:00Z",
+            "ref": {
+              "external_id": "observed-asset-3f36644e863e1003ae50d6cc",
+              "resource_kind": "ASSET",
+              "source_instance_id": "mini-siem-fixture-01",
+              "source_product": "SIEM"
+            },
+            "role": "SUBJECT",
+            "valid_until": null
+          }
+        ],
+        "member_refs": [
+          {
+            "external_id": "alert-2",
+            "resource_kind": "ALERT",
+            "source_instance_id": "mini-siem-fixture-01",
+            "source_product": "SIEM"
+          }
+        ],
+        "opened_at": "2026-09-06T00:00:00Z",
+        "severity": "HIGH",
+        "status": "OPEN",
+        "summary": "fixture-correlation-1 alert for 192.0.2.11",
+        "title": "fixture-correlation-1 alert for 192.0.2.11"
+      },
+      "provenance": {
+        "derived_from": [
+          {
+            "external_id": "alert-2",
+            "resource_kind": "ALERT",
+            "source_instance_id": "mini-siem-fixture-01",
+            "source_product": "SIEM"
+          }
+        ],
+        "detail_path": null,
+        "evidence_refs": [
+          {
+            "detail_path": null,
+            "kind": "OBSERVATION",
+            "ref": {
+              "external_id": "log-2",
+              "resource_kind": "EVENT",
+              "source_instance_id": "mini-siem-fixture-01",
+              "source_product": "SIEM"
+            },
+            "revision": "1",
+            "summary": "SIEM source event supporting this alert"
+          }
+        ],
+        "forwarded_by": [],
+        "origin": {
+          "external_id": "incident-alert-2",
+          "resource_kind": "INCIDENT",
+          "source_instance_id": "mini-siem-fixture-01",
+          "source_product": "SIEM"
+        },
+        "origin_event_id": "incident-alert-2",
+        "origin_revision": "1"
+      },
+      "revision": "1",
+      "source_observed_at": "2026-09-06T00:00:00Z",
+      "source_updated_at": "2026-09-06T00:00:00Z",
+      "stream_sequence": "2"
+    }
+  ],
+  "resource_kind": "INCIDENT",
+  "schema_version": "1.0",
+  "source_instance_id": "mini-siem-fixture-01",
+  "source_product": "SIEM",
+  "source_snapshot_id": "snapshot-b2b543ba977445458c68586ad85a5729",
+  "sync_mode": "SNAPSHOT"
+}

@@ -1,0 +1,33 @@
+{
+  "command": "python tools/generate_fixture_bundle.py --contract-root <OWI_PACKET_ROOT>",
+  "files": {
+    "/api/integrations/dashboard/v1/alerts": 6,
+    "/api/integrations/dashboard/v1/assets": 6,
+    "/api/integrations/dashboard/v1/capabilities": 1,
+    "/api/integrations/dashboard/v1/health": 1,
+    "/api/integrations/dashboard/v1/health-observations": 3,
+    "/api/integrations/dashboard/v1/incidents": 6
+  },
+  "generator": "tools/generate_fixture_bundle.py",
+  "product_api_executed": true,
+  "purpose": "OFFLINE_FIXTURE_ONLY",
+  "runtime": {
+    "platform": "Windows-11-10.0.26300-SP0",
+    "python": "3.12.10"
+  },
+  "sanitization": [
+    "synthetic TEST-NET addresses only",
+    "no plaintext token written",
+    "no production events or credentials"
+  ],
+  "scenarios": [
+    "four-page alert snapshot",
+    "incremental upsert",
+    "empty incremental",
+    "auth and rate transport"
+  ],
+  "source": "isolated synthetic SQLite database through real Flask connector routes",
+  "source_identity_sha256": "3e82ef9a476a9750b1cd5e2f1fda5dc38f749277b5192499bb611ada298d3c40",
+  "source_instance_id": "mini-siem-fixture-01",
+  "tenant_id": "tenant-fixture"
+}

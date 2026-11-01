@@ -1,0 +1,86 @@
+{
+  "date": "2026-09-18",
+  "scope": "OpenAI egress hardening convergence and opt-in live Responses qualification",
+  "status": "IMPLEMENTED_TESTING_DEFERRED",
+  "implemented": {
+    "external_https_fail_closed": true,
+    "explicit_insecure_loopback_dev_exception": "MINISIEM_AI_ALLOW_INSECURE_LOOPBACK_EXTERNAL=1",
+    "external_redaction_policies": [
+      "strict",
+      "identifiers",
+      "none"
+    ],
+    "external_redaction_default": "strict",
+    "responses_failed_incomplete_fail_closed": true,
+    "openai_chat_completions_parameter": "max_completion_tokens",
+    "generic_chat_completions_parameter": "max_tokens",
+    "transient_network_retry": true,
+    "total_timeout_budget": true,
+    "connection_probe_max_output_tokens": 128,
+    "responses_store": false
+  },
+  "validation": {
+    "openai_provider_mocked": {
+      "passed": 19,
+      "failed": 0,
+      "skipped": 1
+    },
+    "ai_progressive_focused": {
+      "passed": 41,
+      "failed": 0,
+      "skipped": 1
+    },
+    "dependency_available_repository": {
+      "passed": 98,
+      "failed": 41,
+      "skipped": 1,
+      "inherited_failures": 41
+    },
+    "full_pytest_collection": {
+      "status": "BLOCKED",
+      "collection_errors": 3,
+      "reason": "execution environment lacks flask/werkzeug",
+      "modules": [
+        "tests/test_admin_bootstrap.py",
+        "tests/test_dashboard_routes.py",
+        "tests/test_log_search_logic.py"
+      ]
+    },
+    "compileall": "PASS",
+    "shell_syntax": "PASS",
+    "ai_inline_javascript_syntax": "PASS",
+    "placeholder_truth_gate": "PASS",
+    "static_security_scan": {
+      "status": "PASS",
+      "files_scanned": 29,
+      "findings": 0
+    }
+  },
+  "live_openai": {
+    "opt_in": true,
+    "target_api": "Responses API",
+    "target_model": "gpt-5.6-luna",
+    "probe_contains_siem_data": false,
+    "status": "NOT_RUN_DEFERRED",
+    "reason": "OPENAI_API_KEY is absent in the execution environment"
+  },
+  "truth_boundary": "Mocked/provider tests do not constitute live OpenAI qualification. Overall product is not TESTED or RELEASED.",
+  "artifact_gate": {
+    "status": "PASS",
+    "clean_extract": true,
+    "zip_crc": "PASS",
+    "path_traversal": "PASS",
+    "symlink_check": "PASS",
+    "required_files": "PASS",
+    "source_extracted_sha256_parity": "PASS",
+    "python_syntax_files": 107,
+    "shell_syntax_files": 4,
+    "javascript_syntax_files": 1,
+    "placeholder_truth_gate": "PASS",
+    "extracted_focused_suite": {
+      "passed": 41,
+      "failed": 0,
+      "skipped": 1
+    }
+  }
+}

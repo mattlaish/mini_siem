@@ -357,9 +357,9 @@ if (document.getElementById('dbBackupBtn')) document.getElementById('dbBackupBtn
   const out = document.getElementById('dbBackupResult');
   out.textContent = 'Backing up…';
   const d = await (await fetch('/api/db/backup', {method:'POST'})).json();
-  if (d.error) { out.innerHTML = '<span style="color:var(--warn)">'+d.error+'</span>'; return; }
-  out.innerHTML = `Backup ok: ${fmtBytes(d.size_bytes)} → <span style="font-family:var(--mono);font-size:11px;">${d.path}</span>`
-    + (d.verified ? ' <span class="pill ok">verified</span>' : ' <span class="pill warn">verify: '+d.verify_detail+'</span>');
+  if (d.error) { out.textContent = d.error; return; }
+  out.innerHTML = `Backup ok: ${fmtBytes(d.size_bytes)} → <span style="font-family:var(--mono);font-size:11px;">${esc(d.path)}</span>`
+    + (d.verified ? ' <span class="pill ok">verified</span>' : ' <span class="pill warn">verify: '+esc(d.verify_detail)+'</span>');
 });
 
 // initial quick check (non-blocking)

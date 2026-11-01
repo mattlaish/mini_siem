@@ -1,3 +1,4 @@
+from session_helpers import sign_in, set_role
 import copy
 import json
 from datetime import datetime, timedelta, timezone
@@ -255,8 +256,7 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(dashboard, "DB_CONFIG", cfg)
     dashboard.init_auth(None)
     with dashboard.app.test_client() as c:
-        with c.session_transaction() as s:
-            s.update(user="admin", role="admin", must_change=False, csrf_token="test-csrf")
+        sign_in(dashboard, c, csrf="test-csrf")
         yield c
     if dashboard._HTTP_PIPELINE:
         dashboard._HTTP_PIPELINE[2].stop_monitor()
@@ -274,7 +274,8 @@ def test_management_pages_routes_auth_csrf_and_conflict(client):
     assert client.put("/api/detection/config", json=cfg).status_code == 403
     assert client.put("/api/detection/config", json=cfg, headers=HEADERS).status_code == 200
     assert client.put("/api/detection/config", json=cfg, headers=HEADERS).status_code == 409
-    with client.session_transaction() as s: s["role"] = "viewer"
+    import dashboard
+    set_role(dashboard, client, "viewer")
     saved = client.get("/api/detection/config").get_json()
     assert client.put("/api/detection/config", json=saved, headers=HEADERS).status_code == 403
     assert client.get("/api/detection/alerts").status_code == 200

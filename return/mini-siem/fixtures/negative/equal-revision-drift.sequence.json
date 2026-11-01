@@ -1,0 +1,26 @@
+{
+  "steps": [
+    {
+      "fixture": "fixtures/negative/equal-revision-step-1.json",
+      "request": {
+        "capability": "LIST_ALERTS",
+        "cursor": null,
+        "page_size": 2,
+        "product_id": "dashboard-mini-siem-fixture-01",
+        "resource_kind": "ALERT",
+        "tenant_id": "tenant-fixture"
+      }
+    },
+    {
+      "fixture": "fixtures/negative/equal-revision-step-2.json",
+      "request": {
+        "capability": "LIST_ALERTS",
+        "cursor": "equal-checkpoint",
+        "page_size": 2,
+        "product_id": "dashboard-mini-siem-fixture-01",
+        "resource_kind": "ALERT",
+        "tenant_id": "tenant-fixture"
+      }
+    }
+  ]
+}

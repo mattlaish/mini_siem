@@ -1,0 +1,18 @@
+{
+  "body": {
+    "contract": "operator-workspace.integration.v1",
+    "error": {
+      "code": "FORBIDDEN",
+      "message": "This connector does not expose mutation operations.",
+      "request_id": "req-7b328f31faf94f3a8edbe0a15dd55549",
+      "retry_after_seconds": null,
+      "retryable": false
+    }
+  },
+  "headers": {
+    "Cache-Control": "no-store",
+    "Content-Type": "application/json; charset=utf-8",
+    "X-Content-Type-Options": "nosniff"
+  },
+  "status": 403
+}

@@ -1,0 +1,54 @@
+{
+  "format": "mini-siem-p8-source-validation-v1",
+  "scope": "P8 ingest / parsing / detection source-truth audit only",
+  "status": "IMPLEMENTED_TESTING_DEFERRED",
+  "source_gaps_closed": [
+    "CEF classification now requires CEF to start the actual bare, PRI-only, RFC3164, or RFC5424 payload instead of matching an arbitrary embedded substring",
+    "newline-framed TCP ingest now emits the final complete frame at EOF even when the sender omits a trailing LF",
+    "inbound TCP now supports bounded RFC6587 octet-counted framing and rejects malformed, truncated, or oversized frames without partial ingest"
+  ],
+  "focused_regression": {
+    "command_scope": [
+      "tests/test_cef_parser.py",
+      "tests/test_syslog_tcp_framing.py",
+      "tests/test_syslog_troubleshoot.py"
+    ],
+    "passed": 18,
+    "failed": 0,
+    "skipped": 0
+  },
+  "packaging_release_contract_regression": {
+    "command_scope": [
+      "tests/test_build_source_artifact.py",
+      "tests/test_release_gate.py"
+    ],
+    "passed": 9,
+    "failed": 0
+  },
+  "broad_regression": {
+    "direct_parent": {"passed": 219, "failed": 37, "skipped": 1},
+    "current": {"passed": 226, "failed": 37, "skipped": 1},
+    "failed_node_set_identical": true,
+    "new_failed_node_ids": 0,
+    "resolved_failed_node_ids": 0
+  },
+  "source_gates": {
+    "python_compileall": "PASS",
+    "shell_syntax": "PASS",
+    "javascript_syntax": "PASS",
+    "placeholder_truth": "PASS",
+    "static_security_findings": 0
+  },
+  "domains": {
+    "postgresql": {"status": "NOT_RUN", "detail": "Representative live PostgreSQL qualification remains deferred."},
+    "systemd_selinux": {"status": "BLOCKED_ENVIRONMENT", "detail": "Representative systemd/SELinux host qualification remains deferred."},
+    "install_upgrade_resume": {"status": "NOT_RUN", "detail": "Live kill/reboot install/upgrade/resume qualification remains deferred."},
+    "backup_restore": {"status": "NOT_RUN", "detail": "Real PostgreSQL/SQLite backup/restore qualification remains deferred."},
+    "performance": {"status": "NOT_RUN", "detail": "Production performance qualification remains deferred."},
+    "alert_lifecycle_browser": {"status": "NOT_RUN", "detail": "Live/browser alert lifecycle qualification remains deferred."},
+    "ai_provider": {"status": "NOT_RUN", "detail": "Live AI provider qualification remains deferred."},
+    "ingest_detection": {"status": "NOT_RUN", "detail": "P8 source gaps are closed; real-network device/parser/detection/UI qualification and sustained parser/error-rate measurements remain deferred."},
+    "operations_security": {"status": "NOT_RUN", "detail": "Production operations/security qualification remains deferred."},
+    "full_regression": {"status": "NOT_RUN", "detail": "Broad local run retains 37 inherited failures and full provisioned regression is not complete."}
+  }
+}
