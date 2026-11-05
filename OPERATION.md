@@ -286,3 +286,57 @@ with `systemctl status mini-siem-event-partitions.timer` and inspect oneshot
 logs with `journalctl -u mini-siem-event-partitions.service`.  The job does not
 perform retention or partition DROP.  Evidence deletion remains explicit
 archive/retention work.
+
+## Sizing log processing and sharing background work
+
+**Check the machine.** System Health → Processing capacity (administrators)
+shows usable CPU cores (including container quotas), free memory and memory
+limits, the database, kernel UDP drops and the recommended setup with its
+reasons. "Measure this machine" adds a measured per-process memory figure and
+a CPU-only throughput figure. On a headless host run
+`python tools/capacity_advisor.py` (`--quick` to skip measuring, `--json`,
+`--write` to save the recommendation to `db-config.json`).
+
+**Choose the setup.** Settings → Receive device logs → Processing received
+logs, or `db-config.json`:
+
+```json
+"ingest": {"processes": "auto", "threads": 2, "queue_size": 10000, "udp_buffer_kb": 4096}
+```
+
+`processes` is a number or `auto` (sized from the machine each time the log
+collection service starts). Command-line flags `--ingest-processes`,
+`--ingest-threads` and `--ingest-queue` override the file. Restart the log
+collection service after a change. System Health → Running now shows what is
+actually running, queue depth, drops and process restarts.
+
+- **One process (default):** receive threads only queue messages; worker
+  threads store and check them. Each sender's messages stay in order.
+- **Several processes (PostgreSQL):** the listener parses each message and
+  routes it by the address repeated-activity rules count, so "5 failed logins
+  in 60 s" stays correct when several devices report the same attacker. A
+  process that exits is restarted. SQLite allows one writer at a time, so
+  `auto` always chooses one process for SQLite.
+- **When the queue is full:** UDP messages are dropped and counted; TCP
+  senders are slowed for up to two seconds before a message is dropped.
+- **Kernel drops:** the kernel discards UDP datagrams when a socket buffer
+  fills, before mini-SIEM sees them (`RcvbufErrors`, shown on System Health).
+  The listener asks for a 4 MB buffer. If System Health reports a lower
+  ceiling, raise it: `sysctl -w net.core.rmem_max=4194304`, and persist it in
+  `/etc/sysctl.d/`.
+
+**Running more than one dashboard process.** AI triage, ticket delivery, feed
+refresh, scheduled reports and each cloud connection hold a lease in the
+`worker_leases` table, so each runs in one process at a time; cloud
+connections spread across processes. A process that stops renewing is
+replaced after its lease expires (60 s for triage and tickets, two minutes or
+three polling intervals for connections, 30 minutes for feeds, three hours
+for reports). System Health → Background jobs shows which process holds each
+job. Hosts sharing one database need synchronized clocks (NTP).
+
+**Upgrading PostgreSQL deployments.** `worker_leases` is created by schema
+initialization with the owner identity, like other tables; runtime identities
+get access through the existing schema-wide runtime grant (rerun
+`tools/postgres_privilege_boundary.py` after initialization). Until it exists,
+every job runs in each dashboard process as before and a warning is logged.
+The all-in-one `siem.py` keeps direct, unqueued processing.

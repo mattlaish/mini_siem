@@ -49,6 +49,15 @@
     <div class="card"><div class="note">Loading PostgreSQL security status…</div></div>
   </div>
 
+  {% if is_admin %}
+  <div class="section-title">Processing capacity</div>
+  <div class="bar" style="margin-top:-4px;">
+    <button id="capMeasure" type="button">Measure this machine (about 5 seconds)</button>
+    <span class="muted" id="capNote">How many ingest processes this machine can run, and what is running now. Change the settings in <a href="/setup#sec-listen">Settings → Receive device logs</a>.</span>
+  </div>
+  <div class="grid" id="capGrid"><div class="card"><div class="note">Scanning this machine…</div></div></div>
+  {% endif %}
+
   <div class="section-title">Archive &amp; maintenance</div>
   <div class="grid" id="archiveGrid">
     <div class="card"><div class="note">Loading archive status…</div></div>
@@ -361,6 +370,53 @@ if (document.getElementById('dbBackupBtn')) document.getElementById('dbBackupBtn
   out.innerHTML = `Backup ok: ${fmtBytes(d.size_bytes)} → <span style="font-family:var(--mono);font-size:11px;">${esc(d.path)}</span>`
     + (d.verified ? ' <span class="pill ok">verified</span>' : ' <span class="pill warn">verify: '+esc(d.verify_detail)+'</span>');
 });
+
+// ---- Processing capacity (administrators) ----
+function capCard(d){
+  const s=d.scan, r=d.recommendation, run=d.running||{}, cfg=d.configured, cpu=s.cpu, mem=s.memory, db=s.database;
+  const list=items=>items.length?'<ul style="margin:6px 0 0;padding-left:18px;font-size:12px;line-height:1.5;">'+items.map(x=>'<li>'+esc(x)+'</li>').join('')+'</ul>':'';
+  const machine=kvCard('This machine',[
+    ['Usable CPU cores', esc(cpu.effective)+(cpu.container_quota?` <span class="muted">(container quota)</span>`:'')+(cpu.logical!==cpu.effective?` <span class="muted">of ${esc(cpu.logical)}</span>`:'')],
+    ['Memory available', mem.available_mb==null?'unknown':esc(mem.available_mb)+' MB'+(mem.total_mb?` <span class="muted">of ${esc(mem.total_mb)}</span>`:'')],
+    ['Container memory limit', mem.container_limit_mb==null?'none':esc(mem.container_limit_mb)+' MB'],
+    ['Load (1 min)', s.load_average?esc(s.load_average[0]):'—'],
+    ['Database', esc(db.backend)+(db.backend==='postgres'?(db.same_host?' · this machine':' · '+esc(db.host)):'')],
+    ['Threat indicators', esc(d.threat_indicators)],
+    ['Kernel UDP drops since boot', s.udp&&s.udp.receive_buffer_errors!=null?esc(s.udp.receive_buffer_errors.toLocaleString())+(s.udp.receive_buffer_errors?' <span class="pill warn">buffer full</span>':''):'—'],
+    ['UDP buffer ceiling', s.udp&&s.udp.rmem_max_kb!=null?esc(s.udp.rmem_max_kb)+' KB':'—'],
+  ]);
+  const recCard=`<div class="card"><h3>Recommended</h3><div class="metric">${esc(r.processes)} <span class="unit">ingest process${r.processes===1?'':'es'}</span></div>`
+    +`<div class="sub">${r.processes===1?esc(r.threads)+' worker threads · ':''}${esc(r.queue_size)} queued messages per process`
+    +(r.estimated_events_per_second?` · CPU ceiling ≈ ${Number(r.estimated_events_per_second).toLocaleString()} events/s`:'')+`</div>`
+    +list(r.reasons)+(r.warnings.length?'<div class="note" style="color:var(--warn);margin-top:6px;">'+r.warnings.map(esc).join('<br>')+'</div>':'')
+    +(d.measured&&d.measured.measured_at?`<div class="note" style="margin-top:6px;">Measured ${fmtTime(d.measured.measured_at)}: ${esc(d.measured.process_mb)} MB per process at start, ${Number(d.measured.benchmark.events_per_second).toLocaleString()} events/s per process (CPU only).</div>`:'<div class="note" style="margin-top:6px;">Estimate. Measure this machine for memory and throughput figures.</div>')+'</div>';
+  const mode=run.ingest_mode?(run.ingest_mode==='processes'?`${esc(run.ingest_workers)} processes`:`1 process · ${esc(run.ingest_workers)} threads`):esc(run.worker||'unknown');
+  const pending=cfg&&run.ingest_mode&&((cfg.mode!==run.ingest_mode)||(cfg.mode==='processes'?cfg.processes!==run.ingest_workers:cfg.threads!==run.ingest_workers));
+  const runCard=kvCard('Running now',[
+    ['Listener', statusPill(run.ingest||run.listener)],
+    ['Mode', mode+(run.ingest_workers_alive!=null&&run.ingest_workers_alive<run.ingest_workers?` <span class="pill warn">${esc(run.ingest_workers_alive)} alive</span>`:'')],
+    ['Queued', run.queue_depth==null?'—':esc(run.queue_depth)+(run.queue_capacity?` / ${esc(run.queue_capacity)}`:'')],
+    ['Dropped (full queue)', esc(run.dropped_events||0)+(run.dropped_tcp?` <span class="muted">(${esc(run.dropped_tcp)} TCP)</span>`:'')],
+    ['Process restarts', esc(run.ingest_restarts||0)],
+    ['Saved setting', cfg?(cfg.mode==='processes'?esc(cfg.processes)+' processes':'1 process · '+esc(cfg.threads)+' threads')+' <span class="muted">('+esc(cfg.source.processes)+')</span>':'—'],
+  ])+(pending?'<div class="card"><div class="note" style="color:var(--warn);">The saved setting differs from what is running. Restart the log collection service to apply it.</div></div>':'');
+  const jobs=d.jobs==null?'<div class="card"><h3>Background jobs</h3><div class="note">Job leases are not set up in this database yet; every job runs in each dashboard process. Run schema initialization with the owner identity.</div></div>'
+    :`<div class="card"><h3>Background jobs</h3>${d.jobs.length?d.jobs.map(j=>`<div class="kv"><span>${esc(j.job)}</span><span class="v" title="${esc(j.owner)}">${j.state==='held'?(j.owner===d.this_process?'this process':esc(String(j.owner).split(':').slice(0,2).join(' pid '))):'<span class="muted">free</span>'}</span></div>`).join(''):'<div class="note">No background job has run yet.</div>'}<div class="note" style="margin-top:6px;">Each job runs in one process at a time; another process takes over if its holder stops.</div></div>`;
+  return machine+recCard+runCard+jobs;
+}
+async function loadCapacity(){
+  const grid=$('capGrid'); if(!grid||!IS_ADMIN) return;
+  try { grid.innerHTML=capCard(await MS.getJSON('/api/capacity')); }
+  catch(e){ MS.failed(grid,e,loadCapacity,'processing capacity'); }
+}
+if($('capMeasure')) $('capMeasure').addEventListener('click', async()=>{
+  const b=$('capMeasure'); b.disabled=true; b.textContent='Measuring…';
+  try { $('capGrid').innerHTML=capCard(await MS.getJSON('/api/capacity/benchmark',{method:'POST'})); MS.toast('Measurement finished.','success'); }
+  catch(e){ MS.toast(e.message,'error'); }
+  finally { b.disabled=false; b.textContent='Measure this machine (about 5 seconds)'; }
+});
+loadCapacity();
+setInterval(()=>{ if(auto && !document.hidden) MS.background(loadCapacity); }, 15000);
 
 // initial quick check (non-blocking)
 (async () => { try { paintIntegrity(await (await fetch('/api/db/integrity')).json()); } catch(e){} })();

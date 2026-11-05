@@ -1,5 +1,50 @@
 # AI Handover Prompt - mini-SIEM
 
+## Workload sharing and capacity scan — 2026-11-05 (cloud session)
+
+Requested: wire the queued ingest pipeline, add job claiming for background
+workers, allow multiple ingest processes, and detect how many processes a
+machine can run. See OPERATION.md "Sizing log processing and sharing
+background work".
+
+- Queued ingest (listener.py): `IngestPipeline` now has one bounded queue per
+  worker thread, routed by sender (per-sender order kept); UDP drops and
+  counts when full, TCP waits up to 2 s. The listener's receive threads only
+  stamp arrival time and queue. SIGTERM drains up to 10 s.
+- Multi-process ingest (ingest_workers.py `ProcessIngest`): spawn-started
+  children each with their own Storage/RuleEngine/IOC/fields/forwarders; the
+  receiver parses and routes by `rules.extract_ip(message) or source_ip`, the
+  same key ThresholdRule counts by, so repeated-activity alerts are identical
+  to one process (tested: 12 hits from 4 senders about one attacker = 2
+  alerts). Dead children restart on a fresh queue (a killed reader can leave
+  the old queue's lock held); shutdown kills children that do not exit.
+- Job leases (leases.py, new `worker_leases` table): ticket, AI triage, feed
+  refresh, report scheduler (one lease each) and every cloud connection
+  (`poller:<id>`, shared across processes). Missing table = previous
+  single-process behaviour with a warning.
+- Capacity scan (capacity.py, tools/capacity_advisor.py, System Health card,
+  Settings form, `GET /api/capacity`, `POST /api/capacity/benchmark`,
+  `POST /api/ingest-settings`, all admin-only and audited): CPU affinity and
+  cgroup v1/v2 quota, memory and container limit, load, database location,
+  kernel UDP buffer ceiling and RcvbufErrors, enabled indicator count;
+  optional measured process memory and CPU-only benchmark. SQLite -> one
+  process. `"processes": "auto"` sizes at listener start.
+- Found and fixed while testing: (1) a fresh database (SQLite or PostgreSQL)
+  was baselined as fully migrated although its base `forwarders` table lacked
+  `origin_mode`/`tcp_framing`, so the listener crashed at start on any new
+  database; base schema fixed and `initialize()` now re-adds any recorded
+  ADD COLUMN that is missing. (2) The listener never enlarged its UDP socket
+  buffer; a 300-message burst lost 44 datagrams in the kernel. It now
+  requests 4 MB (`udp_buffer_kb`), and 300/300 arrive in both modes.
+
+Validation: tests/test_workers_and_capacity.py 25 PASS; full suite 523 PASS /
+same 38 pre-existing failures; static scan 8 HIGH; real listener processes in
+both modes (UDP burst, SIGTERM) store 300/300 with correct alerts; browser
+checks of the Health card and Settings form for admin/analyst/viewer PASS
+with no JS errors or permission denials. Not done: PostgreSQL multi-process
+load test, multi-host lease failover on real hosts, siem.py all-in-one stays
+unqueued.
+
 ## Review of the 2026-11-01 upload (ddbf4a0) — cloud session, 2026-11-01
 
 Checked the recovery/connector upload against the October 21 work: every

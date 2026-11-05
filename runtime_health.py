@@ -108,6 +108,8 @@ def listener_snapshot_from_db(conn, stale_after_seconds=10):
         "listener", "ingest", "worker", "uptime_seconds", "queue_depth",
         "processed_events", "failed_events", "dropped_events", "dropped_udp",
         "last_event_at", "detail", "sources",
+        "dropped_tcp", "queue_capacity", "ingest_mode", "ingest_workers",
+        "ingest_workers_alive", "ingest_restarts",
     ):
         if key in payload:
             out[key] = payload[key]

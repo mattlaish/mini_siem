@@ -20,6 +20,7 @@ PostgreSQL needs the psycopg2 driver:  pip install psycopg2-binary
 """
 
 import json
+import re
 import os
 import sqlite3
 import threading
@@ -321,7 +322,9 @@ def _schema_statements(backend: str):
             min_severity    TEXT DEFAULT '',
             forwarded_count INTEGER DEFAULT 0,
             last_forward_at TEXT,
-            last_error      TEXT
+            last_error      TEXT,
+            origin_mode     TEXT DEFAULT 'off',
+            tcp_framing     TEXT DEFAULT 'newline'
         )""",
         f"""CREATE TABLE IF NOT EXISTS source_profiles (
             id           {pk},
@@ -564,6 +567,16 @@ def _schema_statements(backend: str):
             PRIMARY KEY (snapshot_id, position)
         )""",
         "CREATE INDEX IF NOT EXISTS idx_dashboard_snapshot_page ON dashboard_export_snapshot_records(snapshot_id, position)",
+        # Background-job leases (leases.py): one holder per job across
+        # processes/hosts. Times are Unix epoch seconds. Runtime identities
+        # receive ordinary CRUD through the schema-wide runtime grant.
+        """CREATE TABLE IF NOT EXISTS worker_leases (
+            name        TEXT PRIMARY KEY,
+            owner       TEXT NOT NULL,
+            expires_at  DOUBLE PRECISION NOT NULL,
+            acquired_at DOUBLE PRECISION NOT NULL,
+            renewed_at  DOUBLE PRECISION NOT NULL
+        )""",
     ]
     if backend == "postgres":
         # PostgreSQL Event Storage v2 is an owner-created typed query projection.
@@ -915,6 +928,33 @@ def _ensure_performance_indexes(conn):
     conn.commit()
 
 
+_ADD_COLUMN = re.compile(r"^\s*ALTER TABLE (\w+) ADD COLUMN (\w+) ", re.IGNORECASE)
+
+
+def _repair_missing_migration_columns(conn, backend):
+    """Add columns an ADD COLUMN migration is recorded as applied for but
+    which are absent. A fresh database is baselined as fully migrated (its
+    base schema is meant to include every migration), so a column missing
+    from the base schema was silently never created; forwarders.origin_mode
+    and tcp_framing were. Owner/initialization identity only."""
+    for stmt in _migrations():
+        match = _ADD_COLUMN.match(stmt)
+        if not match:
+            continue
+        table, column = match.group(1), match.group(2)
+        if backend == "postgres":
+            row = conn.execute(
+                "SELECT 1 FROM information_schema.columns WHERE table_schema='public' "
+                "AND table_name=? AND column_name=?", (table, column)).fetchone()
+            present = row is not None
+        else:
+            present = conn.raw.execute(
+                "SELECT 1 FROM pragma_table_info(?) WHERE name=?", (table, column)).fetchone() is not None
+        if not present:
+            _execute_schema_sql(conn, stmt)
+            conn.commit()
+
+
 def ensure_schema_baseline(conn, config: dict):
     """Baseline existing databases created before migration tracking existed."""
     _execute_schema_sql(
@@ -1195,6 +1235,7 @@ def initialize(config: dict):
                 except Exception:
                     pass
                 raise
+        _repair_missing_migration_columns(conn, backend)
         # Keep value_norm deterministic for legacy rows after the owner-only
         # migration. New writes populate it directly.
         try:

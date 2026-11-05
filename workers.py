@@ -166,11 +166,12 @@ class ReportScheduler:
     """Checks hourly whether a scheduled report is due.
     app_config: report_schedule = off|weekly|monthly."""
 
-    def __init__(self, get_conn, get_schedule, on_report=None, check_interval=3600):
+    def __init__(self, get_conn, get_schedule, on_report=None, check_interval=3600, lease=None):
         self.get_conn = get_conn
         self.get_schedule = get_schedule       # () -> "off"|"weekly"|"monthly"
         self.on_report = on_report             # optional callback(report_dict)
         self.check_interval = check_interval
+        self.lease = lease                     # optional () -> bool (leases.LeaseKeeper)
         self._stop = threading.Event()
 
     def start(self):
@@ -183,10 +184,16 @@ class ReportScheduler:
     def _loop(self):
         while not self._stop.is_set():
             try:
-                self.run_if_due()
+                self._cycle()
             except Exception as exc:
                 print(f"[reports] scheduler error: {exc}")
             self._stop.wait(self.check_interval)
+
+    def _cycle(self):
+        # Another process holding the lease runs the schedule instead.
+        if self.lease is not None and not self.lease():
+            return None
+        return self.run_if_due()
 
     def run_if_due(self):
         schedule = (self.get_schedule() or "off").lower()
@@ -258,12 +265,13 @@ class TicketWorker:
     """Sends qualifying alerts to a ticket API. get_settings() returns:
     {enabled, url, method, headers(dict), template(str), min_severity}."""
 
-    def __init__(self, get_conn, get_settings, poll_interval=10, batch=5, max_attempts=3):
+    def __init__(self, get_conn, get_settings, poll_interval=10, batch=5, max_attempts=3, lease=None):
         self.get_conn = get_conn
         self.get_settings = get_settings
         self.poll_interval = poll_interval
         self.batch = batch
         self.max_attempts = max_attempts
+        self.lease = lease                     # optional () -> bool (leases.LeaseKeeper)
         self._stop = threading.Event()
 
     def start(self):
@@ -279,9 +287,15 @@ class TicketWorker:
             if self._stop.is_set():
                 break
             try:
-                self.run_once()
+                self._cycle()
             except Exception as exc:
                 print(f"[tickets] cycle error: {exc}")
+
+    def _cycle(self):
+        # Only the lease holder sends tickets, so two processes never send one twice.
+        if self.lease is not None and not self.lease():
+            return 0
+        return self.run_once()
 
     def run_once(self) -> int:
         st = self.get_settings()
@@ -453,10 +467,11 @@ def fetch_feed(conn, feed: dict, resolve_key_fn=None):
 class FeedRefresher:
     """Re-fetches enabled feeds whose refresh interval has elapsed."""
 
-    def __init__(self, get_conn, check_interval=600, resolve_key_fn=None):
+    def __init__(self, get_conn, check_interval=600, resolve_key_fn=None, lease=None):
         self.get_conn = get_conn
         self.check_interval = check_interval
         self.resolve_key_fn = resolve_key_fn
+        self.lease = lease                     # optional () -> bool (leases.LeaseKeeper)
         self._stop = threading.Event()
 
     def start(self):
@@ -472,9 +487,14 @@ class FeedRefresher:
             if self._stop.is_set():
                 break
             try:
-                self.run_once()
+                self._cycle()
             except Exception as exc:
                 print(f"[feeds] cycle error: {exc}")
+
+    def _cycle(self):
+        if self.lease is not None and not self.lease():
+            return None
+        return self.run_once()
 
     def run_once(self):
         conn = self.get_conn()

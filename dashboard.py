@@ -746,11 +746,24 @@ def _triage_settings():
     }
 
 
+_LEASES = None
+
+
+def lease_keeper():
+    """This process's job-lease identity (see leases.py)."""
+    global _LEASES
+    if _LEASES is None:
+        import leases
+        _LEASES = leases.LeaseKeeper(lambda: dbmod.connect(_db_config()))
+    return _LEASES
+
+
 def start_triage_worker():
     """Start the background auto-triage worker (idempotent)."""
     global _triage_worker
     if _triage_worker is None:
-        _triage_worker = ai_worker.TriageWorker(get_conn, _triage_settings)
+        _triage_worker = ai_worker.TriageWorker(get_conn, _triage_settings,
+                                                lease=lease_keeper().binding("ai-triage", 60))
     _triage_worker.start()
     return _triage_worker
 
@@ -764,9 +777,14 @@ def start_automation_workers():
     if _automation_started:
         return
     import workers
-    workers.ReportScheduler(get_conn, lambda: cfg_get("report_schedule", "off")).start()
-    workers.TicketWorker(get_conn, get_ticket_settings).start()
-    workers.FeedRefresher(get_conn, resolve_key_fn=_resolve_feed_key).start()
+    # Leases make each job run in one process even if several dashboards share
+    # the database; TTLs are several cycles so a slow cycle keeps its lease.
+    keeper = lease_keeper()
+    workers.ReportScheduler(get_conn, lambda: cfg_get("report_schedule", "off"),
+                            lease=keeper.binding("report-scheduler", 3 * 3600)).start()
+    workers.TicketWorker(get_conn, get_ticket_settings, lease=keeper.binding("ticket-worker", 60)).start()
+    workers.FeedRefresher(get_conn, resolve_key_fn=_resolve_feed_key,
+                          lease=keeper.binding("feed-refresher", 1800)).start()
     _automation_started = True
 
 
@@ -2384,7 +2402,8 @@ def start_poller_manager():
     _POLLER_MANAGER = _api_poller.PollerManager(
         conn_factory=get_conn,
         ingest_fn=ingest_event,
-        resolve_secret_fn=_resolve_poller_secret)
+        resolve_secret_fn=_resolve_poller_secret,
+        lease_keeper=lease_keeper())
     _POLLER_MANAGER.start()
 
 
@@ -3184,6 +3203,123 @@ def api_listen_ports_set():
         return jsonify({"error": f"could not write config: {exc}"}), 500
     audit("listen_ports_changed", detail=",".join(map(str, ports)))
     return jsonify({"ok": True, "ports": ports, "restart_required": True})
+
+
+# ---------------------------------------------------------------------------
+# Processing capacity: machine scan, ingest settings, background-job owners
+# ---------------------------------------------------------------------------
+_CAPACITY_MEASURED = {}      # last memory probe / benchmark from this process
+
+
+def _ioc_count(conn):
+    try:
+        return int(conn.execute("SELECT COUNT(*) AS n FROM iocs WHERE enabled=1").fetchone()["n"])
+    except Exception:  # noqa: BLE001
+        return 0
+
+
+def _capacity_view(conn):
+    import capacity
+    import leases
+    import os, json as _json
+    from runtime_health import listener_snapshot_from_db
+    cfg = _db_config()
+    scan = capacity.scan(cfg)
+    iocs = _ioc_count(conn)
+    rec = capacity.recommend(scan, _CAPACITY_MEASURED.get("process_mb"),
+                             (_CAPACITY_MEASURED.get("benchmark") or {}).get("events_per_second"), ioc_count=iocs)
+    saved = {}
+    path = _config_file_path()
+    try:
+        if os.path.exists(path):
+            with open(path) as f:
+                saved = (_json.load(f) or {}).get("ingest") or {}
+    except (OSError, ValueError):
+        saved = {}
+    try:
+        configured = capacity.ingest_settings({**cfg, "ingest": saved}, scan_result=scan)
+    except ValueError:
+        configured = None
+    listener = listener_snapshot_from_db(conn)
+    running = {k: listener.get(k) for k in ("listener", "ingest", "worker", "ingest_mode", "ingest_workers",
+                                             "ingest_workers_alive", "ingest_restarts", "queue_depth",
+                                             "queue_capacity", "dropped_events", "dropped_udp", "dropped_tcp",
+                                             "processed_events", "failed_events", "heartbeat_at")}
+    try:
+        jobs = leases.lease_status(conn)
+    except Exception:  # noqa: BLE001 - table not created yet
+        conn.rollback()
+        jobs = None
+    return {"scan": scan, "recommendation": rec, "saved": saved, "configured": configured,
+            "running": running, "measured": _CAPACITY_MEASURED, "threat_indicators": iocs,
+            "jobs": jobs, "this_process": lease_keeper().owner,
+            "config_writable": os.access(path if os.path.exists(path) else os.path.dirname(path), os.W_OK)}
+
+
+@app.route("/api/capacity", methods=["GET"])
+@admin_required
+def api_capacity():
+    conn = get_conn()
+    try:
+        return jsonify(_capacity_view(conn))
+    finally:
+        conn.close()
+
+
+_CAPACITY_BENCH_LOCK = threading.Lock()
+
+
+@app.route("/api/capacity/benchmark", methods=["POST"])
+@admin_required
+def api_capacity_benchmark():
+    """Measure this machine: memory of one ingest process, and parse/field/
+    rule throughput for two seconds. CPU-only; database writes excluded."""
+    import capacity
+    from datetime import datetime, timezone
+    if not _CAPACITY_BENCH_LOCK.acquire(blocking=False):
+        return jsonify(error="A measurement is already running"), 409
+    try:
+        _CAPACITY_MEASURED["process_mb"] = capacity.measure_process_memory()
+        _CAPACITY_MEASURED["benchmark"] = capacity.benchmark(2.0)
+        _CAPACITY_MEASURED["measured_at"] = datetime.now(timezone.utc).isoformat()
+    finally:
+        _CAPACITY_BENCH_LOCK.release()
+    audit("capacity_measured", detail=f"process_mb={_CAPACITY_MEASURED['process_mb']}; "
+                                      f"events_per_second={_CAPACITY_MEASURED['benchmark']['events_per_second']}")
+    conn = get_conn()
+    try:
+        return jsonify(_capacity_view(conn))
+    finally:
+        conn.close()
+
+
+@app.route("/api/ingest-settings", methods=["POST"])
+@admin_required
+def api_ingest_settings_set():
+    """Save listener ingest settings to db-config.json (read at listener start)."""
+    import capacity
+    import os, json as _json
+    clean, err = capacity.validate(request.get_json(silent=True) or {})
+    if err:
+        return jsonify(error=err), 400
+    if "processes" not in clean:
+        return jsonify(error="processes is required (a number or auto)"), 400
+    path = _config_file_path()
+    try:
+        cfg = {}
+        if os.path.exists(path):
+            with open(path) as f:
+                cfg = _json.load(f)
+        # Keep settings this form does not show (for example udp_buffer_kb).
+        kept, _ = capacity.validate(cfg.get("ingest") or {})
+        clean = {**(kept or {}), **clean}
+        cfg["ingest"] = clean
+        with open(path, "w") as f:
+            _json.dump(cfg, f, indent=2)
+    except (OSError, ValueError) as exc:
+        return jsonify(error=f"could not write config: {exc}"), 500
+    audit("ingest_settings_changed", detail="; ".join(f"{k}={v}" for k, v in sorted(clean.items())))
+    return jsonify(ok=True, ingest=clean, restart_required=True)
 
 
 @app.route("/api/ingest", methods=["POST"])

@@ -27,6 +27,8 @@ import sys
 import threading
 import time
 import queue
+import signal
+import zlib
 from datetime import datetime, timezone
 
 from forwarder import ForwarderManager
@@ -802,74 +804,103 @@ class Storage:
 class IngestPipeline:
     """Bounded asynchronous ingest pipeline used by high-throughput paths.
 
-    The pipeline keeps transport handling separate from parsing and storage.
-    Queue overflow is reported instead of blocking UDP receive workers.
+    Receive threads only queue a message; ``worker_count`` threads parse,
+    store, detect and forward. Each worker owns one queue and a message goes
+    to the queue chosen by its routing key (default: sender address), so one
+    sender's messages are always handled in arrival order. UDP never waits:
+    a full queue drops and counts the message. TCP waits up to ``tcp_wait``
+    seconds, which slows the sending connection instead of losing data.
+
+    ``process`` replaces the default parse/store/detect/forward step; it is
+    called as process(raw, source_ip, received_at) from a worker thread.
     """
 
     def __init__(self, storage, rules=None, ioc_matcher=None, fields=None,
-                 forwarders=None, worker_count=1, queue_size=1000):
+                 forwarders=None, worker_count=1, queue_size=1000, process=None, tcp_wait=2.0):
         self.storage = storage
         self.rules = rules
         self.ioc_matcher = ioc_matcher
         self.fields = fields
         self.forwarders = forwarders
-        self.queue = queue.Queue(maxsize=queue_size)
+        self.process = process or self._process_default
+        self.tcp_wait = max(0.0, float(tcp_wait))
+        count = max(1, int(worker_count))
+        per_queue = max(1, int(queue_size) // count)
+        self.queues = [queue.Queue(maxsize=per_queue) for _ in range(count)]
+        self.queue = self.queues[0]            # single-worker compatibility
+        self.capacity = per_queue * count
         self._stop = threading.Event()
         self._stats = {"processed": 0, "failed": 0, "dropped": 0,
-                       "dropped_udp": 0}
+                       "dropped_udp": 0, "dropped_tcp": 0}
         self._lock = threading.Lock()
         self.workers = []
-        for _ in range(max(1, int(worker_count))):
-            t = threading.Thread(target=self._worker, daemon=True)
+        for q in self.queues:
+            t = threading.Thread(target=self._worker, args=(q,), daemon=True, name="ingest-worker")
             t.start()
             self.workers.append(t)
 
-    def submit(self, raw, source_ip, transport="udp", received_at=None):
+    def submit(self, raw, source_ip, transport="udp", received_at=None, key=None):
         item = (raw, source_ip, transport, received_at)
+        q = self.queues[zlib.crc32(str(key or source_ip or "").encode("utf-8")) % len(self.queues)]
         try:
-            self.queue.put_nowait(item)
+            if transport == "tcp" and self.tcp_wait:
+                q.put(item, timeout=self.tcp_wait)
+            else:
+                q.put_nowait(item)
             return True
         except queue.Full:
             with self._lock:
                 self._stats["dropped"] += 1
-                if transport == "udp":
-                    self._stats["dropped_udp"] += 1
+                self._stats["dropped_tcp" if transport == "tcp" else "dropped_udp"] += 1
             return False
 
-    def _worker(self):
-        while not self._stop.is_set() or not self.queue.empty():
+    def _process_default(self, raw, source_ip, received_at=None):
+        event = parse_syslog(raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else raw,
+                             source_ip)
+        if received_at:
+            event["received_at"] = received_at
+        fields = self.fields.extract(event) if self.fields else {}
+        log_id = self.storage.insert_log(event, fields=fields)
+        if self.rules:
+            self.rules.process(log_id, event, fields=fields)
+        if self.ioc_matcher:
+            self.ioc_matcher.process(log_id, event)
+        if self.forwarders:
+            self.forwarders.forward(event)
+
+    def _worker(self, q):
+        while not self._stop.is_set() or not q.empty():
             try:
-                raw, source_ip, transport, received_at = self.queue.get(timeout=0.1)
+                raw, source_ip, transport, received_at = q.get(timeout=0.1)
             except queue.Empty:
                 continue
             try:
-                event = parse_syslog(raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else raw,
-                                     source_ip)
-                if received_at:
-                    event["received_at"] = received_at
-                fields = self.fields.extract(event) if self.fields else {}
-                log_id = self.storage.insert_log(event, fields=fields)
-                if self.rules:
-                    self.rules.process(log_id, event, fields=fields)
-                if self.ioc_matcher:
-                    self.ioc_matcher.process(log_id, event)
-                if self.forwarders:
-                    self.forwarders.forward(event)
+                self.process(raw, source_ip, received_at)
                 with self._lock:
                     self._stats["processed"] += 1
             except Exception:
                 with self._lock:
                     self._stats["failed"] += 1
             finally:
-                self.queue.task_done()
+                q.task_done()
 
     def stats(self):
         with self._lock:
-            return dict(self._stats)
+            out = dict(self._stats)
+        out.update(mode="threads", workers=len(self.workers),
+                   workers_alive=sum(t.is_alive() for t in self.workers),
+                   queue_depth=sum(q.qsize() for q in self.queues), queue_capacity=self.capacity)
+        return out
 
-    def stop(self, drain=False):
+    def stop(self, drain=False, timeout=None):
         if drain:
-            self.queue.join()
+            deadline = None if timeout is None else time.monotonic() + timeout
+            for q in self.queues:
+                if deadline is None:
+                    q.join()
+                    continue
+                while q.unfinished_tasks and time.monotonic() < deadline:
+                    time.sleep(0.05)
         self._stop.set()
         for t in self.workers:
             t.join(timeout=1)
@@ -880,11 +911,20 @@ class IngestPipeline:
 # Network listeners
 # --------------------------------------------------------------------------
 
-def udp_listener(host: str, port: int, on_message):
+def udp_listener(host: str, port: int, on_message, receive_buffer_bytes=None):
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    if receive_buffer_bytes:
+        # The kernel drops datagrams that arrive while this buffer is full
+        # (counted in /proc/net/snmp RcvbufErrors, never seen by mini-SIEM).
+        # Linux caps the request at net.core.rmem_max.
+        try:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, int(receive_buffer_bytes))
+        except OSError as exc:
+            print(f"[udp] could not enlarge receive buffer: {exc}", file=sys.stderr)
     sock.bind((host, port))
-    print(f"[udp] listening on {host}:{port}")
+    granted = sock.getsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF)
+    print(f"[udp] listening on {host}:{port} (receive buffer {granted // 1024} KB)")
     while True:
         try:
             data, addr = sock.recvfrom(65535)
@@ -1041,9 +1081,14 @@ class ListenerRuntimeReporter:
         # without storing payloads in runtime health telemetry.
         self._sources = {}
         self._thread = threading.Thread(target=self._run, daemon=True, name="runtime-health")
+        self._pipeline = None
 
     def set_threads(self, threads):
         self._threads = list(threads or [])
+
+    def set_pipeline(self, pipeline):
+        """Report queue depth, drops and worker liveness from the ingest pipeline."""
+        self._pipeline = pipeline
 
     def start(self):
         self._write()
@@ -1068,6 +1113,11 @@ class ListenerRuntimeReporter:
             self._stats["detail"] = ""
             self._record_source(source_ip, "accepted")
 
+    def record_drop(self, source_ip=None):
+        """A message refused by a full queue (also counted by the pipeline)."""
+        with self._lock:
+            self._record_source(source_ip, "dropped")
+
     def record_failure(self, exc=None, source_ip=None):
         with self._lock:
             self._stats["failed_events"] += 1
@@ -1088,12 +1138,28 @@ class ListenerRuntimeReporter:
             listener_state = "DEGRADED"
         else:
             listener_state = "FAILED"
+        ingest_state = "RUNNING" if listener_state == "READY" else listener_state
+        worker, depth = "DIRECT", 0
+        if self._pipeline is not None:
+            stats = self._pipeline.stats()
+            worker = f"{stats['mode'].upper()} x{stats['workers']}"
+            depth = stats.get("queue_depth")
+            payload.update({"dropped_events": stats["dropped"], "dropped_udp": stats["dropped_udp"],
+                            "dropped_tcp": stats.get("dropped_tcp", 0), "queue_capacity": stats.get("queue_capacity"),
+                            "ingest_mode": stats["mode"], "ingest_workers": stats["workers"],
+                            "ingest_workers_alive": stats["workers_alive"],
+                            "ingest_restarts": stats.get("restarts", 0)})
+            if stats["mode"] == "processes":
+                # Children store and detect; their counters are authoritative.
+                payload["processed_events"], payload["failed_events"] = stats["processed"], stats["failed"]
+            if stats["workers_alive"] < stats["workers"] and ingest_state == "RUNNING":
+                ingest_state = "DEGRADED"
         payload.update({
             "database": "READY",
             "listener": listener_state,
-            "ingest": "RUNNING" if listener_state == "READY" else listener_state,
-            "worker": "DIRECT",
-            "queue_depth": 0,
+            "ingest": ingest_state,
+            "worker": worker,
+            "queue_depth": depth,
             "uptime_seconds": round(max(0.0, time.time() - self.started), 1),
             "heartbeat_at": datetime.now(timezone.utc).isoformat(),
         })
@@ -1142,6 +1208,10 @@ def main():
     ap.add_argument("--db", default="siem.db", help="SQLite database path (used only when no db-config.json / --db-config selects a backend)")
     ap.add_argument("--db-config", default=None, help="path to db-config.json (sqlite/postgres selector)")
     ap.add_argument("--db-credentials", default=None, help="PostgreSQL component credential overlay (user/password only)")
+    ap.add_argument("--ingest-processes", default=None,
+                    help='ingest processes: a number, or "auto" to size from this machine (overrides db-config.json "ingest")')
+    ap.add_argument("--ingest-threads", default=None, help="worker threads when running one ingest process")
+    ap.add_argument("--ingest-queue", default=None, help="queued messages per ingest process before UDP drops")
     args = ap.parse_args()
 
     db_cfg = dbmod.load_config(args.db_config, sqlite_fallback=args.db,
@@ -1163,41 +1233,82 @@ def main():
         ports = [514]
     print(f"[listen] syslog ports: {', '.join(map(str, ports))}")
 
-    storage = Storage(db_config=db_cfg)
-    engine = RuleEngine(storage)
-    engine.start_monitor()
-    forwarders = ForwarderManager(storage, listen_port=ports[0])
-    ioc = IOCMatcher(storage)
-    fields = FieldIndexer(storage)
-    runtime_reporter = ListenerRuntimeReporter(db_cfg)
+    import capacity
+    try:
+        ingest = capacity.ingest_settings(db_cfg, {"processes": args.ingest_processes,
+                                                   "threads": args.ingest_threads,
+                                                   "queue_size": args.ingest_queue})
+    except ValueError as exc:
+        print(f"[error] {exc}", file=sys.stderr); sys.exit(1)
+    for warning in ingest["warnings"]:
+        print(f"[ingest] warning: {warning}")
+    if ingest["mode"] == "processes":
+        print(f"[ingest] {ingest['processes']} processes, {ingest['queue_size']} queued messages each "
+              f"(processes: {ingest['source']['processes']})")
+    else:
+        print(f"[ingest] 1 process, {ingest['threads']} worker threads, {ingest['queue_size']} queued messages "
+              f"(threads: {ingest['source']['threads']})")
 
-    def on_message(raw: str, source_ip: str):
-        try:
-            event = parse_syslog(raw, source_ip)
-            extracted_fields = fields.extract(event)
-            log_id = storage.insert_log(event, fields=extracted_fields)
-            # Preserve unidentified-source diagnostics without a second write
-            # path; raw/log_fields/security_events were committed together.
+    storage = Storage(db_config=db_cfg)
+    fields = FieldIndexer(storage)      # also keeps the parser's source profiles current
+    runtime_reporter = ListenerRuntimeReporter(db_cfg)
+    engine = None
+
+    if ingest["mode"] == "processes":
+        from ingest_workers import ProcessIngest
+        pipeline = ProcessIngest(db_cfg, ingest["processes"], ingest["queue_size"], listen_port=ports[0])
+    else:
+        engine = RuleEngine(storage)
+        engine.start_monitor()
+        forwarders = ForwarderManager(storage, listen_port=ports[0])
+        ioc = IOCMatcher(storage)
+
+        def process_message(raw, source_ip, received_at=None):
             try:
-                fields._maybe_capture_unidentified(log_id, event, len(extracted_fields))
-            except Exception:
-                pass
-            engine.process(log_id, event, fields=extracted_fields)
-            ioc.process(log_id, event)
-            forwarders.forward(event)  # relay the original raw message downstream
-            runtime_reporter.record_success(event.get("received_at"), source_ip=source_ip)
-            sev = event["severity"] or "-"
-            print(f"[{event['received_at']}] {source_ip} [{sev}] {event['message'][:120]}")
-        except Exception as exc:
-            runtime_reporter.record_failure(exc, source_ip=source_ip)
-            raise
+                event = parse_syslog(raw, source_ip)
+                if received_at:
+                    event["received_at"] = received_at
+                extracted_fields = fields.extract(event)
+                log_id = storage.insert_log(event, fields=extracted_fields)
+                # Preserve unidentified-source diagnostics without a second write
+                # path; raw/log_fields/security_events were committed together.
+                try:
+                    fields._maybe_capture_unidentified(log_id, event, len(extracted_fields))
+                except Exception:
+                    pass
+                engine.process(log_id, event, fields=extracted_fields)
+                ioc.process(log_id, event)
+                forwarders.forward(event)  # relay the original raw message downstream
+                runtime_reporter.record_success(event.get("received_at"), source_ip=source_ip)
+                sev = event["severity"] or "-"
+                print(f"[{event['received_at']}] {source_ip} [{sev}] {event['message'][:120]}")
+            except Exception as exc:
+                runtime_reporter.record_failure(exc, source_ip=source_ip)
+                raise
+
+        pipeline = IngestPipeline(storage, worker_count=ingest["threads"], queue_size=ingest["queue_size"],
+                                  process=process_message)
+    runtime_reporter.set_pipeline(pipeline)
+
+    def receiver(transport):
+        # Receive threads only stamp the arrival time and queue the message, so
+        # a slow database write never delays reading the next UDP datagram.
+        def on_message(raw, source_ip):
+            received_at = datetime.now(timezone.utc).isoformat()
+            accepted = pipeline.submit(raw, source_ip, transport=transport, received_at=received_at)
+            if accepted and ingest["mode"] == "processes":
+                runtime_reporter.record_success(received_at, source_ip=source_ip)   # per-sender arrival
+            elif not accepted:
+                runtime_reporter.record_drop(source_ip)
+        return on_message
 
     threads = []
     for p in ports:
         if args.protocol in ("udp", "both"):
-            threads.append(threading.Thread(target=udp_listener, args=(args.host, p, on_message), daemon=True))
+            threads.append(threading.Thread(target=udp_listener, daemon=True,
+                                            args=(args.host, p, receiver("udp"), ingest["udp_buffer_kb"] * 1024)))
         if args.protocol in ("tcp", "both"):
-            threads.append(threading.Thread(target=tcp_listener, args=(args.host, p, on_message), daemon=True))
+            threads.append(threading.Thread(target=tcp_listener, args=(args.host, p, receiver("tcp")), daemon=True))
 
     if not threads:
         print("No protocol selected.", file=sys.stderr)
@@ -1209,13 +1320,21 @@ def main():
     runtime_reporter.start()
 
     print(f"mini-SIEM listener running. DB: {args.db}. Press Ctrl+C to stop.")
+
+    def _terminate(_signum, _frame):
+        raise KeyboardInterrupt
+    signal.signal(signal.SIGTERM, _terminate)      # systemd stop: drain like Ctrl+C
     try:
         while True:
             time.sleep(1)
+            if ingest["mode"] == "processes":
+                pipeline.supervise()
     except KeyboardInterrupt:
-        print("\nShutting down.")
+        print("\nShutting down: finishing queued messages (up to 10 seconds).")
     finally:
-        engine.stop_monitor()
+        pipeline.stop(drain=True, timeout=10)
+        if engine is not None:
+            engine.stop_monitor()
         runtime_reporter.stop()
 
 

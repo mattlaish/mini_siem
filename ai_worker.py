@@ -32,12 +32,13 @@ import severity as severity_mod
 
 class TriageWorker:
     def __init__(self, get_conn, get_settings, poll_interval=5,
-                 batch=5, max_attempts=3):
+                 batch=5, max_attempts=3, lease=None):
         self.get_conn = get_conn
         self.get_settings = get_settings
         self.poll_interval = poll_interval
         self.batch = batch
         self.max_attempts = max_attempts
+        self.lease = lease                     # optional () -> bool (leases.LeaseKeeper)
         self._thread = None
         self._stop = threading.Event()
 
@@ -60,9 +61,15 @@ class TriageWorker:
             if self._stop.is_set():
                 break
             try:
-                self.run_once()
+                self._cycle()
             except Exception as exc:
                 print(f"[triage] cycle error: {type(exc).__name__}: {exc}")
+
+    def _cycle(self):
+        # One process triages at a time, so an alert is never sent to the AI twice.
+        if self.lease is not None and not self.lease():
+            return 0
+        return self.run_once()
 
     # -- one drain cycle (also directly callable in tests) ------------------
 

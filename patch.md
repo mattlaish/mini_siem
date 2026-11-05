@@ -902,3 +902,20 @@ NOT_RUN. Resolves the missing connector/archive item recorded October 27.
   R3/G1 remains PARTIAL: keep deadline/cancel/concurrency/crash/retention and native
   single-authority/observed-asset limitations explicit. Next is operational-gap
   qualification or a separately requested, versioned consolidated return.
+
+## 2026-11-05 - Workload sharing and capacity scan
+
+Status: READY FOR OWNER REVIEW.
+
+- Queued listener ingest with per-sender ordering and counted drops; optional
+  multi-process ingest routed by the repeated-activity key; job leases
+  (`worker_leases`) for AI triage, tickets, feeds, reports and per-connection
+  pollers; machine capacity scan with recommendation (CLI, System Health,
+  Settings). New files: leases.py, capacity.py, ingest_workers.py,
+  tools/capacity_advisor.py.
+- Fixes: fresh databases missing forwarders.origin_mode/tcp_framing (listener
+  crashed on start); UDP receive buffer enlarged (kernel drops on bursts).
+- Deployment: owner schema initialization creates worker_leases; rerun the
+  PostgreSQL privilege tool; restart listener and dashboard.
+- Validation: 25 new tests PASS; full suite 523 PASS / same 38 pre-existing
+  failures; static scan 8 HIGH unchanged.

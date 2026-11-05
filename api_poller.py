@@ -194,28 +194,41 @@ class _PollerThread:
             if not row or not row["enabled"]:
                 break
             interval = max(15, int(row.get("interval_seconds") or 60))
-            try:
-                items, next_cursor = self._poll_once(row)
-                if items:
-                    self.mgr.ingest_batch(row, items)
-                self.mgr.record_success(self.row_id, len(items), next_cursor)
-            except Exception as exc:  # noqa: BLE001 — surface any error to the UI
-                msg = str(exc) if str(exc) else f"{type(exc).__name__}"
-                self.mgr.record_error(self.row_id, msg)
+            self._cycle(row, interval)
             # sleep in small slices so stop() is responsive
             waited = 0
             while waited < interval and not self._stop.is_set():
                 time.sleep(min(2, interval - waited))
                 waited += 2
+        self.mgr.release_lease(self.row_id)
+
+    def _cycle(self, row, interval):
+        """Poll once if this process holds the connection's lease. The lease
+        outlives several intervals, and the cursor is re-read from the
+        database each cycle, so a takeover continues where the holder stopped."""
+        if not self.mgr.hold_lease(self.row_id, interval):
+            return False
+        try:
+            items, next_cursor = self._poll_once(row)
+            if items:
+                self.mgr.ingest_batch(row, items)
+            self.mgr.record_success(self.row_id, len(items), next_cursor)
+        except Exception as exc:  # noqa: BLE001 — surface any error to the UI
+            msg = str(exc) if str(exc) else f"{type(exc).__name__}"
+            self.mgr.record_error(self.row_id, msg)
+        return True
 
 
 class PollerManager:
     """Owns the poller threads; reconciles them with the api_pollers table."""
 
-    def __init__(self, conn_factory, ingest_fn, resolve_secret_fn):
+    def __init__(self, conn_factory, ingest_fn, resolve_secret_fn, lease_keeper=None):
         self._conn_factory = conn_factory
         self._ingest_fn = ingest_fn                # (event_dict) -> None
         self._resolve_secret = resolve_secret_fn   # (row) -> plaintext secret
+        # One lease per connection: with several dashboard processes each
+        # connection is polled by exactly one of them, and they share the set.
+        self._leases = lease_keeper
         self._threads = {}
         self._lock = threading.Lock()
         self._reconcile_stop = threading.Event()
@@ -246,6 +259,16 @@ class PollerManager:
                     t = _PollerThread(rid, self)
                     self._threads[rid] = t
                     t.start()
+
+    # -- leases ------------------------------------------------------------
+    def hold_lease(self, rid, interval):
+        if self._leases is None:
+            return True
+        return self._leases.hold(f"poller:{rid}", ttl=max(120, 3 * int(interval)))
+
+    def release_lease(self, rid):
+        if self._leases is not None:
+            self._leases.release(f"poller:{rid}")
 
     # -- data access used by threads --------------------------------------
     def _enabled_rows(self):

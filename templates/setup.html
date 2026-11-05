@@ -144,6 +144,17 @@
       <div class="fld" style="align-self:end;"><button id="savePortsBtn">Save ports</button></div>
     </div>
     <span class="status-line" id="portsStatus"></span>
+
+    <h3 style="font-size:13px;margin:22px 0 6px;">Processing received logs</h3>
+    <p class="sub">How many processes and threads store and check incoming logs. <strong>Auto</strong> sizes this from the machine each time the log collection service starts; see <a href="/health">System Health → Processing capacity</a> for the scan and reasons. <strong>Restart the log collection service after saving.</strong></p>
+    <p class="sub" id="ingRec" aria-live="polite"></p>
+    <div class="form-grid" style="grid-template-columns:1fr 1fr 1fr;">
+      <div class="fld"><label for="ingProcesses">Ingest processes</label>
+        <select id="ingProcesses"><option value="auto">Auto — size from this machine</option>{% for n in range(1, 17) %}<option value="{{ n }}">{{ n }}</option>{% endfor %}</select></div>
+      <div class="fld"><label for="ingThreads">Worker threads <span class="hint">(one process only)</span></label><input type="number" id="ingThreads" class="mono" min="1" max="16"></div>
+      <div class="fld"><label for="ingQueue">Queued messages per process <span class="hint">(UDP beyond this is dropped)</span></label><input type="number" id="ingQueue" class="mono" min="100" max="200000"></div>
+      <div class="fld full"><button id="ingSave" type="button">Save processing settings</button> <button class="secondary" id="ingUseRec" type="button">Use recommended</button><span class="status-line" id="ingStatus"></span></div>
+    </div>
   </div>
 
   <div class="panel" data-section="sec-troubleshoot">
@@ -1014,6 +1025,46 @@ document.getElementById('savePortsBtn').addEventListener('click', async () => {
   }
 });
 loadListenPorts();
+
+// ---- Processing received logs (ingest processes/threads/queue) ----
+let ingCapacity = null;
+function ingSync(){
+  const multi = $('ingProcesses').value !== 'auto' && Number($('ingProcesses').value) > 1;
+  $('ingThreads').disabled = multi;   // each extra process handles its share one message at a time
+}
+async function loadIngest(){
+  if (!IS_ADMIN) return;
+  try {
+    const d = ingCapacity = await MS.getJSON('/api/capacity');
+    const saved = d.saved || {}, cfg = d.configured || {}, r = d.recommendation, cpu = d.scan.cpu, mem = d.scan.memory;
+    $('ingProcesses').value = String(saved.processes || (cfg.source && cfg.source.processes === 'default' ? 1 : 'auto'));
+    $('ingThreads').value = saved.threads || cfg.threads || r.threads;
+    $('ingQueue').value = saved.queue_size || cfg.queue_size || r.queue_size;
+    ingSync();
+    $('ingRec').textContent = `This machine: ${cpu.effective} usable CPU core(s), ${mem.available_mb == null ? 'unknown' : mem.available_mb + ' MB'} memory free, ${d.scan.database.backend}. `
+      + `Recommended: ${r.processes} process${r.processes === 1 ? ` with ${r.threads} threads` : 'es'}, ${r.queue_size} queued messages each.`
+      + (r.warnings.length ? ' ' + r.warnings.join(' ') : '')
+      + (d.config_writable === false ? ' Settings cannot be saved from this console (settings file is read-only).' : '');
+  } catch (e) { MS.failed('ingRec', e, loadIngest, 'the processing recommendation'); }
+}
+$('ingProcesses').addEventListener('change', ingSync);
+$('ingUseRec').addEventListener('click', () => {
+  if (!ingCapacity) return;
+  const r = ingCapacity.recommendation;
+  $('ingProcesses').value = 'auto'; $('ingThreads').value = r.threads; $('ingQueue').value = r.queue_size; ingSync();
+  $('ingStatus').textContent = 'Recommended values filled in. Save to apply.'; $('ingStatus').className = 'status-line';
+});
+$('ingSave').addEventListener('click', async () => {
+  const st = $('ingStatus'), btn = $('ingSave');
+  btn.disabled = true; st.textContent = 'Saving…'; st.className = 'status-line';
+  try {
+    const body = {processes: $('ingProcesses').value, threads: $('ingThreads').value, queue_size: $('ingQueue').value};
+    await MS.getJSON('/api/ingest-settings', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+    st.textContent = 'Saved. Restart the log collection service to apply (sudo systemctl restart mini-siem-listener).'; st.className = 'status-line ok';
+  } catch (e) { st.textContent = e.message; st.className = 'status-line err'; }
+  finally { btn.disabled = false; }
+});
+loadIngest();
 
 // ---- Cloud log connections ----
 function pFmtTime(s){ if(!s) return '—'; try{ return MS.fmtTime(s); }catch(e){ return s; } }
