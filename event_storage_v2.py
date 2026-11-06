@@ -137,6 +137,11 @@ def postgres_schema_statements() -> list[str]:
                    src_port, dst_port, user_name, vendor, product,
                    event_type, event_code, asset_id, identity_id, fields, search_fields
               FROM security_events""",
+        # e.* expands to the base view's columns, so a new security_events
+        # column (search_fields) lands mid-list; CREATE OR REPLACE cannot do
+        # that on an existing install. Rebuild it; grants are refreshed by
+        # tools/postgres_privilege_boundary.py after owner initialization.
+        "DROP VIEW IF EXISTS security_event_context",
         """CREATE OR REPLACE VIEW security_event_context AS
             SELECT e.*,
                    a.hostname AS asset_hostname,

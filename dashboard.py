@@ -937,13 +937,16 @@ def _alias_match_clause(concept, mode, needle, aliases, backend="sqlite_like", b
     pred, pp = _field_value_predicate("hf", alias_mode, needle, backend=backend)
     temporal, time_params = "", []
     if str(backend).startswith("postgres"):
+        # Constant window bounds only: they still prune partitions, while a
+        # per-event correlation (hf.event_time=l.event_time) would force one
+        # lookup per event in the window instead of one hashed lookup.
         dates = []
         for value, op in zip(bounds, (">=", "<=")):
             if value:
-                dates.append(f" AND hf.event_time {op} ?::timestamptz")
+                dates.append(f"hf.event_time {op} ?::timestamptz")
                 time_params.append(value)
-        temporal = (" AND ((hf.event_time=l.event_time" + "".join(dates)
-                    + ") OR hf.event_time='-infinity'::timestamptz)")
+        if dates:
+            temporal = " AND ((" + " AND ".join(dates) + ") OR hf.event_time='-infinity'::timestamptz)"
     return (f"EXISTS (SELECT 1 FROM log_fields hf WHERE hf.log_id=l.id{temporal} "
             f"AND hf.field IN ({ph}) AND {pred})"), time_params + list(aliases) + pp
 
@@ -1340,7 +1343,8 @@ def _query_logs_extracted(args, limit, select_cols, sort_cap=100000, offset=0):
             field_sql = ("SELECT log_id, field, value FROM log_fields WHERE log_id IN ("
                          + ph + ") AND field IN (" + fph + ")")
             time_sql, time_params = _field_lookup_window(args, pg)
-            for fr in conn.execute(field_sql + time_sql, ids + fields + time_params).fetchall():
+            query = field_sql + time_sql            # placeholders and fixed fragments only
+            for fr in conn.execute(query, ids + fields + time_params).fetchall():
                 vals.setdefault(fr["log_id"], {})[fr["field"]] = fr["value"]
             for r in rows:
                 got = vals.get(r["id"], {})
@@ -1420,7 +1424,8 @@ def api_logs():
                      "WHERE field IN (" + placeholders(len(wanted)) + ") AND log_id IN (" + ph + ")")
         per_log = {}
         time_sql, time_params = _field_lookup_window(args, pg)
-        for f in conn.execute(field_sql + time_sql, list(wanted) + ids + time_params).fetchall():
+        query = field_sql + time_sql                # placeholders and fixed fragments only
+        for f in conn.execute(query, list(wanted) + ids + time_params).fetchall():
             per_log.setdefault(f["log_id"], {})[f["field"]] = f["value"]
         conn.close()
         for r in rows:

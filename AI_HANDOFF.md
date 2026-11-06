@@ -1,5 +1,38 @@
 # AI Handover Prompt - mini-SIEM
 
+## PostgreSQL search slice measured — 2026-11-06 (cloud session)
+
+Benchmarked fb51c96 with tools/postgres_search_benchmark.py on a local
+PostgreSQL 16 (3,000 rows in the searched day + 60,000 over 120 days, 8
+repeats), against the previous release (fd92537) with the same harness.
+
+With history added, the previous release degraded on field searches (exact
+19 ms/10,016 blocks, prefix 22 ms/13,342, OR/exclude 39 ms/21,167, CIDR
+72 ms/11,363). The new layout stays flat as history grows: exact 8 ms/824,
+three exact 4 ms/99, prefix 7 ms/445, OR/exclude 9 ms/1,840, CIDR 3.5 ms/58.
+Serial batch ingest roughly doubled (≈310 → ≈510–600 rows/s here).
+Day partitions gave no gain over month for 24 h searches at this scale and
+were slower before history existed (pruning skipped on fresh partitions).
+
+Fixed here:
+- Upgrading an existing PostgreSQL database failed in owner initialization
+  ("cannot change name of view column asset_hostname to search_fields"):
+  security_event_context selects e.*, so it is now dropped and recreated.
+  Verified: a database created by fd92537 upgrades, passes the runtime check
+  and returns its old rows for all search types (fallback paths).
+- Host/source/destination text filters correlated the alias lookup on each
+  event's time, forcing one log_fields probe per event in the window
+  (10,113 blocks vs 591 before). Now constant window bounds: 659 blocks.
+- Static scan back to 8 (five fixed-fragment concatenations moved out of
+  execute()); stale "41 migrations" test updated to 42.
+
+Still open: existing installs keep an unsplit log_fields (no data migration),
+so they do not get the time-split field table; "contains" with a common
+substring reads every match in the window (9,959 vs 1,176 blocks before);
+the DEFAULT-partition warning is a System Health notice, not an alert;
+/api/logs/facets?field= has no UI; day layout not recommended for
+indefinite retention (partition count).
+
 ## PostgreSQL search and storage implementation — 2026-11-06
 
 Owner asked to implement first without testing. No test suite, PostgreSQL server,

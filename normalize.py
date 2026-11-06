@@ -102,7 +102,8 @@ def write_fields(conn, log_id: int, fields: dict, event_time=None):
             values = ",".join(["(?,?,?,?,?::timestamptz)"] * len(batch))
             args = [v for k, text, norm in batch
                     for v in (log_id, k, text, norm, event_time or "-infinity")]
-            conn.execute("INSERT INTO log_fields (log_id, field, value, value_norm, event_time) VALUES " + values, args)
+            sql = "INSERT INTO log_fields (log_id, field, value, value_norm, event_time) VALUES " + values
+            conn.execute(sql, args)
         return
     for key, text, norm in rows:
         conn.execute(
