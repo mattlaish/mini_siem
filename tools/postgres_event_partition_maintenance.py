@@ -39,7 +39,7 @@ def maintain(config_path: Path, credentials_path: Path, months: int) -> dict:
     try:
         row = conn.execute(
             "SELECT current_user AS role, "
-            "public.minisiem_ensure_security_event_partitions(date_trunc('month', now()), ?) AS created",
+            "public.minisiem_ensure_security_event_partitions(now(), ?) AS created",
             (months,),
         ).fetchone()
         conn.commit()

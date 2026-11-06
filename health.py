@@ -220,7 +220,7 @@ def siem_metrics(conn, db_config):
 
 def collect(conn, db_config):
     """One-shot snapshot of everything for the /api/health endpoint."""
-    return {
+    result = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "cpu": cpu_percent(),
         "load": load_average(),
@@ -233,3 +233,16 @@ def collect(conn, db_config):
         "runtime": runtime_health_mod.listener_snapshot_from_db(conn),
         "has_psutil": _HAS_PSUTIL,
     }
+    if db_config.get("backend") == "postgres":
+        event_row = conn.execute(
+            "SELECT EXISTS (SELECT 1 FROM public.security_events_default) AS present").fetchone()
+        field_table = conn.execute("SELECT to_regclass('public.log_fields_default') AS relation").fetchone()
+        field_row = (conn.execute(
+            """SELECT EXISTS (SELECT 1 FROM public.log_fields_default
+                              WHERE event_time > '-infinity'::timestamptz) AS present""").fetchone()
+            if field_table["relation"] else None)
+        result["default_partitions"] = {
+            "events": bool(event_row["present"]),
+            "dated_fields": bool(field_row["present"]) if field_row is not None else None,
+        }
+    return result

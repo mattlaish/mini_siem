@@ -1,5 +1,13 @@
 # mini-SIEM
 
+## PostgreSQL search and storage
+
+New PostgreSQL installs use time-partitioned event and field tables, normalized
+exact-field search, typed IP/CIDR and port filters, and a recent-24-hour default
+in Log Search. Retention is unchanged. See [PostgreSQL search and layout](POSTGRES_SEARCH.md)
+for setup, month/week/day choices and the optional synthetic benchmark. This
+revision has not been run or benchmarked against PostgreSQL.
+
 ## Connector recovery completed — 2026-10-28
 
 The previously missing Dashboard reader connector, owner token tool, schemas and

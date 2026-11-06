@@ -5,7 +5,7 @@ Status: `IMPLEMENTED_TESTING_DEFERRED`
 This document is the canonical data-model reference for the PostgreSQL Event
 Storage v2 slice.  It describes implemented source behavior.  Live PostgreSQL
 migration, planner, privilege, restart, and sustained-performance qualification
-remain deferred until a PostgreSQL-equipped environment is available.
+remain deferred for this revision at the owner's request.
 
 ## Storage planes
 
@@ -37,9 +37,13 @@ partitioned: `(event_time, id)`.
 
 ## Partition lifecycle
 
-`security_events` is `PARTITION BY RANGE (event_time)` with monthly child
-partitions and a default safety partition.  Owner setup creates the schema and
-initial partitions.  Runtime partition pre-creation is delegated to the bounded
+`security_events` and fresh PostgreSQL `log_fields` are range-partitioned by
+`event_time` with the same UTC boundaries and separate default safety partitions.
+Month is the default; a new empty database may set
+`postgres.partition_granularity` to `week` or `day` before owner initialization.
+The owner setup creates the schema and initial partitions. Existing partitions
+are not reshaped, and a legacy nonpartitioned field table remains nonpartitioned.
+Runtime partition pre-creation is delegated to the bounded
 SECURITY DEFINER function
 `minisiem_ensure_security_event_partitions(start, months)`, where `months` is
 restricted to 1..24.
@@ -62,6 +66,7 @@ index-friendly semantics:
 
 - full IP -> `INET =`;
 - CIDR -> `INET <<= CIDR`;
+- source/destination port or inclusive range -> typed integer comparison;
 - hostname/destination bare text -> escaped prefix lookup;
 - `*text*` -> explicit contains lookup only;
 - event time -> typed `TIMESTAMPTZ` range predicate;
@@ -70,8 +75,12 @@ index-friendly semantics:
 
 The parent defines entity/time indexes for source/destination/peer IP,
 asset/identity, event type, user, vendor/product, and event code, plus
-hostname/destination prefix indexes.  JSONB fields have a GIN index; message
-search has a text-search GIN index; event time has a BRIN index.
+hostname/destination prefix indexes. `search_fields` contains normalized
+field/value arrays for combined exact AND filters via GIN `jsonb_path_ops`;
+original `fields` remains unchanged. Message search has a text-search GIN index.
+There is no time BRIN index. Prefix/contains/OR/exclusion and legacy fallback
+retain field-table lookups. See [PostgreSQL search and layout](POSTGRES_SEARCH.md)
+for owner setup, benchmark instructions and coverage limits.
 
 ## Relational foundation
 

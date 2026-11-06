@@ -2,8 +2,8 @@
 
 ## Purpose
 
-Latest implementation: 2026-10-28 connector and historical return recovery. See the
-dated entry at the end and RECOVERY_2026-10-28.md; older slice statuses are historical
+Latest implementation: 2026-11-06 PostgreSQL search and storage. See the dated
+entry at the end and POSTGRES_SEARCH.md; older slice statuses are historical
 where explicitly superseded. Owner handles Git synchronization manually.
 
 This file is the persistent implementation ledger for AI-assisted development.
@@ -919,3 +919,24 @@ Status: READY FOR OWNER REVIEW.
   PostgreSQL privilege tool; restart listener and dashboard.
 - Validation: 25 new tests PASS; full suite 523 PASS / same 38 pre-existing
   failures; static scan 8 HIGH unchanged.
+
+## 2026-11-06 — PostgreSQL search and storage
+
+Status: implemented in source; PostgreSQL and performance validation deferred
+at the owner's request. No Git, tests, database startup or schema execution.
+
+- New PG field tables partition by the event clock alongside typed events; UTC
+  month default, fresh week/day option. Existing layouts are preserved. Owner
+  maintenance pre-creates partitions; System Health flags dated overflow.
+- Batch field writes, persist normalized JSONB without replacing raw evidence,
+  combine exact AND searches, use typed IP/CIDR/port routes and retain legacy,
+  OR, negative and prefix behavior. Add targeted prefix, DNS/URL trigram, and
+  typed indexes; expose time-bounded field counts/top values.
+- PostgreSQL browser/paged search defaults to 24h with stable appended pages,
+  explicit history and unrestricted evidence IDs. Raw PK supplies the snapshot
+  watermark. Direct legacy API scope and SQLite storage behavior stay compatible.
+- Added optional guarded synthetic benchmark for future month/week/day
+  comparison. No baseline or speedup asserted. Owner setup needs `pg_trgm`,
+  migration marker 42 and refreshed PostgreSQL grants before runtime.
+- Synchronized README, AI handoff, Event Storage v2 and POSTGRES_SEARCH.md.
+  Historical connector return artifact is unchanged and was not rebuilt.

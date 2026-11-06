@@ -463,13 +463,21 @@ def _schema_statements(backend: str):
         "CREATE INDEX IF NOT EXISTS idx_ai_usage_at ON ai_usage_audit(at)",
         "CREATE INDEX IF NOT EXISTS idx_ai_usage_model ON ai_usage_audit(model)",
         "CREATE INDEX IF NOT EXISTS idx_ai_usage_status ON ai_usage_audit(status)",
-        f"""CREATE TABLE IF NOT EXISTS log_fields (
+        ("""CREATE TABLE IF NOT EXISTS log_fields (
+            id BIGSERIAL NOT NULL,
+            log_id BIGINT NOT NULL,
+            field TEXT NOT NULL,
+            value TEXT,
+            value_norm TEXT,
+            event_time TIMESTAMPTZ NOT NULL DEFAULT '-infinity',
+            PRIMARY KEY (event_time, id)
+        ) PARTITION BY RANGE (event_time)""" if backend == "postgres" else f"""CREATE TABLE IF NOT EXISTS log_fields (
             id      {pk},
             log_id  INTEGER NOT NULL,
             field   TEXT NOT NULL,
             value   TEXT,
             value_norm TEXT
-        )""",
+        )"""),
         "CREATE INDEX IF NOT EXISTS idx_lf_log_id ON log_fields(log_id)",
         # API ingest keys: products that can only POST logs authenticate with
         # one of these. Only the hash is stored; the plaintext key is shown
@@ -579,6 +587,19 @@ def _schema_statements(backend: str):
         )""",
     ]
     if backend == "postgres":
+        stmts.extend([
+            "ALTER TABLE log_fields ADD COLUMN IF NOT EXISTS event_time TIMESTAMPTZ NOT NULL DEFAULT '-infinity'",
+            """DO $ddl$ BEGIN
+                IF EXISTS (SELECT 1 FROM pg_class WHERE oid='public.log_fields'::regclass AND relkind='p') THEN
+                    CREATE TABLE IF NOT EXISTS public.log_fields_default PARTITION OF public.log_fields DEFAULT;
+                END IF;
+            END $ddl$""",
+            "CREATE INDEX IF NOT EXISTS idx_lf_prefix ON log_fields(field, value_norm text_pattern_ops)",
+            "CREATE EXTENSION IF NOT EXISTS pg_trgm",
+            """CREATE INDEX IF NOT EXISTS idx_lf_dns_url_trgm
+               ON log_fields USING GIN(value_norm gin_trgm_ops)
+               WHERE field IN ('query','url')""",
+        ])
         # PostgreSQL Event Storage v2 is an owner-created typed query projection.
         # The historical logs/log_fields tables remain the raw evidence plane.
         from event_storage_v2 import postgres_schema_statements
@@ -801,6 +822,9 @@ def _migrations():
         "SELECT 1",
         "SELECT 1",
         "SELECT 1",
+        # Owner initialization installs the PostgreSQL search projection/layout
+        # above; this marker prevents older schemas from starting new runtimes.
+        "SELECT 1",
     ]
 
 
@@ -901,10 +925,8 @@ def _ensure_performance_indexes(conn):
     ]
     if conn.backend == "postgres":
         stmts = shared + [
-            # Retire security_events indexes no query uses: nothing filters the
-            # JSONB `fields` column with GIN operators (field search goes through
-            # log_fields), and the BRIN(event_time) duplicates the (event_time,
-            # id) primary key. Both only add write cost.
+            # The new GIN targets normalized search_fields, not raw fields.
+            # BRIN(event_time) duplicates the partition's time-led primary key.
             "DROP INDEX IF EXISTS idx_se_fields_gin",
             "DROP INDEX IF EXISTS idx_se_event_time_brin",
         ]
@@ -1248,12 +1270,17 @@ def initialize(config: dict):
                 pass
             raise
 
-        # Fresh PostgreSQL installs pre-create the current and next two monthly
+        # Fresh PostgreSQL installs pre-create the current and next two months of
         # partitions. Runtime insertions still have a DEFAULT safety partition,
         # while a maintenance timer can call the bounded SECURITY DEFINER
         # function to stay ahead without general DDL privileges.
         if config.get("backend") == "postgres":
             from event_storage_v2 import ensure_partitions_owner
+            layout = (config.get("postgres") or {}).get("partition_granularity")
+            if layout is not None:
+                if layout not in ("month", "week", "day"):
+                    raise ValueError("postgres.partition_granularity must be month, week, or day")
+                conn.execute("SELECT set_config('minisiem.partition_granularity', ?, true)", (layout,))
             ensure_partitions_owner(conn, months=3)
             conn.commit()
 

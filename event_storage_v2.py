@@ -102,6 +102,13 @@ def postgres_schema_statements() -> list[str]:
         ) PARTITION BY RANGE (event_time)""",
         """CREATE TABLE IF NOT EXISTS security_events_default
             PARTITION OF security_events DEFAULT""",
+        "ALTER TABLE security_events ADD COLUMN IF NOT EXISTS search_fields JSONB",
+        "CREATE INDEX IF NOT EXISTS idx_se_search_fields_gin ON security_events USING GIN(search_fields jsonb_path_ops)",
+        "CREATE INDEX IF NOT EXISTS idx_se_search_fields_pending ON security_events(event_time, legacy_log_id) WHERE search_fields IS NULL",
+        "CREATE INDEX IF NOT EXISTS idx_se_src_cidr ON security_events USING GIST(src_ip inet_ops)",
+        "CREATE INDEX IF NOT EXISTS idx_se_dst_cidr ON security_events USING GIST(dst_ip inet_ops)",
+        "CREATE INDEX IF NOT EXISTS idx_se_src_port_time ON security_events(src_port,event_time DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_se_dst_port_time ON security_events(dst_port,event_time DESC)",
         "CREATE INDEX IF NOT EXISTS idx_se_legacy_log_id ON security_events(legacy_log_id)",
         "CREATE INDEX IF NOT EXISTS idx_se_src_ip_time ON security_events(src_ip, event_time DESC)",
         "CREATE INDEX IF NOT EXISTS idx_se_dst_ip_time ON security_events(dst_ip, event_time DESC)",
@@ -128,7 +135,7 @@ def postgres_schema_statements() -> list[str]:
                    proc_id, msg_id, message, raw_event AS raw,
                    dst_ip::text AS destination_ip,
                    src_port, dst_port, user_name, vendor, product,
-                   event_type, event_code, asset_id, identity_id, fields
+                   event_type, event_code, asset_id, identity_id, fields, search_fields
               FROM security_events""",
         """CREATE OR REPLACE VIEW security_event_context AS
             SELECT e.*,
@@ -144,27 +151,61 @@ def postgres_schema_statements() -> list[str]:
             LANGUAGE plpgsql
             SECURITY DEFINER
             SET search_path = pg_catalog, public
+            SET timezone = 'UTC'
             AS $fn$
             DECLARE
-                i INTEGER;
                 start_at TIMESTAMPTZ;
                 end_at TIMESTAMPTZ;
+                stop_at TIMESTAMPTZ;
                 part_name TEXT;
+                field_name TEXT;
+                layout TEXT;
+                requested TEXT := nullif(current_setting('minisiem.partition_granularity', true), '');
+                field_partitioned BOOLEAN;
                 made INTEGER := 0;
             BEGIN
                 IF p_months < 1 OR p_months > 24 THEN
                     RAISE EXCEPTION 'p_months must be between 1 and 24';
                 END IF;
+                PERFORM pg_advisory_xact_lock(hashtext('minisiem.event-partitions'));
+                SELECT CASE
+                    WHEN bool_or(c.relname ~ '^security_events_day_[0-9]+$') THEN 'day'
+                    WHEN bool_or(c.relname ~ '^security_events_week_[0-9]+$') THEN 'week'
+                    WHEN bool_or(c.relname <> 'security_events_default') THEN 'month'
+                    ELSE NULL END
+                INTO layout FROM pg_inherits i JOIN pg_class c ON c.oid=i.inhrelid
+                WHERE i.inhparent='public.security_events'::regclass;
+                IF requested IS NOT NULL AND requested NOT IN ('month','week','day') THEN
+                    RAISE EXCEPTION 'partition granularity must be month, week, or day';
+                END IF;
+                IF layout IS NOT NULL AND requested IS NOT NULL AND layout <> requested THEN
+                    RAISE EXCEPTION 'cannot change existing partition granularity in place';
+                END IF;
+                layout := coalesce(layout, requested, 'month');
                 start_at := date_trunc('month', p_start);
-                FOR i IN 0..p_months-1 LOOP
-                    end_at := start_at + INTERVAL '1 month';
-                    part_name := 'security_events_' || to_char(start_at AT TIME ZONE 'UTC', 'YYYY_MM');
+                stop_at := start_at + make_interval(months => p_months);
+                start_at := date_trunc(layout, start_at);
+                SELECT relkind='p' INTO field_partitioned FROM pg_class WHERE oid='public.log_fields'::regclass;
+                WHILE start_at < stop_at LOOP
+                    end_at := start_at + CASE layout WHEN 'day' THEN INTERVAL '1 day'
+                              WHEN 'week' THEN INTERVAL '1 week' ELSE INTERVAL '1 month' END;
+                    part_name := 'security_events_' || CASE WHEN layout='month' THEN to_char(start_at,'YYYY_MM')
+                                 ELSE layout || '_' || to_char(start_at,'YYYYMMDD') END;
                     IF to_regclass('public.' || part_name) IS NULL THEN
                         EXECUTE format(
                             'CREATE TABLE public.%I PARTITION OF public.security_events FOR VALUES FROM (%L) TO (%L)',
                             part_name, start_at, end_at
                         );
                         made := made + 1;
+                    END IF;
+                    IF field_partitioned THEN
+                        field_name := replace(part_name, 'security_events_', 'log_fields_');
+                        IF to_regclass('public.' || field_name) IS NULL THEN
+                            EXECUTE format(
+                                'CREATE TABLE public.%I PARTITION OF public.log_fields FOR VALUES FROM (%L) TO (%L)',
+                                field_name, start_at, end_at
+                            );
+                        END IF;
                     END IF;
                     start_at := end_at;
                 END LOOP;
@@ -220,13 +261,34 @@ def _iso_time(value: Any) -> str | None:
         return None
 
 
+def projection_time(event):
+    return (_iso_time(event.get("device_timestamp")) or _iso_time(event.get("received_at"))
+            or datetime.now(timezone.utc).isoformat())
+
+
+def search_field_payload(fields):
+    from normalize import normalized_field_rows
+    payload = {}
+    for key, _, norm in normalized_field_rows(fields or {}):
+        values = payload.setdefault(key, [])
+        if norm not in values:
+            values.append(norm)
+    return json.dumps(payload, ensure_ascii=False, sort_keys=True)
+
+
+def _first_ip(*candidates):
+    return next((ip for ip in map(_clean_ip, candidates) if ip), None)
+
+
 def normalized_projection(event: dict, fields: dict | None = None) -> dict:
     fields = dict(fields or {})
     received = _iso_time(event.get("received_at")) or datetime.now(timezone.utc).isoformat()
     event_time = _iso_time(event.get("device_timestamp")) or received
-    dst_candidate = event.get("destination_ip") or event.get("destination") or _field(
-        fields, ("dst", "dst_ip", "dstip", "destination_ip", "dest_ip")
-    )
+    source = _first_ip(*(_field(fields, (key,)) for key in ("src_ip", "src", "srcip", "source_ip", "endpoint_ip")),
+                       event.get("source_ip"))
+    destination = _first_ip(event.get("destination_ip"),
+                            *(_field(fields, (key,)) for key in ("dst_ip", "dst", "dstip", "destination_ip", "dest_ip")),
+                            event.get("destination"))
     user = fields.get("user.name") or event.get("username") or _field(fields, USER_FIELD_NAMES)
     vendor = event.get("device_vendor") or _field(fields, ("vendor", "device_vendor"))
     product = event.get("device_product") or _field(fields, ("product", "device_product"))
@@ -242,8 +304,8 @@ def normalized_projection(event: dict, fields: dict | None = None) -> dict:
     return {
         "event_time": event_time,
         "ingested_at": received,
-        "src_ip": _clean_ip(event.get("source_ip")),
-        "dst_ip": _clean_ip(dst_candidate),
+        "src_ip": source,
+        "dst_ip": destination,
         "peer_ip": _clean_ip(event.get("peer_ip")),
         "src_port": _port(src_port),
         "dst_port": _port(dst_port),
@@ -305,7 +367,8 @@ def _observe_identity(conn, projection: dict) -> int | None:
     return int(row["id"] if isinstance(row, dict) else row[0])
 
 
-def append_projection(conn, log_id: int, event: dict, fields: dict | None = None) -> int:
+def append_projection(conn, log_id: int, event: dict, fields: dict | None = None, *,
+                      event_time=None, search_ready=False) -> int:
     """Append the typed projection for one raw log using the caller transaction.
 
     Returns 1 when inserted, 0 when an idempotent backfill finds an existing
@@ -317,30 +380,31 @@ def append_projection(conn, log_id: int, event: dict, fields: dict | None = None
     asset_id = _observe_asset(conn, p)
     identity_id = _observe_identity(conn, p)
     payload = json.dumps(p["fields"], ensure_ascii=False, sort_keys=True)
-    cur = conn.execute(
-        """INSERT INTO security_events(
+    sql = """INSERT INTO security_events(
                legacy_log_id,event_time,ingested_at,src_ip,dst_ip,peer_ip,src_port,dst_port,
                hostname,user_name,vendor,product,event_type,event_code,severity,severity_text,
                format,priority,facility,device_timestamp,destination,app_name,proc_id,msg_id,
-               message,raw_event,fields,asset_id,identity_id)
+               message,raw_event,fields,asset_id,identity_id,search_fields)
            SELECT ?,?::timestamptz,?::timestamptz,?::inet,?::inet,?::inet,?,?,
-                  ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?::jsonb,?,?
-            WHERE NOT EXISTS (
-                SELECT 1 FROM security_events WHERE legacy_log_id=? LIMIT 1
-            )""",
-        (
-            int(log_id), p["event_time"], p["ingested_at"], p["src_ip"], p["dst_ip"], p["peer_ip"],
+                  ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?::jsonb,?,?,?::jsonb"""
+    params = (
+            int(log_id), event_time or p["event_time"], p["ingested_at"], p["src_ip"], p["dst_ip"], p["peer_ip"],
             p["src_port"], p["dst_port"], p["hostname"], p["user_name"], p["vendor"], p["product"],
             p["event_type"], p["event_code"], p["severity"], p["severity_text"], p["format"],
             p["priority"], p["facility"], p["device_timestamp"], p["destination"], p["app_name"],
             p["proc_id"], p["msg_id"], p["message"], p["raw_event"], payload, asset_id, identity_id,
-            int(log_id),
-        ),
+            search_field_payload(fields) if search_ready else None,
     )
+    # The main path just allocated this raw evidence ID in this transaction.
+    # Checking it across all retained partitions is only needed for backfill.
+    if not search_ready:
+        sql += " WHERE NOT EXISTS (SELECT 1 FROM security_events WHERE legacy_log_id=? LIMIT 1)"
+        params += (int(log_id),)
+    cur = conn.execute(sql, params)
     return max(0, int(getattr(cur, "rowcount", 0) or 0))
 
 
-def update_projection_fields(conn, log_id: int, event: dict, fields: dict) -> None:
+def update_projection_fields(conn, log_id: int, event: dict, fields: dict, *, search_ready=False) -> None:
     """Refresh dynamic JSONB / typed derivatives after field extraction."""
     if getattr(conn, "backend", "sqlite") != "postgres":
         return
@@ -348,7 +412,7 @@ def update_projection_fields(conn, log_id: int, event: dict, fields: dict) -> No
     identity_id = _observe_identity(conn, p)
     conn.execute(
         """UPDATE security_events
-              SET fields=?::jsonb,
+              SET fields=?::jsonb, search_fields=?::jsonb,
                   user_name=COALESCE(?, user_name),
                   identity_id=COALESCE(?, identity_id),
                   src_port=COALESCE(?, src_port),
@@ -359,7 +423,8 @@ def update_projection_fields(conn, log_id: int, event: dict, fields: dict) -> No
                   product=COALESCE(?, product)
             WHERE legacy_log_id=?""",
         (
-            json.dumps(fields or {}, ensure_ascii=False, sort_keys=True), p["user_name"], identity_id,
+            json.dumps(fields or {}, ensure_ascii=False, sort_keys=True),
+            search_field_payload(fields) if search_ready else None, p["user_name"], identity_id,
             p["src_port"], p["dst_port"], p["event_type"], p["event_code"], p["vendor"], p["product"],
             int(log_id),
         ),
@@ -370,7 +435,7 @@ def ensure_partitions_owner(conn, months: int = 3) -> int:
     if getattr(conn, "backend", "sqlite") != "postgres":
         return 0
     row = conn.execute(
-        "SELECT public.minisiem_ensure_security_event_partitions(date_trunc('month', now()), ?)",
+        "SELECT public.minisiem_ensure_security_event_partitions(now(), ?)",
         (int(months),),
     ).fetchone()
     if not row:

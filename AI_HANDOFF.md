@@ -1,5 +1,28 @@
 # AI Handover Prompt - mini-SIEM
 
+## PostgreSQL search and storage implementation — 2026-11-06
+
+Owner asked to implement first without testing. No test suite, PostgreSQL server,
+database initialization or benchmark was run for this slice. Static syntax and
+source checks only. Use the explicit Projects mini_siem root, no Git operations.
+
+- Fresh PG field storage is time-partitioned alongside typed events; month default,
+  optional fresh-install week/day, shared UTC boundaries. Legacy tables are not
+  repartitioned. The maintenance function extends both trees, with no retention
+  changes. System Health exposes dated DEFAULT-partition overflow.
+- PG field writes are batched with event time in the raw/projection transaction;
+  new projections contain normalized JSONB field arrays and omit the unnecessary
+  backfill existence probe. Raw JSON, evidence and IDs stay intact.
+- Typed INET/CIDR and port filters, combined exact JSONB containment, bounded
+  EAV fallback/OR/negative/prefix/contains paths, field top values and limited
+  DNS/URL trigrams. Search defaults to recent 24h and pins the window across
+  pagination; explicit history, IDs, legacy direct API scope and SQLite remain.
+- Owner migration marker 42 and updated split-role grants are required before
+  PostgreSQL runtime. `pg_trgm` must be available. No production operation done.
+- `POSTGRES_SEARCH.md` documents setup and limits. The optional benchmark creates
+  a uniquely named database only on a marked local test server; it was not run.
+  No claim of faster search or of a winning partition grain until measured.
+
 ## Workload sharing and capacity scan — 2026-11-05 (cloud session)
 
 Requested: wire the queued ingest pipeline, add job claiming for background

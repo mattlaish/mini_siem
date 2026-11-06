@@ -51,9 +51,9 @@ def test_postgres_event_storage_v2_schema_contract():
         "idx_se_identity_time", "idx_se_type_time",
     ):
         assert idx in ddl
-    # Retired as unused/redundant: no query filters `fields` with GIN operators,
-    # and BRIN(event_time) duplicates the (event_time, id) primary key.
+    # Index the normalized companion, not the original JSON; no time BRIN.
     assert "idx_se_fields_gin" not in ddl
+    assert "USING GIN(search_fields jsonb_path_ops)" in ddl
     assert "idx_se_event_time_brin" not in ddl
     assert "security_events_default" in ddl
     assert "minisiem_ensure_security_event_partitions" in ddl
@@ -64,7 +64,7 @@ def test_postgres_event_storage_v2_schema_contract():
 
 def test_postgres_runtime_requires_v2_tables_and_migration_ledger_advances():
     assert {"security_events", "assets", "identities"}.issubset(set(db.RUNTIME_REQUIRED_TABLES))
-    assert len(db._migrations()) == 41
+    assert len(db._migrations()) == 42
 
 
 def test_projection_normalization_uses_native_values_and_preserves_raw():

@@ -82,17 +82,32 @@ def load_patterns_from_conn(conn) -> list:
     return []
 
 
-def write_fields(conn, log_id: int, fields: dict):
+def normalized_field_rows(fields):
+    for key, value in fields.items():
+        text = str(value)[:300]
+        yield str(key)[:60], text, text.casefold()
+
+
+def write_fields(conn, log_id: int, fields: dict, event_time=None):
     """Insert extracted fields for one log (caller holds any needed lock).
 
     ``value_norm`` is the case-folded indexed representation used by exact and
     prefix query semantics; ``value`` preserves the display/evidence value.
     """
-    for k, v in fields.items():
-        text = str(v)[:300]
+    rows = list(normalized_field_rows(fields))
+    if getattr(conn, "backend", "sqlite") == "postgres":
+        # Bound parameters and statement size; commit remains with the caller.
+        for offset in range(0, len(rows), 128):
+            batch = rows[offset:offset + 128]
+            values = ",".join(["(?,?,?,?,?::timestamptz)"] * len(batch))
+            args = [v for k, text, norm in batch
+                    for v in (log_id, k, text, norm, event_time or "-infinity")]
+            conn.execute("INSERT INTO log_fields (log_id, field, value, value_norm, event_time) VALUES " + values, args)
+        return
+    for key, text, norm in rows:
         conn.execute(
             "INSERT INTO log_fields (log_id, field, value, value_norm) VALUES (?,?,?,?)",
-            (log_id, str(k)[:60], text, text.casefold()))
+            (log_id, key, text, norm))
 
 
 class FieldIndexer:
@@ -239,11 +254,16 @@ def reindex(conn, batch_size: int = 500, progress=None):
             fields = extract_fields(r["message"], patterns, json_obj=event.get("_json") or event.get("_cef"))
             fields.update(normalized)
             if fields:
-                write_fields(conn, r["id"], fields)
+                if getattr(conn, "backend", "sqlite") == "postgres":
+                    row = conn.execute("SELECT event_time FROM security_events WHERE legacy_log_id=? LIMIT 1",
+                                       (r["id"],)).fetchone()
+                    write_fields(conn, r["id"], fields, row["event_time"] if row else None)
+                else:
+                    write_fields(conn, r["id"], fields)
                 done_fields += len(fields)
             if getattr(conn, "backend", "sqlite") == "postgres":
                 from event_storage_v2 import update_projection_fields
-                update_projection_fields(conn, r["id"], event, fields)
+                update_projection_fields(conn, r["id"], event, fields, search_ready=True)
             done_logs += 1
         conn.commit()
         if progress:

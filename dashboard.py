@@ -408,7 +408,7 @@ def init_auth(auth_config_path=None):
 
 @app.route("/")
 def index():
-    return render_template("index.html")
+    return render_template("index.html", postgres_search=_db_config().get("backend") == "postgres")
 
 
 @app.route("/correlate")
@@ -895,7 +895,12 @@ def _concept_match_mode(concept, term):
             ipaddress.ip_address(raw)
             return "exact_ip", raw
         except ValueError:
-            pass
+            if "/" in raw:
+                try:
+                    ipaddress.ip_network(raw, strict=False)
+                    return "cidr", raw
+                except ValueError:
+                    pass
     # Host/destination text defaults to prefix so ordinary filters remain
     # B-tree/text_pattern_ops friendly. Contains requires explicit *...*.
     return "prefix", raw
@@ -910,6 +915,8 @@ def _base_match_clause(column, concept, mode, needle, backend="sqlite_like"):
             return "l.src_ip = ?::inet", [needle]
     if pg and concept == "destination" and mode == "exact_ip":
         return "l.dst_ip = ?::inet", [needle]
+    if pg and concept == "destination" and mode == "cidr":
+        return "l.dst_ip <<= ?::cidr", [needle]
     if mode in ("exact", "exact_ip"):
         if pg:
             return f"lower({column}) = ?", [needle.casefold()]
@@ -920,7 +927,7 @@ def _base_match_clause(column, concept, mode, needle, backend="sqlite_like"):
     return f"{column} LIKE ? COLLATE NOCASE ESCAPE '\\'", [pattern]
 
 
-def _alias_match_clause(concept, mode, needle, aliases, backend="sqlite_like"):
+def _alias_match_clause(concept, mode, needle, aliases, backend="sqlite_like", bounds=("", "")):
     if not aliases:
         return "", []
     ph = ",".join("?" * len(aliases))
@@ -928,15 +935,26 @@ def _alias_match_clause(concept, mode, needle, aliases, backend="sqlite_like"):
     # operators here; direct canonical INET remains the fast path.
     alias_mode = "prefix" if mode == "cidr" else ("exact" if mode == "exact_ip" else mode)
     pred, pp = _field_value_predicate("hf", alias_mode, needle, backend=backend)
-    return (f"EXISTS (SELECT 1 FROM log_fields hf WHERE hf.log_id=l.id "
-            f"AND hf.field IN ({ph}) AND {pred})"), list(aliases) + pp
+    temporal, time_params = "", []
+    if str(backend).startswith("postgres"):
+        dates = []
+        for value, op in zip(bounds, (">=", "<=")):
+            if value:
+                dates.append(f" AND hf.event_time {op} ?::timestamptz")
+                time_params.append(value)
+        temporal = (" AND ((hf.event_time=l.event_time" + "".join(dates)
+                    + ") OR hf.event_time='-infinity'::timestamptz)")
+    return (f"EXISTS (SELECT 1 FROM log_fields hf WHERE hf.log_id=l.id{temporal} "
+            f"AND hf.field IN ({ph}) AND {pred})"), time_params + list(aliases) + pp
 
 
-def _concept_clause(column, concept, term, negate, backend="sqlite_like"):
-    aliases = get_search_aliases().get(concept) or []
+def _concept_clause(column, concept, term, negate, backend="sqlite_like", bounds=("", "")):
     mode, needle = _concept_match_mode(concept, term)
     base_sql, base_params = _base_match_clause(column, concept, mode, needle, backend)
-    alias_sql, alias_params = _alias_match_clause(concept, mode, needle.casefold(), aliases, backend)
+    if mode == "cidr" and str(backend).startswith("postgres"):
+        return (f"NOT ({base_sql})" if negate else base_sql), base_params
+    aliases = get_search_aliases().get(concept) or []
+    alias_sql, alias_params = _alias_match_clause(concept, mode, needle.casefold(), aliases, backend, bounds)
     sql = f"({base_sql}" + (f" OR {alias_sql}" if alias_sql else "") + ")"
     params = base_params + alias_params
     return (f"NOT {sql}" if negate else sql), params
@@ -1035,13 +1053,16 @@ def _build_log_query(args, select_cols, search_backend=None):
                     params.append(f"%{_like_escape(needle)}%")
 
     for needle, negate in _concept_filter_terms(source_ip):
-        sql, sp = _concept_clause("l.source_ip", "source", needle, negate, backend=search_backend)
+        sql, sp = _concept_clause("l.source_ip", "source", needle, negate, backend=search_backend,
+                                  bounds=(time_from, time_to))
         clauses.append(sql); params.extend(sp)
     for needle, negate in _concept_filter_terms(hostname):
-        sql, sp = _concept_clause("l.hostname", "host", needle, negate, backend=search_backend)
+        sql, sp = _concept_clause("l.hostname", "host", needle, negate, backend=search_backend,
+                                  bounds=(time_from, time_to))
         clauses.append(sql); params.extend(sp)
     for needle, negate in _concept_filter_terms(destination):
-        sql, sp = _concept_clause("l.destination", "destination", needle, negate, backend=search_backend)
+        sql, sp = _concept_clause("l.destination", "destination", needle, negate, backend=search_backend,
+                                  bounds=(time_from, time_to))
         clauses.append(sql); params.extend(sp)
 
     if severity:
@@ -1069,6 +1090,20 @@ def _build_log_query(args, select_cols, search_backend=None):
     if time_to:
         clauses.append("l.event_time <= ?::timestamptz" if pg else "l.received_at <= ?")
         params.append(time_to)
+    if pg:
+        for column in ("src_port", "dst_port"):
+            raw_port = str(args.get(column, "")).strip()
+            if not raw_port:
+                continue
+            match = re.fullmatch(r"([0-9]{1,5})(?:-([0-9]{1,5}))?", raw_port)
+            if not match:
+                raise ValueError("Port must be 0–65535 or an inclusive range such as 8000-8099")
+            lo = int(match[1])
+            hi = int(match[2]) if match[2] is not None else lo
+            if not 0 <= lo <= hi <= 65535:
+                raise ValueError("Port range must be ordered and within 0–65535")
+            clauses.append(f"l.{column} BETWEEN ? AND ?" if lo != hi else f"l.{column} = ?")
+            params.extend([lo, hi] if lo != hi else [lo])
 
     where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
     SORTABLE = {"received_at": "event_time" if pg else "received_at", "source_ip": "source_ip",
@@ -1149,6 +1184,22 @@ def _query_logs_extracted(args, limit, select_cols, sort_cap=100000, offset=0):
         # every existing saved link/bookmark keeps working unchanged.
         or_mode = (args.get("fc_op") or "").strip().lower() == "or"
         or_group, or_group_params = [], []
+        pg = search_backend == "postgres_v2"
+        exact = {}
+        legacy_exact, legacy_params = [], []
+
+        def field_time(alias):
+            if not pg:
+                return "", []
+            parts, times = [], []
+            for arg, op in (("from", ">="), ("to", "<=")):
+                if args.get(arg):
+                    parts.append(f"{alias}.event_time {op} ?::timestamptz")
+                    times.append(args[arg])
+            bound = (" AND " + " AND ".join(parts)) if parts else ""
+            return (f" AND (({alias}.event_time=l.event_time{bound}) "
+                    f"OR {alias}.event_time='-infinity'::timestamptz)"), times
+
         for name, spec in filters.items():
             # tolerate the older shape (plain string) as an include filter
             if isinstance(spec, dict):
@@ -1159,11 +1210,13 @@ def _query_logs_extracted(args, limit, select_cols, sort_cap=100000, offset=0):
                 # EXCLUDE: no row for this field matching the value.
                 spec2 = _parse_field_filter(name, needle, "query")
                 pred, pred_params = _field_value_predicate("fx", spec2["mode"], spec2["needle"], backend=search_backend)
+                temporal, times = field_time("fx")
                 extra_where.append(
                     "NOT EXISTS (SELECT 1 FROM log_fields fx WHERE fx.log_id = l.id "
-                    "AND fx.field = ? AND " + pred + ")")
-                extra_params.extend([name] + pred_params)
+                    + temporal + " AND fx.field = ? AND " + pred + ")")
+                extra_params.extend(times + [name] + pred_params)
             else:
+                spec2 = _parse_field_filter(name, needle, "query")
                 if or_mode:
                     # kept in a SEPARATE accumulator (not extra_params) because
                     # this clause is only appended to extra_where AFTER the
@@ -1175,21 +1228,33 @@ def _query_logs_extracted(args, limit, select_cols, sort_cap=100000, offset=0):
                     # "where appended", desyncing every ? placeholder after
                     # the first negate+OR mix. Appending both the clause and
                     # its params after the loop, together, keeps them aligned.
-                    spec2 = _parse_field_filter(name, needle, "query")
                     pred, pred_params = _field_value_predicate("fo", spec2["mode"], spec2["needle"], backend=search_backend)
+                    temporal, times = field_time("fo")
                     or_group.append(
                         "EXISTS (SELECT 1 FROM log_fields fo WHERE fo.log_id = l.id "
-                        "AND fo.field = ? AND " + pred + ")")
-                    or_group_params.extend([name] + pred_params)
+                        + temporal + " AND fo.field = ? AND " + pred + ")")
+                    or_group_params.extend(times + [name] + pred_params)
+                elif pg and spec2["mode"] == "exact":
+                    exact[name] = [spec2["needle"]]
+                    temporal, times = field_time("fe")
+                    legacy_exact.append(
+                        "EXISTS (SELECT 1 FROM log_fields fe WHERE fe.log_id=l.id"
+                        + temporal + " AND fe.field=? AND fe.value_norm=?)")
+                    legacy_params.extend(times + [name, spec2["needle"]])
                 else:
-                    spec2 = _parse_field_filter(name, needle, "query")
                     alias = f"f{ji}"
+                    temporal, times = field_time(alias)
                     pred, pred_params = _field_value_predicate(alias, spec2["mode"], spec2["needle"], backend=search_backend)
                     joins.append(
                         f"JOIN log_fields {alias} ON {alias}.log_id = l.id "
-                        f"AND {alias}.field = ? AND {pred}")
-                    join_params.extend([name] + pred_params)
+                        f"{temporal} AND {alias}.field = ? AND {pred}")
+                    join_params.extend(times + [name] + pred_params)
                     ji += 1
+        if exact:
+            import json
+            extra_where.append("(l.search_fields @> ?::jsonb OR (l.search_fields IS NULL AND "
+                               + " AND ".join(legacy_exact) + "))")
+            extra_params.extend([json.dumps(exact, ensure_ascii=False)] + legacy_params)
         if or_group:
             # single positive filter behaves the same whether "AND" or "OR"
             # is selected, so this only changes behavior with 2+ chips.
@@ -1213,10 +1278,11 @@ def _query_logs_extracted(args, limit, select_cols, sort_cap=100000, offset=0):
 
         if sort.startswith("x_"):
             name = sort[2:]
+            temporal, times = field_time("sv")
             sv_sql = (f"SELECT l.id AS lid, sv.value AS sval FROM {relation} l "
                       + " ".join(joins)
-                      + " LEFT JOIN log_fields sv ON sv.log_id = l.id AND sv.field = ?")
-            sv_params = list(join_params) + [name]
+                      + " LEFT JOIN log_fields sv ON sv.log_id = l.id" + temporal + " AND sv.field = ?")
+            sv_params = list(join_params) + times + [name]
             if combined_where:
                 sv_sql += " WHERE " + combined_where
                 if where_part:
@@ -1239,7 +1305,13 @@ def _query_logs_extracted(args, limit, select_cols, sort_cap=100000, offset=0):
                 return []
             ph = placeholders(len(page_ids))
             fetch_sql = "SELECT " + cols + f" FROM {relation} l WHERE l.id IN (" + ph + ")"
-            fetched = {r["id"]: dict(r) for r in conn.execute(fetch_sql, page_ids).fetchall()}
+            fetch_params = list(page_ids)
+            if pg:
+                for arg, op in (("from", ">="), ("to", "<=")):
+                    if args.get(arg):
+                        fetch_sql += f" AND l.event_time {op} ?::timestamptz"
+                        fetch_params.append(args[arg])
+            fetched = {r["id"]: dict(r) for r in conn.execute(fetch_sql, fetch_params).fetchall()}
             rows = [fetched[i] for i in page_ids if i in fetched]
         else:
             # base-column sort (or default) while extracted columns are shown
@@ -1252,7 +1324,8 @@ def _query_logs_extracted(args, limit, select_cols, sort_cap=100000, offset=0):
                 d = "ASC" if direction == "asc" else "DESC"
                 sql += " ORDER BY " + safe_sort + " " + d + ", l.id DESC LIMIT ?"
             else:
-                sql += " ORDER BY l.id DESC LIMIT ?"
+                sql += (" ORDER BY l.event_time DESC, l.id DESC LIMIT ?" if pg
+                        else " ORDER BY l.id DESC LIMIT ?")
             params.append(limit)
             sql += " OFFSET ?"
             params.append(offset)
@@ -1266,7 +1339,8 @@ def _query_logs_extracted(args, limit, select_cols, sort_cap=100000, offset=0):
             vals = {}
             field_sql = ("SELECT log_id, field, value FROM log_fields WHERE log_id IN ("
                          + ph + ") AND field IN (" + fph + ")")
-            for fr in conn.execute(field_sql, ids + fields).fetchall():
+            time_sql, time_params = _field_lookup_window(args, pg)
+            for fr in conn.execute(field_sql + time_sql, ids + fields + time_params).fetchall():
                 vals.setdefault(fr["log_id"], {})[fr["field"]] = fr["value"]
             for r in rows:
                 got = vals.get(r["id"], {})
@@ -1277,6 +1351,29 @@ def _query_logs_extracted(args, limit, select_cols, sort_cap=100000, offset=0):
         return rows
     finally:
         conn.close()
+
+
+def _field_lookup_window(args, postgres):
+    """Prune display/enrichment lookups too; preserve imported undated rows."""
+    parts, params = [], []
+    if postgres:
+        for key, op in (("from", ">="), ("to", "<=")):
+            if args.get(key):
+                parts.append(f"event_time {op} ?::timestamptz")
+                params.append(args[key])
+    return ((" AND ((" + " AND ".join(parts) + ") OR event_time='-infinity'::timestamptz)")
+            if parts else "", params)
+
+
+def _default_search_window(args, postgres, *, default_recent):
+    from datetime import datetime, timedelta, timezone
+    if (postgres and default_recent and not args.get("from") and not args.get("to")
+            and not args.get("ids") and args.get("scope") != "all"):
+        now = datetime.now(timezone.utc)
+        args["from"] = (now - timedelta(hours=24)).isoformat()
+        args["to"] = now.isoformat()
+        return {"from": args["from"], "to": args["to"]}
+    return None
 
 
 @app.route("/api/logs")
@@ -1291,20 +1388,23 @@ def api_logs():
     except (ValueError, TypeError):
         return jsonify(error="Invalid history position or page size"), 400
     args = request.args.copy()
+    pg = _db_config().get("backend") == "postgres"
+    window = _default_search_window(args, pg, default_recent=paged or args.get("scope") == "recent")
     if paged:
         conn = get_conn()
-        # Two fixed statements (no string building): PostgreSQL reads the split event relation.
-        max_id_sql = ("SELECT COALESCE(MAX(id),0) AS n FROM security_event_logs"
-                      if getattr(conn, "backend", "sqlite") == "postgres"
-                      else "SELECT COALESCE(MAX(id),0) AS n FROM logs")
-        max_id = conn.execute(max_id_sql).fetchone()["n"]
+        # Projection IDs are raw evidence IDs. Use the raw PK to get the
+        # watermark without asking every event-time partition for MAX(id).
+        max_id = conn.execute("SELECT COALESCE(MAX(id),0) AS n FROM logs").fetchone()["n"]
         conn.close()
         if snapshot is None: snapshot = max_id
         if snapshot > max_id: return jsonify(error="History snapshot is ahead of available events"), 400
         args["_snapshot_id"] = str(snapshot)
-    rows = _query_logs_extracted(
-        args, limit + 1 if paged else limit,
-        "id, received_at, source_ip, peer_ip, severity, facility, hostname, destination, app_name, message", offset=offset)
+    try:
+        rows = _query_logs_extracted(
+            args, limit + 1 if paged else limit,
+            "id, received_at, source_ip, peer_ip, severity, facility, hostname, destination, app_name, message", offset=offset)
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
     has_more = paged and len(rows) > limit and offset + limit <= 100000
     if paged: rows = rows[:limit]
     # Enrich with endpoint_ip (stored as a field, not a base column) so the UI
@@ -1319,7 +1419,8 @@ def api_logs():
         field_sql = ("SELECT log_id, field, value FROM log_fields "
                      "WHERE field IN (" + placeholders(len(wanted)) + ") AND log_id IN (" + ph + ")")
         per_log = {}
-        for f in conn.execute(field_sql, list(wanted) + ids).fetchall():
+        time_sql, time_params = _field_lookup_window(args, pg)
+        for f in conn.execute(field_sql + time_sql, list(wanted) + ids + time_params).fetchall():
             per_log.setdefault(f["log_id"], {})[f["field"]] = f["value"]
         conn.close()
         for r in rows:
@@ -1330,8 +1431,11 @@ def api_logs():
             if summary:
                 r["summary"] = summary
     if paged:
-        return jsonify(items=rows, has_more=has_more, next_offset=offset + len(rows), snapshot=snapshot,
-                       sort_limit=100000 if (args.get("sort") or "").startswith("x_") else None)
+        result = dict(items=rows, has_more=has_more, next_offset=offset + len(rows), snapshot=snapshot,
+                      sort_limit=100000 if (args.get("sort") or "").startswith("x_") else None)
+        if window:
+            result["window"] = window
+        return jsonify(result)
     return jsonify(rows)
 
 
@@ -1361,6 +1465,35 @@ def _event_summary(fields):
 def api_logs_facets():
     """Distinct source IPs, hostnames, and destinations for the filter dropdowns."""
     conn = get_conn()
+    if conn.backend == "postgres":
+        try:
+            args = request.args.copy()
+            _default_search_window(args, True, default_recent=True)
+            dates, params = [], []
+            for key, op in (("from", ">="), ("to", "<=")):
+                if args.get(key):
+                    dates.append(f"l.event_time {op} ?::timestamptz")
+                    params.append(args[key])
+            bound = (" AND " + " AND ".join(dates)) if dates else ""
+            field = args.get("field")
+            if field is not None:
+                if not field.strip() or len(field) > 60:
+                    return jsonify(error="Field name must be 1–60 characters"), 400
+                sql = ("SELECT f.value_norm AS value, COUNT(DISTINCT l.id) AS count "
+                       "FROM security_event_logs l JOIN log_fields f ON f.log_id=l.id "
+                       "AND f.event_time IN (l.event_time,'-infinity'::timestamptz) "
+                       "WHERE f.field=? AND f.value_norm IS NOT NULL" + bound
+                       + " GROUP BY f.value_norm ORDER BY count DESC, f.value_norm LIMIT 200")
+                return jsonify(field=field, values=[dict(r) for r in conn.execute(sql, [field] + params).fetchall()])
+            result = {}
+            for key, col in (("sources", "source_ip"), ("hosts", "hostname"), ("destinations", "destination")):
+                sql = (f"SELECT l.{col} AS value FROM security_event_logs l "
+                       f"WHERE l.{col} IS NOT NULL AND l.{col} <> ''" + bound
+                       + f" GROUP BY l.{col} ORDER BY COUNT(*) DESC, l.{col} LIMIT 200")
+                result[key] = [r["value"] for r in conn.execute(sql, params).fetchall()]
+            return jsonify(result)
+        finally:
+            conn.close()
     srcs = [r["source_ip"] for r in conn.execute(
         """SELECT source_ip FROM logs WHERE source_ip IS NOT NULL AND source_ip != ''
            GROUP BY source_ip ORDER BY COUNT(*) DESC LIMIT 200""").fetchall()]
@@ -1381,11 +1514,17 @@ def api_logs_export():
     import io
     import json as _json
     fmt = request.args.get("format", "csv").lower()
-    limit = min(int(request.args.get("limit", 100000)), 500000)
-    rows = _query_logs_extracted(
-        request.args, limit,
-        "id, received_at, source_ip, severity, facility, hostname, app_name, message, raw",
-        sort_cap=500000)
+    args = request.args.copy()
+    pg = _db_config().get("backend") == "postgres"
+    _default_search_window(args, pg, default_recent=args.get("scope") == "recent")
+    try:
+        limit = min(max(int(args.get("limit", 100000)), 1), 500000)
+        rows = _query_logs_extracted(
+            args, limit,
+            "id, received_at, source_ip, severity, facility, hostname, app_name, message, raw",
+            sort_cap=500000)
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
     # flatten extracted fields into x_<name> columns for CSV/JSON
     extra_cols = []
     for r in rows:
@@ -2296,8 +2435,9 @@ def cfg_set(**kv):
 # is a source; Sophos's location is already handled by the host profile
 # mapping, listed here too as a fallback for un-profiled/future sources).
 #
-# This resolves entirely at QUERY TIME (not ingest time), so editing it
-# takes effect immediately on ALL existing data — no reindex, ever.
+# Canonical IP/port aliases are populated by the PostgreSQL projection writer.
+# These operator-editable text aliases remain a query-time compatibility
+# fallback, including cases where an event carries conflicting aliases.
 _DEFAULT_SEARCH_ALIASES = {
     "source": ["endpoint_ip", "src", "srcip", "src_ip"],
     "host": ["computer", "machinename", "endpoint_name", "device", "location"],

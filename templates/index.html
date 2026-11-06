@@ -93,6 +93,15 @@
     <div id="fieldChips" style="display:none;gap:6px;flex-wrap:wrap;align-items:center;margin-top:-4px;margin-bottom:8px;padding:4px;border-radius:6px;transition:background .1s,border-color .1s;border:1px dashed transparent;"></div>
     <div id="xfilterBar" class="toolbar" style="display:none;"></div>
     <div class="toolbar">
+      {% if postgres_search %}
+      <label class="muted" for="logScope">Search time</label>
+      <select id="logScope">
+        <option value="recent">Last 24 hours</option>
+        <option value="all">All retained logs</option>
+      </select>
+      <input id="srcPortBox" aria-label="Source port" placeholder="Source port / range" size="16">
+      <input id="dstPortBox" aria-label="Destination port" placeholder="Destination port / range" size="18">
+      {% endif %}
       <label class="muted" style="align-self:center;">From</label>
       <input type="datetime-local" id="fromBox" aria-label="From time" title="Only events at or after this time">
       <label class="muted" style="align-self:center;">To</label>
@@ -746,8 +755,14 @@ function currentFilterParams() {
   const sev = document.getElementById('sevBox').value;
   const from = document.getElementById('fromBox').value;
   const to = document.getElementById('toBox').value;
-  const anyFilter = q || ip || host || dest || sev || from || to || fieldChips.length;
+  const sourcePort = document.getElementById('srcPortBox')?.value.trim();
+  const destinationPort = document.getElementById('dstPortBox')?.value.trim();
+  const scope = document.getElementById('logScope');
+  const anyFilter = q || ip || host || dest || sev || from || to || sourcePort || destinationPort || fieldChips.length;
   if (urlIds && !anyFilter) params.set('ids', urlIds);  // drill-down until user filters
+  if (scope && !from && !to && !params.has('ids')) params.set('scope', scope.value);
+  if (sourcePort) params.set('src_port', sourcePort);
+  if (destinationPort) params.set('dst_port', destinationPort);
   if (q) params.set('q', q);
   if (ip) params.set('source_ip', ip);
   if (host) params.set('hostname', host);
@@ -791,6 +806,9 @@ function _syncUrl() {
   const val = id => document.getElementById(id).value.trim();
   [['q','qBox'],['src','ipBox'],['host','hostBox'],['dest','destBox'],['sev','sevBox'],['from','fromBox'],['to','toBox']]
     .forEach(([k, id]) => { if (val(id)) u.set(k, val(id)); });
+  const filters = currentFilterParams();
+  for (const k of ['src_port','dst_port']) if (filters.has(k)) u.set(k, filters.get(k));
+  if (filters.get('scope') === 'all') u.set('scope', 'all');
   fieldChips.forEach(c => u.append('f', c.field + '=' + c.value));
   if (fieldChips.length > 1 && fieldChipOp === 'or') u.set('op', 'or');
   if (xSort) { u.set('sort', xSort); u.set('dir', xDir); } else if (baseSort) { u.set('sort', baseSort); u.set('dir', baseDir); }
@@ -802,6 +820,12 @@ function _restoreFromUrl() {
   const u = new URLSearchParams(window.location.search);
   [['q','qBox'],['src','ipBox'],['host','hostBox'],['dest','destBox'],['sev','sevBox'],['from','fromBox'],['to','toBox']]
     .forEach(([k, id]) => { if (u.get(k)) document.getElementById(id).value = u.get(k); });
+  for (const [key, id] of [['src_port','srcPortBox'],['dst_port','dstPortBox']]) {
+    const el = document.getElementById(id);
+    if (el && u.has(key)) el.value = u.get(key);
+  }
+  const scope = document.getElementById('logScope');
+  if (scope && u.get('scope') === 'all') scope.value = 'all';
   u.getAll('f').forEach(raw => {
     const i = raw.indexOf('=');
     if (i > 0) fieldChips.push({field: raw.slice(0, i).toLowerCase(), value: raw.slice(i + 1)});
@@ -819,7 +843,10 @@ async function loadLogs(opts) {
   if(append&&historyBusy)return;
   const params=currentFilterParams();params.set('limit',200);params.set('page',1);
   const query=params.toString();
-  if(append&&logPage&&logQuery===query){params.set('offset',logPage.next_offset);params.set('snapshot',logPage.snapshot);}else if(append)return;
+  if(append&&logPage&&logQuery===query){
+    params.set('offset',logPage.next_offset);params.set('snapshot',logPage.snapshot);
+    if(logPage.window){params.set('from',logPage.window.from);params.set('to',logPage.window.to);}
+  }else if(append)return;
   if(append)historyBusy=true;
   const sequence=++logSequence;
   const held = background ? logsHeldReason() : '';
@@ -836,7 +863,9 @@ async function loadLogs(opts) {
     const pill=document.getElementById('logsNewPill');pill.textContent=fresh?`${fresh} new events ↑`:'';pill.classList.toggle('show',fresh>0);
     return;
   }
-  const page=rows;rows=page.items||[];
+  const page=rows;
+  if(append && logPage?.window && !page.window) page.window=logPage.window;
+  rows=page.items||[];
   _logsLoaded = true;
   const pill = document.getElementById('logsNewPill');
   const note = document.getElementById('logsHeldNote');
@@ -938,6 +967,8 @@ async function loadLogs(opts) {
 document.getElementById('refreshBtn').addEventListener('click', loadLogs);
 ['qBox','ipBox','hostBox','destBox','sevBox','fromBox','toBox'].forEach(id =>
   document.getElementById(id).addEventListener('change', loadLogs));
+['logScope','srcPortBox','dstPortBox'].forEach(id =>
+  document.getElementById(id)?.addEventListener('change', loadLogs));
 // inline field=value box: Enter adds a chip
 document.getElementById('fieldFilterBox').addEventListener('keydown', (e) => {
   if (e.key === 'Enter') {
@@ -949,6 +980,10 @@ document.getElementById('fieldFilterBox').addEventListener('keydown', (e) => {
 document.getElementById('clearBtn').addEventListener('click', () => {
   ['qBox','ipBox','hostBox','destBox','fromBox','toBox','fieldFilterBox'].forEach(id => document.getElementById(id).value = '');
   document.getElementById('sevBox').value = '';
+  for (const [id, value] of [['logScope','recent'],['srcPortBox',''],['dstPortBox','']]) {
+    const el = document.getElementById(id);
+    if (el) el.value = value;
+  }
   urlIds = null;
   if (window.location.search) history.replaceState({}, '', window.location.pathname);
   updateDrillBanner();

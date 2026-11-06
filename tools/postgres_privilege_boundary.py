@@ -347,7 +347,7 @@ def _apply_grants(raw, *, runtime_role, ingest_role, dashboard_role, maintenance
             "GRANT INSERT ON TABLE public.security_events TO {}"
         ).format(ingest))
         cur.execute(sql.SQL(
-            "GRANT UPDATE (fields,user_name,identity_id,src_port,dst_port,event_type,event_code,vendor,product) "
+            "GRANT UPDATE (fields,search_fields,user_name,identity_id,src_port,dst_port,event_type,event_code,vendor,product) "
             "ON TABLE public.security_events TO {}"
         ).format(ingest))
         cur.execute(sql.SQL(

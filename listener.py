@@ -720,11 +720,13 @@ class Storage:
                         event["app_name"], event["proc_id"], event["msg_id"], event["message"], event["raw"],
                     ),
                 )
+                from event_storage_v2 import append_projection, projection_time
+                event_time = projection_time(event) if self.conn.backend == "postgres" else None
                 if fields:
                     from normalize import write_fields
-                    write_fields(self.conn, int(new_id), fields)
-                from event_storage_v2 import append_projection
-                append_projection(self.conn, int(new_id), event, fields or {})
+                    write_fields(self.conn, int(new_id), fields, event_time)
+                append_projection(self.conn, int(new_id), event, fields or {},
+                                  event_time=event_time, search_ready=True)
                 self._maybe_commit_locked()
                 return int(new_id)
             except Exception:
@@ -757,9 +759,11 @@ class Storage:
                     )
                     ids.append(int(log_id))
                     from normalize import write_fields
-                    write_fields(self.conn, int(log_id), fields or {})
-                    from event_storage_v2 import append_projection
-                    append_projection(self.conn, int(log_id), event, fields or {})
+                    from event_storage_v2 import append_projection, projection_time
+                    event_time = projection_time(event) if self.conn.backend == "postgres" else None
+                    write_fields(self.conn, int(log_id), fields or {}, event_time)
+                    append_projection(self.conn, int(log_id), event, fields or {},
+                                      event_time=event_time, search_ready=True)
                 self.conn.commit()
                 self._pending = 0
                 self._last_commit = time.time()

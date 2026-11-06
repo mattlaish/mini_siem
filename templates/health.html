@@ -191,6 +191,16 @@ async function load(){
     ['Database type', s.backend || '—'],
     ['Database size', bytes(s.db_size_bytes)],
   ]));
+  if (d.default_partitions) {
+    const p = d.default_partitions;
+    const warning = p.events || p.dated_fields;
+    siem.push(kvCard('Search partition coverage', [
+      ['Status', warning ? '<span class="pill warn">Check time coverage</span>' : '<span class="pill ok">No dated overflow</span>'],
+      ['Events in fallback', p.events ? 'Present' : 'None'],
+      ['Dated fields in fallback', p.dated_fields === null ? 'Not partitioned' : (p.dated_fields ? 'Present' : 'None')],
+      ...(warning ? [['Next step', 'Check missing partitions and event timestamps before adding a partition.']] : [])
+    ]));
+  }
   $('siemGrid').innerHTML = siem.join('');
 
   // ---- cross-process runtime health ----

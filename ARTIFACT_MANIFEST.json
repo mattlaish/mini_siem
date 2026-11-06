@@ -1,43 +1,20 @@
 {
-  "artifact": "mini_siem-local-connector-recovery-2026-10-28",
-  "artifact_kind": "Current local merged source; historical return ZIP separately restored unchanged",
-  "generated_at_utc": "2026-10-28T13:51:29.133715+00:00",
-  "parent": "artifact-manifest-sha256:3e13e2dc14ab6fd29cfff4ea8b415b9cab4c255d10c87e940c4a646ae185cfeb",
-  "status": "RECOVERED_LOCALLY_VALIDATED_LIVE_QUALIFICATION_PENDING",
+  "artifact": "mini_siem-local-postgres-search-2026-11-06",
+  "artifact_kind": "Current source inventory; no new delivery archive",
+  "generated_at_utc": "2026-11-06T08:20:20.800512+00:00",
+  "parent": "artifact-manifest-sha256:5f2c2dd0aa24ae80dde63542f8601629a68e8207fd7d107dff7d45eb265006ca",
+  "status": "IMPLEMENTED_TESTING_DEFERRED_BY_OWNER",
   "scope": [
-    "Recover actual Dashboard connector source, schemas, tests, owner token CLI and package tools",
-    "Selective schema/auth/blueprint/privilege integration preserving October 27 security and workflow fixes",
-    "Restore exact historical October 22 return artifact; not a new current-source delivery"
+    "PostgreSQL time-bounded search, normalized exact search and typed filters",
+    "Batched fields, matched fresh partition layouts and overflow monitoring",
+    "Optional synthetic benchmark tooling; no measured result"
   ],
   "validation": {
-    "source_root": "C:\\Users\\mattlai\\Projects\\mini_siem",
-    "baseline": {
-      "passed": 446,
-      "failed": 47,
-      "skipped": 3
-    },
-    "final": {
-      "passed": 479,
-      "failed": 47,
-      "skipped": 3
-    },
-    "focused": {
-      "passed": 123,
-      "failed": 0,
-      "skipped": 0
-    },
-    "new_failing_identities": [],
-    "python_syntax": 165,
-    "static_js_syntax": 5,
-    "rendered_routes": 11,
-    "inline_js_syntax": 7,
-    "placeholder_truth": "PLACEHOLDER TRUTH GATE: PASS\nreclassified executable/test paths: 39\nallowed incomplete examples: 1",
-    "credential_pattern_hits": [],
-    "unchanged_pre_merge_files": 377,
-    "live_pg_tls_provider_idp_nxlog_systemd": "NOT_RUN",
+    "python_static_syntax_review": true,
+    "tests": "NOT_RUN_OWNER_REQUEST",
+    "postgres_benchmark": "NOT_RUN_OWNER_REQUEST",
     "git_operations": "NONE",
-    "production_state_changes": "NONE",
-    "dashboard_source_changes": "NONE"
+    "production_state_changes": "NONE"
   },
   "historical_archive": {
     "path": "return/mini-siem-return-package.zip",
@@ -59,7 +36,7 @@
     }
   },
   "manifest_hash_scope": "Listed current safe application source/docs and seven return tools; excludes this manifest, historical source/fixtures/ZIP, credentials/runtime state and caches/Git",
-  "file_count_excluding_manifest": 405,
+  "file_count_excluding_manifest": 413,
   "files": [
     {
       "path": ".github/workflows/test.yml",
@@ -83,8 +60,8 @@
     },
     {
       "path": "AI_HANDOFF.md",
-      "size": 30338,
-      "sha256": "61b5670ae4ee6f5a6c75b82379e318322b5f16b9b37af88ae1b087e96ee81a38"
+      "size": 36816,
+      "sha256": "93d752593d92ebdfe960ec5460eedf3888fe40ab99cd9a7ad0054cc599906c84"
     },
     {
       "path": "AI_HANDOVER.md",
@@ -108,8 +85,8 @@
     },
     {
       "path": "ai_worker.py",
-      "size": 9199,
-      "sha256": "3c27cb2136e280390aabf93d97ed940df8278f31550993093b2724c6f8ea17e2"
+      "size": 9514,
+      "sha256": "a1008d1fe9b174c80fa2f82bdef92ecd06d1721f512e3fd57581108349c12c7a"
     },
     {
       "path": "ALERT_LIFECYCLE.md",
@@ -143,8 +120,8 @@
     },
     {
       "path": "api_poller.py",
-      "size": 15857,
-      "sha256": "d20c3dc8c44dd49645a67a666b62619ad765013e17cbd738396f4971cfda5724"
+      "size": 16869,
+      "sha256": "8791c71f8270275f8fb8d2ccd1c06ea7bb1c0e374739b644c94ea1ceafd6fa88"
     },
     {
       "path": "archive.py",
@@ -178,8 +155,8 @@
     },
     {
       "path": "dashboard.py",
-      "size": 139681,
-      "sha256": "437e53fc5cf2086f9c2b87d84ff06ab3c7b43861e74d3e3e85e0eadbfd55eb49"
+      "size": 152951,
+      "sha256": "6a912d22fca8042f52ea9ac86ad2214102f96c79244964d4743e0509bfa1aac9"
     },
     {
       "path": "db-config.example.json",
@@ -193,8 +170,8 @@
     },
     {
       "path": "db.py",
-      "size": 59245,
-      "sha256": "92a2fbe7acf742d0e10cfe1fda6dea2cdc2bbd6f4b30ed623c5506dd1db2ee1f"
+      "size": 62725,
+      "sha256": "053e0d922fdaf331ad08f6570a824968be35bd19493bbf688b9db9596a9aa6b7"
     },
     {
       "path": "DEPLOYMENT.md",
@@ -463,13 +440,13 @@
     },
     {
       "path": "EVENT_STORAGE_V2.md",
-      "size": 5310,
-      "sha256": "db249480918f3316f774fd2a403d70397c610124c0dc7a4ea60752d0b4542600"
+      "size": 5960,
+      "sha256": "6afec33b8680a1d80e60e42d256c4cc2f511414ddb1297ab3e947912762a3490"
     },
     {
       "path": "event_storage_v2.py",
-      "size": 16637,
-      "sha256": "469da7f3f4080fb87a788e23ab675d57a08a83319ee42613ec6b903313be0f7b"
+      "size": 20933,
+      "sha256": "e6534f71cef42cd7b2add8e8c3c775b2986495742de3923e92adf2b55b40aa3a"
     },
     {
       "path": "evidence/P5_SOURCE_VALIDATION_2026-09-23.json",
@@ -568,8 +545,8 @@
     },
     {
       "path": "health.py",
-      "size": 8380,
-      "sha256": "f17f7e65a5b41e160f3020ec8fb85331cd8e56a3e9a684cc1dcab70b8775eff5"
+      "size": 9136,
+      "sha256": "239b8dd45048c62ee4f6d23cdb867ccb8d0f8844260ffe9b6bc03a5e148124a3"
     },
     {
       "path": "install-service.sh",
@@ -628,8 +605,8 @@
     },
     {
       "path": "integrations/sophos_poller_bundle/test_bundle.py",
-      "size": 3132,
-      "sha256": "0d9e9e9de672cf992234fc1668e209be3b9f2408dc44e70e29eb3854a03cf639"
+      "size": 3327,
+      "sha256": "953479a1c1b628112e23416506dd1c740f065e2753b92b4d2f2f501256d20689"
     },
     {
       "path": "investigation_profiles.py",
@@ -688,8 +665,8 @@
     },
     {
       "path": "listener.py",
-      "size": 49616,
-      "sha256": "42f665ac422a8192589091007599f35a5930d730f2e6258b4cd96a5492bb3c85"
+      "size": 56829,
+      "sha256": "970148d4946fc1dfc24e99fe043d2e6422784aab5877f5dde9392b641a9a5422"
     },
     {
       "path": "maintenance.py",
@@ -698,8 +675,8 @@
     },
     {
       "path": "normalize.py",
-      "size": 10737,
-      "sha256": "d7a32670e5e1cf245c1ce29be57420a03ad0f8fab10ccbd74eb548ecde434c8b"
+      "size": 11861,
+      "sha256": "37f612cb48a73ecc52caa43a91a74d74c593c010915c4b34549ddd943f556948"
     },
     {
       "path": "OPENAI_INTEGRATION_QUALIFICATION_2026-09-18.json",
@@ -708,8 +685,8 @@
     },
     {
       "path": "OPERATION.md",
-      "size": 13170,
-      "sha256": "244963b3042d0550990577b1fb153c1aefcb048c64ac909cd1ff5f2070e93841"
+      "size": 16267,
+      "sha256": "8bda382bde42f9eec9629ec072ec39c66a40d3d402e0fb1c824fb197e1f4963c"
     },
     {
       "path": "operational_diagnostics.py",
@@ -783,8 +760,8 @@
     },
     {
       "path": "patch.md",
-      "size": 46317,
-      "sha256": "8c82392052e5bd75cb10b57929b3b5da7418bdc9463017936f45e5798c16125b"
+      "size": 48532,
+      "sha256": "fa104b04231874e344090e4e439feae6b9a8810557ef0fb6f999fa50aa041112"
     },
     {
       "path": "performance_runtime_v2/benchmark_runner.py",
@@ -993,8 +970,8 @@
     },
     {
       "path": "README.md",
-      "size": 52005,
-      "sha256": "3eff0ff3fe2489828d203f8dff9b39fa0ba88f6011932ddc577aed82aec62f37"
+      "size": 52433,
+      "sha256": "4057c72d6cc6dc87623a54a12a796626dafdaf63d64a3d1915b0d4e5f2ceab12"
     },
     {
       "path": "RELEASE_BASELINE_STATUS.md",
@@ -1148,8 +1125,8 @@
     },
     {
       "path": "runtime_health.py",
-      "size": 4079,
-      "sha256": "ff5e7544ab2e4bb190e103961699fcff58c3cbd14ef6463e65b3e7e017ad3faf"
+      "size": 4204,
+      "sha256": "d6401d6d248c3e808a6af3576b8e58b1b1b666dd495e367d1fe9a6d1ac83ab81"
     },
     {
       "path": "secretbox.py",
@@ -1398,8 +1375,8 @@
     },
     {
       "path": "templates/health.html",
-      "size": 22677,
-      "sha256": "be698c6c417e77ea4e0126360b2445ae6152fb0b6987b58aa49dc23b7b4fde4c"
+      "size": 29160,
+      "sha256": "4b69fa4d33effc9fe60f5e61f884a7077b052524a8c1472d78f316c5dfddb056"
     },
     {
       "path": "templates/help.html",
@@ -1408,8 +1385,8 @@
     },
     {
       "path": "templates/index.html",
-      "size": 64704,
-      "sha256": "c2f05e527c79a6e75ee3b27030442ee5514c2560bc9f36ba3dee25a31808208a"
+      "size": 66583,
+      "sha256": "356d66967b3ddd965da4be06ed37939fbc1eda0239baca1189bb47a6ad540f98"
     },
     {
       "path": "templates/login.html",
@@ -1418,8 +1395,8 @@
     },
     {
       "path": "templates/setup.html",
-      "size": 91078,
-      "sha256": "3f777deb0d96723040c6ecd3e9aa5aa1f0c6c3b5abc965b2201beaeff4822a4f"
+      "size": 95307,
+      "sha256": "99d5fafe7cc14f17e16097311be54e9b284c046730469e1ecafac20fcd6f85b8"
     },
     {
       "path": "templates/threatintel.html",
@@ -1523,8 +1500,8 @@
     },
     {
       "path": "tests/test_event_storage_v2.py",
-      "size": 6721,
-      "sha256": "47ae233576d642c663925a6fc58a4d106b84535253ac584a312875a52998cf60"
+      "size": 6703,
+      "sha256": "0ddd50ea5adff9cc0f598bd8f378028c13904975d9eec25be5c2a1ce6aceb62d"
     },
     {
       "path": "tests/test_evidence_archive_phase6.py",
@@ -1768,8 +1745,8 @@
     },
     {
       "path": "tools/postgres_event_partition_maintenance.py",
-      "size": 2817,
-      "sha256": "699ad49a70c5c52f12a5954a0055deaf6bd99d5a81238655bf29af1e6535f730"
+      "size": 2796,
+      "sha256": "af8e8457a04cfb43c7d1e98f22a401c2b5cdff9b5980f3cc421766004bf4ef34"
     },
     {
       "path": "tools/postgres_event_storage_v2.py",
@@ -1793,8 +1770,8 @@
     },
     {
       "path": "tools/postgres_privilege_boundary.py",
-      "size": 33881,
-      "sha256": "11a2534e28839525b50886f9838aa4ce546cb9956268f545efc61892c2bf19c0"
+      "size": 33895,
+      "sha256": "8bad759da34b47bd64c608cb06872306925ed465fa3b5b148e9e2f069f98332c"
     },
     {
       "path": "tools/postgres_privilege_check.py",
@@ -1948,8 +1925,8 @@
     },
     {
       "path": "workers.py",
-      "size": 21793,
-      "sha256": "6ea3ad895438393bd67d291e2cd7383217f3a43af9268546c6d2b6494fc2a9c5"
+      "size": 22649,
+      "sha256": "46dd1c75305e7887dd9defad7adf781ece33d6efa2b204bcff0c2284fddb4240"
     },
     {
       "path": "RECOVERY_2026-10-27.md",
@@ -1973,8 +1950,8 @@
     },
     {
       "path": "tests/test_guided_setup_and_roles.py",
-      "size": 13343,
-      "sha256": "51d3155f118b7850721fd5139be382446bd60253479f3b154d8374fdb98f84a6"
+      "size": 14539,
+      "sha256": "e0b8fdd6bddd055f0d88c52c32c34ded4a1bc4c4af3a065542aa2e33c13b077a"
     },
     {
       "path": "tests/test_security_exposure.py",
@@ -2085,6 +2062,46 @@
       "path": "tools/manage_dashboard_reader_token.py",
       "size": 3205,
       "sha256": "c75b54548d36f98ae6bca0fd9624d539445d30eaded872e878dbe00d775cde11"
+    },
+    {
+      "path": "POSTGRES_SEARCH.md",
+      "size": 4736,
+      "sha256": "ddf2a4f8b0314eb2f17cc580b0fa5be1af71a8b6458fad0c27561b0750dd5b3c"
+    },
+    {
+      "path": "capacity.py",
+      "size": 22093,
+      "sha256": "ced4d818a77504bc21b1a3d8967449924b55071dd247aab7ec138506ba4334d2"
+    },
+    {
+      "path": "ingest_workers.py",
+      "size": 8970,
+      "sha256": "b48ca0c0b934fba7389fcd95c58b44f3df2fe7b9c03179bef224ae94b84088a8"
+    },
+    {
+      "path": "leases.py",
+      "size": 5709,
+      "sha256": "ee03364f4d9e0a33bbc172d5729a31282e23f200afc5894b52ab08f539890dcf"
+    },
+    {
+      "path": "pytest.ini",
+      "size": 241,
+      "sha256": "b0de67e6363e0ccf28580f8633a603f8dc89924a4ce128c73f4f03a7b6fe47c1"
+    },
+    {
+      "path": "tests/test_workers_and_capacity.py",
+      "size": 16925,
+      "sha256": "4cf7c1f0b91c1805858142114b401669f2e02a9e1ae8f43616d3f0fdb101218b"
+    },
+    {
+      "path": "tools/capacity_advisor.py",
+      "size": 4916,
+      "sha256": "2c1e370b6aa54d92e59882a08760ee3b15f7bc2031e6daa68545b1d1e5b94730"
+    },
+    {
+      "path": "tools/postgres_search_benchmark.py",
+      "size": 8838,
+      "sha256": "e77f71ce1d8d14bffc10df1124728f7cc94142feebf5f13319ad0a5c3bb25bf6"
     }
   ]
 }
