@@ -1,5 +1,19 @@
 # AI Handover Prompt - mini-SIEM
 
+## Production search measurement tool — 2026-11-08 (cloud session)
+
+Added tools/postgres_search_measure.py (step 0 of POSTGRES_SEARCH.md):
+read-only at the server via PGOPTIONS (verified: INSERT is refused),
+statement/lock limits, searches through the dashboard's own query code with
+values sampled from the last 24 h, pasted Log Search page URLs converted to
+API filters. Tested on PostgreSQL 16 against a new-layout benchmark database
+and an upgraded legacy-layout database. Waiting for the owner to run it on
+production. Also fixed: a CIDR with host bits (10.1.2.3/24) made PostgreSQL
+log search fail with HTTP 500 (cidr rejects host bits); it now searches the
+network. Synthetic findings to confirm on production: starts-with across all
+history scans every partition (4.1 s first run); OR with exclusion read 21k
+blocks for 0 rows.
+
 ## PostgreSQL search slice measured — 2026-11-06 (cloud session)
 
 Benchmarked fb51c96 with tools/postgres_search_benchmark.py on a local

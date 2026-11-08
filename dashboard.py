@@ -908,6 +908,9 @@ def _concept_match_mode(concept, term):
 
 def _base_match_clause(column, concept, mode, needle, backend="sqlite_like"):
     pg = str(backend).startswith("postgres")
+    if pg and mode == "cidr":
+        # PostgreSQL cidr rejects host bits ("10.1.2.3/24"); search the network.
+        needle = str(ipaddress.ip_network(needle, strict=False))
     if pg and concept == "source":
         if mode == "cidr":
             return "l.src_ip <<= ?::cidr", [needle]

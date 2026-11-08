@@ -76,3 +76,27 @@ Use the same row counts and repeats across runs. Hot rows stay fixed when older
 history is added; reports record route p50/p95, actual SQL plans/buffers/relations,
 table/index sizes and serial batch-write throughput. Synthetic distribution and
 warm-cache measurements are not production ingest/latency qualification.
+
+## Measure a running deployment (step 0)
+
+`tools/postgres_search_measure.py` is read-only: every connection it opens is
+read-only at the server (`default_transaction_read_only`), with a 60 s
+statement limit and a 2 s lock wait. It records server settings, the storage
+layout (field table split or not, partition grain, DEFAULT partition rows),
+table/index sizes, indexes never used, events per day for 14 days, peak
+arrival rate, fields per log, and timed runs plus `EXPLAIN (ANALYZE, BUFFERS)`
+of typical searches built from values in your last 24 hours (exact, three
+exact, starts-with, contains, OR/exclusion, CIDR, host prefix, port, message
+word, and all-history variants). Run it from the deployed source tree, at a
+quiet hour, with the dashboard's credential file:
+
+```text
+python -B tools/postgres_search_measure.py --db-config db-config.json \
+    --db-credentials <dashboard credential file> --out measure.json \
+    --search "<a Log Search URL your team uses>" --search "<another>"
+```
+
+The screen summary contains no event values and can be shared. The JSON file
+holds full plans with sample values from your logs (addresses, host names,
+field values); review it before sharing. `--skip-all-history` leaves out the
+all-history searches on a busy server; `--end` measures another day.
