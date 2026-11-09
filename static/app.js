@@ -214,7 +214,7 @@
     repeated_login_failures: 'Repeated sign-in failures', high_severity_event: 'High-severity event',
     nxlog_severity_event: 'Windows security event', web_server_shell: 'Web server launches a program',
     out_of_hours_shell: 'Shell outside approved hours', threat_intel_match: 'Known threat match',
-    telemetry_silence: 'Expected logs not received', security_4688: 'Windows process creation (4688)',
+    telemetry_silence: 'Expected logs not received', storage_default_partition: 'Events outside time partitions', security_4688: 'Windows process creation (4688)',
     sysmon_1: 'Sysmon process creation (1)', powershell_4104: 'PowerShell script activity (4104)',
     'host.name': 'Host', 'user.name': 'Account', 'process.parent.name': 'Started by',
     'process.name': 'Program', 'process.command_line': 'Command line', 'process.path': 'Program path',

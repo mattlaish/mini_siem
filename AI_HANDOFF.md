@@ -1,5 +1,37 @@
 # AI Handover Prompt - mini-SIEM
 
+## Contains guard, DEFAULT-partition alert, Top values — 2026-11-09 (cloud session)
+
+The three small items agreed after the 1M events/day estimate:
+
+- Contains guard (dashboard.py `_contains_recent_page`): PostgreSQL
+  newest-first pages with `*text*` field filters check the newest 50,000
+  events of the window first (strpos probes, no trigram join) and stop at the
+  page size. Exact by construction: returned only when a full page is found
+  or the window is smaller than the guard; otherwise the indexed query runs.
+  Skipped for OR mode, explicit sorts, and pages beyond the guard.
+- DEFAULT-partition alert (workers.py `StorageHealthWatcher`,
+  `check_default_partitions`): PostgreSQL only, lease `storage-health`,
+  every 10 min; one warning alert per episode (state in app_config key
+  `storage_default_partition_alert`, cleared when the partitions are empty).
+- Top values (templates/index.html): toolbar button and a per-field link in
+  expanded events open `/api/logs/facets?field=` with the current time range;
+  click filters, "not" excludes. SQLite now answers `?field=` too.
+- Fixed in passing: a second chip for the same field was shown but ignored
+  (one condition per field on the server); it now replaces the first, with a
+  notice.
+
+Validation: new tests (contains guard 5, storage alert + SQLite facets 4);
+full suite same 38 pre-existing failures, nothing new; static scan 8 HIGH
+(unchanged); tiny PostgreSQL 16 check (30 events): guarded, fallback and
+unguarded paths return identical pages; DEFAULT alert raised once, cleared
+when rows moved back; browser check of the panel (counts, filter, exclude,
+expanded-row link, no JS errors). No scale benchmarks run (owner's request).
+
+Still open from the estimate: asset/identity upsert churn and multi-event
+deadlock risk (event_storage_v2.py `_observe_asset`/`_observe_identity`),
+OR+exclusion cost, all-history prefix/contains guards.
+
 ## Production search measurement tool — 2026-11-08 (cloud session)
 
 Added tools/postgres_search_measure.py (step 0 of POSTGRES_SEARCH.md):

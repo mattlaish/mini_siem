@@ -785,6 +785,8 @@ def start_automation_workers():
     workers.TicketWorker(get_conn, get_ticket_settings, lease=keeper.binding("ticket-worker", 60)).start()
     workers.FeedRefresher(get_conn, resolve_key_fn=_resolve_feed_key,
                           lease=keeper.binding("feed-refresher", 1800)).start()
+    if _db_config().get("backend") == "postgres":
+        workers.StorageHealthWatcher(get_conn, lease=keeper.binding("storage-health", 1800)).start()
     _automation_started = True
 
 
@@ -1193,6 +1195,10 @@ def _query_logs_extracted(args, limit, select_cols, sort_cap=100000, offset=0):
         pg = search_backend == "postgres_v2"
         exact = {}
         legacy_exact, legacy_params = [], []
+        # PostgreSQL "contains" (*text*) filters: also kept as row probes so a
+        # newest-first page can be answered from recent events (see below).
+        plain_joins, plain_join_params = [], []
+        contains_probes, contains_probe_params = [], []
 
         def field_time(alias):
             if not pg:
@@ -1251,10 +1257,22 @@ def _query_logs_extracted(args, limit, select_cols, sort_cap=100000, offset=0):
                     alias = f"f{ji}"
                     temporal, times = field_time(alias)
                     pred, pred_params = _field_value_predicate(alias, spec2["mode"], spec2["needle"], backend=search_backend)
-                    joins.append(
-                        f"JOIN log_fields {alias} ON {alias}.log_id = l.id "
-                        f"{temporal} AND {alias}.field = ? AND {pred}")
+                    join = (f"JOIN log_fields {alias} ON {alias}.log_id = l.id "
+                            f"{temporal} AND {alias}.field = ? AND {pred}")
+                    joins.append(join)
                     join_params.extend(times + [name] + pred_params)
+                    if pg and spec2["mode"] == "contains":
+                        # Probe form for the newest-events guard below:
+                        # strpos() cannot use the trigram index, so these
+                        # are checked row by row on recent events only.
+                        temporal, times = field_time("fc")
+                        contains_probes.append(
+                            "EXISTS (SELECT 1 FROM log_fields fc WHERE fc.log_id = l.id"
+                            + temporal + " AND fc.field = ? AND strpos(fc.value_norm, ?) > 0)")
+                        contains_probe_params.extend(times + [name, spec2["needle"]])
+                    else:
+                        plain_joins.append(join)
+                        plain_join_params.extend(times + [name] + pred_params)
                     ji += 1
         if exact:
             import json
@@ -1335,7 +1353,14 @@ def _query_logs_extracted(args, limit, select_cols, sort_cap=100000, offset=0):
             params.append(limit)
             sql += " OFFSET ?"
             params.append(offset)
-            rows = [dict(r) for r in conn.execute(sql, params).fetchall()]
+            rows = None
+            if contains_probes and sort not in SORTABLE:
+                rows = _contains_recent_page(
+                    conn, relation, cols, where_part, base_params,
+                    plain_joins, plain_join_params, extra_where, extra_params,
+                    contains_probes, contains_probe_params, limit, offset)
+            if rows is None:
+                rows = [dict(r) for r in conn.execute(sql, params).fetchall()]
 
         # batch-fetch display values for this page only
         if rows and fields:
@@ -1358,6 +1383,46 @@ def _query_logs_extracted(args, limit, select_cols, sort_cap=100000, offset=0):
         return rows
     finally:
         conn.close()
+
+
+CONTAINS_RECENT_EVENTS = 50000
+
+
+def _contains_recent_page(conn, relation, cols, where_part, base_params,
+                          plain_joins, plain_join_params, extra_where, extra_params,
+                          probes, probe_params, limit, offset, recent=None):
+    """Answer a newest-first PostgreSQL page with *text* filters from recent events.
+
+    A common substring matches a large share of the trigram index, so the
+    indexed JOIN reads and sorts every match before returning one page. The
+    newest ``recent`` events of the window (by the base filters only) are a
+    prefix of the result order, so the first matches found among them are
+    exactly the first matches overall. Checking those rows one by one and
+    stopping at the page size is bounded work.
+
+    Returns the page when it is provably exact (a full page was found, or the
+    window holds fewer than ``recent`` events). Returns None when recent events
+    did not fill the page; the caller then runs the indexed query.
+    """
+    recent = CONTAINS_RECENT_EVENTS if recent is None else recent
+    if offset + limit > recent:
+        return None
+    where = f" WHERE {where_part}" if where_part else ""
+    cut_sql = (f"SELECT l.event_time FROM {relation} l{where}"
+               " ORDER BY l.event_time DESC, l.id DESC LIMIT 1 OFFSET ?")
+    cut = conn.execute(cut_sql, list(base_params if where_part else []) + [recent - 1]).fetchone()
+    clauses = ([where_part] if where_part else []) + list(extra_where) + list(probes)
+    params = list(plain_join_params) + (list(base_params) if where_part else []) + list(extra_params) + list(probe_params)
+    if cut is not None:
+        clauses.append("l.event_time >= ?")
+        params.append(cut["event_time"])
+    page_sql = (f"SELECT {cols} FROM {relation} l " + " ".join(plain_joins)
+                + " WHERE " + " AND ".join(clauses)
+                + " ORDER BY l.event_time DESC, l.id DESC LIMIT ? OFFSET ?")
+    rows = [dict(r) for r in conn.execute(page_sql, params + [limit, offset]).fetchall()]
+    if cut is None or len(rows) >= limit:
+        return rows
+    return None
 
 
 def _field_lookup_window(args, postgres):
@@ -1502,6 +1567,22 @@ def api_logs_facets():
             return jsonify(result)
         finally:
             conn.close()
+    field = request.args.get("field")
+    if field is not None:
+        # Top values of one extracted field in the selected time range.
+        if not field.strip() or len(field) > 60:
+            return jsonify(error="Field name must be 1–60 characters"), 400
+        dates, params = [], []
+        for key, op in (("from", ">="), ("to", "<=")):
+            if request.args.get(key):
+                dates.append(f"l.received_at {op} ?")
+                params.append(request.args[key])
+        bound = (" AND " + " AND ".join(dates)) if dates else ""
+        sql = ("SELECT f.value_norm AS value, COUNT(DISTINCT f.log_id) AS count "
+               "FROM log_fields f JOIN logs l ON l.id=f.log_id "
+               "WHERE f.field=? AND f.value_norm IS NOT NULL" + bound
+               + " GROUP BY f.value_norm ORDER BY count DESC, f.value_norm LIMIT 200")
+        return jsonify(field=field, values=[dict(r) for r in conn.execute(sql, [field] + params).fetchall()])
     srcs = [r["source_ip"] for r in conn.execute(
         """SELECT source_ip FROM logs WHERE source_ip IS NOT NULL AND source_ip != ''
            GROUP BY source_ip ORDER BY COUNT(*) DESC LIMIT 200""").fetchall()]

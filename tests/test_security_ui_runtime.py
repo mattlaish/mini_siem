@@ -42,8 +42,10 @@ console.log(JSON.stringify({key,value,field,chips:elements.fieldChips.innerHTML,
         parsed=Markup(data[key])
         assert not set(parsed.tags)&{'img','svg','script','iframe'},key
         assert all(not name.lower().startswith('on') for attrs in parsed.attrs for name in attrs),key
-    fields=[a for a in Markup(data['field']).attrs if 'data-field' in a]
+    fields=[a for a in Markup(data['field']).attrs if 'data-field' in a and 'data-value' in a]
     assert len(fields)==2 and all(a['data-field']==data['key'] and a['data-value']==data['value'] for a in fields)
+    top=[a for a in Markup(data['field']).attrs if 'data-field' in a and 'data-value' not in a]
+    assert len(top)==1 and top[0]['data-field']==data['key']   # "top values" link
 
 
 def test_account_names_never_become_inline_javascript():

@@ -18,6 +18,10 @@ the same pattern as the AI triage worker (poll the DB, act, record):
   FeedRefresher — re-downloads enabled IOC feeds (Threat Intel page)
       on their configured interval and imports new indicators.
 
+  StorageHealthWatcher — PostgreSQL only: raises one alert when events
+      start landing in the DEFAULT partition (no monthly partition covers
+      their time), which slows searches and blocks adding that partition.
+
 All outbound calls (tickets, feeds) use the shared bounded stdlib transport.
 NOTE: tickets and feeds are OUTBOUND connections from the SIEM. That is
 the point of the feature, but be deliberate about what the SIEM is
@@ -510,5 +514,116 @@ class FeedRefresher:
                 if due:
                     r = fetch_feed(conn, feed, resolve_key_fn=self.resolve_key_fn)
                     print(f"[feeds] refreshed '{feed['name']}': {r}")
+        finally:
+            conn.close()
+
+
+# ==========================================================================
+# Storage health (PostgreSQL DEFAULT partitions)
+# ==========================================================================
+
+DEFAULT_PARTITION_RULE = "storage_default_partition"
+DEFAULT_PARTITION_STATE = "storage_default_partition_alert"
+
+
+def default_partition_rows(conn):
+    """Describe rows in the PostgreSQL DEFAULT partitions, or None if empty.
+
+    Only dated field rows count: undated legacy field rows ('-infinity') are
+    expected there. All checks are EXISTS or index-backed min/max, so the
+    cost does not grow with the number of misplaced rows.
+    """
+    if getattr(conn, "backend", "sqlite") != "postgres":
+        return None
+    events = conn.execute(
+        "SELECT min(event_time) AS first, max(event_time) AS last FROM public.security_events_default").fetchone()
+    fields = False
+    if conn.execute("SELECT to_regclass('public.log_fields_default') AS r").fetchone()["r"]:
+        fields = bool(conn.execute(
+            """SELECT EXISTS (SELECT 1 FROM public.log_fields_default
+                              WHERE event_time > '-infinity'::timestamptz) AS present""").fetchone()["present"])
+    if events["first"] is None and not fields:
+        return None
+    def iso(v):
+        return v.isoformat(timespec="seconds") if hasattr(v, "isoformat") else (str(v) if v is not None else None)
+    return {"events": events["first"] is not None, "first": iso(events["first"]),
+            "last": iso(events["last"]), "dated_fields": fields}
+
+
+def check_default_partitions(conn):
+    """Raise one alert per episode of rows in the DEFAULT partitions.
+
+    The alert id is remembered in app_config; once the partitions are empty
+    again the memory is cleared, so a later episode alerts again. Returns the
+    new alert id, or None.
+    """
+    found = default_partition_rows(conn)
+    state = conn.execute("SELECT value FROM app_config WHERE key=?", (DEFAULT_PARTITION_STATE,)).fetchone()
+    if found is None:
+        if state:
+            conn.execute("DELETE FROM app_config WHERE key=?", (DEFAULT_PARTITION_STATE,))
+            conn.commit()
+        return None
+    if state and state["value"]:
+        return None
+    where = []
+    if found["events"]:
+        where.append(f"events dated {found['first']} to {found['last']}")
+    if found["dated_fields"]:
+        where.append("dated search-field rows")
+    description = (
+        "PostgreSQL stored " + " and ".join(where) + " in the DEFAULT partition, because no "
+        "time partition covers them. Searches over those times read the whole DEFAULT "
+        "partition, and the matching partition cannot be added until those rows are moved. "
+        "Check the senders' clocks (future or very old timestamps), create partitions ahead "
+        "with tools/postgres_event_partition_maintenance.py, then move the rows during a "
+        "maintenance window (see POSTGRES_SEARCH.md). Nothing is moved or deleted automatically."
+    )
+    # ai_status 'skipped': an operational storage alert, not an event to triage.
+    alert_id = conn.insert_returning_id(
+        """INSERT INTO alerts
+           (created_at,rule_name,severity,source_ip,description,log_ids,ai_status,workflow_status)
+           VALUES (?,?,?,?,?,?,'skipped','new')""",
+        (_now(), DEFAULT_PARTITION_RULE, "warning", None, description, ""))
+    conn.execute("INSERT INTO app_config(key,value) VALUES(?,?) "
+                 "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                 (DEFAULT_PARTITION_STATE, str(alert_id)))
+    conn.commit()
+    return alert_id
+
+
+class StorageHealthWatcher:
+    """Checks the PostgreSQL DEFAULT partitions every ``check_interval`` seconds."""
+
+    def __init__(self, get_conn, check_interval=600, lease=None):
+        self.get_conn = get_conn
+        self.check_interval = check_interval
+        self.lease = lease                     # optional () -> bool (leases.LeaseKeeper)
+        self._stop = threading.Event()
+
+    def start(self):
+        threading.Thread(target=self._loop, daemon=True).start()
+        print("[storage] DEFAULT-partition watcher started")
+
+    def stop(self):
+        self._stop.set()
+
+    def _loop(self):
+        while not self._stop.is_set():
+            try:
+                self._cycle()
+            except Exception as exc:
+                print(f"[storage] check error: {exc}")
+            self._stop.wait(self.check_interval)
+
+    def _cycle(self):
+        if self.lease is not None and not self.lease():
+            return None
+        conn = self.get_conn()
+        try:
+            alert_id = check_default_partitions(conn)
+            if alert_id:
+                print(f"[storage] rows found in the DEFAULT partition; alert #{alert_id}")
+            return alert_id
         finally:
             conn.close()

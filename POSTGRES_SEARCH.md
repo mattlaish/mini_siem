@@ -26,11 +26,20 @@ SQLite keeps its existing schema, writes, and default search scope.
   Prefix, substring, OR, exclusion and extracted-field sorting use that table.
 - Field prefix indexes and a partial trigram index cover `query` and `url`
   contains searches. Other fields still support contains without that index.
+- Newest-first pages with `*text*` (contains) field filters first check the
+  newest 50,000 events of the window row by row (other filters still apply)
+  and stop at the page size. Those events are the start of the result order,
+  so a full page found there is exactly the first page. If the window is
+  smaller than that, the answer is also exact. Otherwise (rare matches, deep
+  pages, OR mode, other sort orders) the indexed query runs as before.
   Message word/prefix-of-token search remains full-text, not substring search.
 - `GET /api/logs/facets?field=query` returns up to 200 normalized field values
   with distinct event counts in the selected time range (same default/scope
   rules). This is not pre-aggregated and arbitrary all-history counts can grow
   more expensive. Use bounded scopes unless investigating across history.
+  Log Search shows it as **Top values** (toolbar button, or "top values" next
+  to a field in an expanded event); clicking a value filters by it, "not"
+  excludes it. SQLite answers the same request from its field table.
 
 ## Fresh PostgreSQL installation
 
@@ -54,7 +63,9 @@ field rows are matched via a sentinel fallback. Large index builds need a
 maintenance plan; do not treat owner initialization as online migration.
 
 System Health warns about event rows or **dated** field rows in the default
-partitions. Review time coverage and bad/late/future event timestamps; overlapping
+partitions, and the dashboard raises one alert ("Events outside time
+partitions", rule `storage_default_partition`) when they first appear; it
+checks every 10 minutes and alerts again only after the partitions were empty. Review time coverage and bad/late/future event timestamps; overlapping
 rows must be moved into the right partition before it can be attached. No data is
 automatically deleted or moved by this warning.
 

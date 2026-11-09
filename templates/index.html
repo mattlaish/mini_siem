@@ -89,6 +89,18 @@
         </optgroup>
       </select>
       <input type="text" id="fieldFilterBox" aria-label="Filter by extracted field (field=value)" placeholder="field=value (e.g. action=accept)" title="Filter by any extracted field. Type field=value and press Enter — e.g. action=accept, user=matt. Works on any field, no need to add a column first." style="border-color:var(--accent);min-width:210px;">
+      <button type="button" id="topValuesBtn" style="background:#fff;color:var(--accent);border:1px solid var(--accent);" title="Most common values of one field in the selected time range">Top values</button>
+    </div>
+    <div id="topValues" hidden style="margin:0 0 10px;padding:8px 10px;border:1px solid var(--line);border-radius:6px;background:var(--canvas);">
+      <div class="toolbar" style="margin-bottom:6px;">
+        <label class="muted" for="topField" style="align-self:center;">Field</label>
+        <input id="topField" list="topFieldList" placeholder="e.g. action" maxlength="60" style="min-width:180px;">
+        <datalist id="topFieldList"></datalist>
+        <button type="button" id="topShow">Show</button>
+        <button type="button" id="topClose" style="background:#fff;color:var(--ink-soft);border:1px solid var(--line);">Close</button>
+        <span class="muted" id="topNote" style="align-self:center;font-size:12px;"></span>
+      </div>
+      <div id="topList" aria-live="polite" style="font-size:12.5px;"></div>
     </div>
     <div id="fieldChips" style="display:none;gap:6px;flex-wrap:wrap;align-items:center;margin-top:-4px;margin-bottom:8px;padding:4px;border-radius:6px;transition:background .1s,border-color .1s;border:1px dashed transparent;"></div>
     <div id="xfilterBar" class="toolbar" style="display:none;"></div>
@@ -607,11 +619,61 @@ function addFieldChip(raw) {
   if (!m) { return false; }
   const field = m[1].toLowerCase(), value = m[2].trim();
   if (!fieldChips.some(c => c.field === field && c.value === value)) {
-    fieldChips.push({field, value});
+    // A search holds one condition per field, so a second chip for the same
+    // field replaces the first instead of being shown but silently ignored.
+    const prev = fieldChips.findIndex(c => c.field === field);
+    if (prev >= 0) {
+      MS.toast(`Replaced ${field}=${fieldChips[prev].value} with ${field}=${value}. Each field can have one filter.`, 'info');
+      fieldChips.splice(prev, 1, {field, value});
+    } else {
+      fieldChips.push({field, value});
+    }
     renderFieldChips();
     loadLogs();
   }
   return true;
+}
+
+// Top values: the most common values of one extracted field in the selected
+// time range (the other search filters are not applied). Click a value to
+// filter by it, or "not" to exclude it.
+const seenFields = new Set();
+function openTopValues(field) {
+  const panel = document.getElementById('topValues');
+  panel.hidden = false;
+  const names = [...new Set([...xCols, ...fieldChips.map(c => c.field), ...seenFields])].sort();
+  document.getElementById('topFieldList').innerHTML = names.map(n => `<option value="${_esc(n)}">`).join('');
+  const box = document.getElementById('topField');
+  if (field) { box.value = field; loadTopValues(); }
+  else box.focus();
+}
+async function loadTopValues() {
+  const field = document.getElementById('topField').value.trim().toLowerCase();
+  const list = document.getElementById('topList'), note = document.getElementById('topNote');
+  if (!field) { note.textContent = 'Enter a field name.'; return; }
+  const all = currentFilterParams(), params = new URLSearchParams({field});
+  for (const k of ['from', 'to', 'scope']) if (all.has(k)) params.set(k, all.get(k));
+  const range = all.has('from') || all.has('to') ? 'the selected time range'
+    : (all.get('scope') === 'all' ? 'all retained logs' : (document.getElementById('logScope') ? 'the last 24 hours' : 'all stored logs'));
+  note.textContent = 'Loading…';
+  list.innerHTML = '';
+  let d;
+  try { d = await MS.getJSON('/api/logs/facets?' + params.toString()); }
+  catch (e) { note.textContent = 'Could not load top values: ' + e.message; return; }
+  const values = d.values || [];
+  if (!values.length) { note.textContent = `No values for ${field} in ${range}.`; return; }
+  note.textContent = `${values.length >= 200 ? 'Top 200' : values.length} value${values.length === 1 ? '' : 's'} of ${field} in ${range}. Other filters are not applied.`;
+  const max = Math.max(...values.map(v => Number(v.count) || 0), 1);
+  list.innerHTML = '<table style="border-collapse:collapse;width:100%;max-width:720px;">' + values.slice(0, 50).map(v => {
+    const val = _esc(v.value), pct = Math.max(1, Math.round(100 * (Number(v.count) || 0) / max));
+    return `<tr><td style="padding:2px 8px 2px 0;font-family:var(--mono);word-break:break-all;">`
+      + `<a href="#" class="top-pick" data-value="${val}" title="Filter by ${_esc(field)}=${val}">${val}</a></td>`
+      + `<td style="padding:2px 8px;width:40%;"><div style="height:8px;border-radius:4px;background:var(--accent);opacity:.55;width:${pct}%;"></div></td>`
+      + `<td style="padding:2px 8px;text-align:right;white-space:nowrap;">${Number(v.count).toLocaleString()}</td>`
+      + `<td style="padding:2px 0;"><a href="#" class="top-not muted" data-value="${val}" title="Exclude ${_esc(field)}=${val}">not</a></td></tr>`;
+  }).join('') + '</table>' + (values.length > 50 ? `<div class="muted" style="margin-top:4px;">Showing the 50 most common of ${values.length}.</div>` : '');
+  list.querySelectorAll('.top-pick').forEach(a => a.addEventListener('click', e => { e.preventDefault(); addFieldChip(`${field}=${a.dataset.value}`); }));
+  list.querySelectorAll('.top-not').forEach(a => a.addEventListener('click', e => { e.preventDefault(); addFieldChip(`${field}=!${a.dataset.value}`); }));
 }
 
 // Columns are shared by everyone; read-only viewers keep their changes for this page only.
@@ -913,6 +975,7 @@ async function loadLogs(opts) {
       const r = await fetch('/api/log-fields/' + id);
       const d = await r.json();
       const entries = Object.entries(d.fields || {});
+      entries.forEach(([k]) => seenFields.add(k));
       const body = document.getElementById('norm-body-' + id);
       if (!entries.length) {
         body.innerHTML = '<span class="muted">No fields stored for this event.</span>';
@@ -944,11 +1007,17 @@ async function loadLogs(opts) {
               + `<td style="padding:2px 14px 2px 0;"><span class="fieldpick" data-field="${kEsc}" data-value="${vEsc}" title="${active ? 'Already a column' : 'Add as column'}" `
               + `style="font-family:var(--mono);color:${active ? 'var(--ink-soft)' : 'var(--accent)'};cursor:pointer;text-decoration:${active ? 'none' : 'underline dotted'};">`
               + `${kEsc}${active ? ' ✓' : ''}</span></td>`
-              + `<td style="font-family:var(--mono);padding:2px 4px;">${vEsc}</td></tr>`;
+              + `<td style="font-family:var(--mono);padding:2px 4px;">${vEsc}</td>`
+              + `<td style="padding:2px 4px;"><a href="#" class="fieldtop muted" data-field="${kEsc}" title="Most common values of ${kEsc}" style="font-size:11px;">top values</a></td></tr>`;
       }
       body.querySelectorAll('.fieldpick').forEach(el => el.addEventListener('click', (e) => {
         e.stopPropagation();
         addXColumn(el.dataset.field, el.dataset.value);
+      }));
+      body.querySelectorAll('.fieldtop').forEach(el => el.addEventListener('click', (e) => {
+        e.preventDefault(); e.stopPropagation();
+        openTopValues(el.dataset.field);
+        document.getElementById('topValues').scrollIntoView({block: 'nearest'});
       }));
       body.querySelectorAll('.fieldfilter').forEach(el => {
         el.addEventListener('click', (e) => {
@@ -969,6 +1038,13 @@ document.getElementById('refreshBtn').addEventListener('click', loadLogs);
   document.getElementById(id).addEventListener('change', loadLogs));
 ['logScope','srcPortBox','dstPortBox'].forEach(id =>
   document.getElementById(id)?.addEventListener('change', loadLogs));
+document.getElementById('topValuesBtn').addEventListener('click', () => {
+  const panel = document.getElementById('topValues');
+  if (panel.hidden) openTopValues(); else panel.hidden = true;
+});
+document.getElementById('topShow').addEventListener('click', loadTopValues);
+document.getElementById('topField').addEventListener('keydown', e => { if (e.key === 'Enter') loadTopValues(); });
+document.getElementById('topClose').addEventListener('click', () => { document.getElementById('topValues').hidden = true; });
 // inline field=value box: Enter adds a chip
 document.getElementById('fieldFilterBox').addEventListener('keydown', (e) => {
   if (e.key === 'Enter') {
