@@ -1,3 +1,7 @@
+## 修改原則
+
+修改不能只修表面, 底層邏輯要跟著修改一併同步改
+
 ## Git
 
 AI is allowed to perform normal Git operations:
