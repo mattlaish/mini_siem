@@ -193,6 +193,16 @@ def test_split_roles_can_append_logs_but_not_write_entities(pg_cfg):
                                       has_table_privilege(current_user,'log_source_last_seen','DELETE')""")
                 assert cur.fetchone() == (False, False, False)
             raw.rollback()
+        for identity in ("runtime", "ingest", "dashboard", "maintenance"):
+            with raw.cursor() as cur:
+                cur.execute("SELECT has_function_privilege(%s,'public.minisiem_prune_log_sources(integer)','EXECUTE')",
+                            (roles[identity],))
+                assert cur.fetchone()[0] is (identity == "maintenance"), identity
+        with raw.cursor() as cur:
+            cur.execute(sql.SQL("SET LOCAL ROLE {}").format(sql.Identifier(roles["maintenance"])))
+            cur.execute("SELECT public.minisiem_prune_log_sources(15)")
+            assert cur.fetchone()[0] >= 0
+        raw.rollback()
     finally:
         raw.close()
 
@@ -427,3 +437,134 @@ def test_detection_config_and_concurrent_duplicate_evidence(pg_cfg):
         assert detection.describe_alert(dict(row))["detection_evidence"]["occurrences"] == 2
     finally:
         store.close()
+
+
+def test_source_summary_keys_senders_never_deadlocks_and_prunes(pg_cfg):
+    import threading
+    from datetime import datetime, timedelta, timezone
+
+    db.initialize(pg_cfg)
+    p = pg_cfg["postgres"]
+    connect = lambda: psycopg2.connect(dbname=p["dbname"], **_admin())  # noqa: E731
+    ins = "INSERT INTO logs(received_at, source_ip, peer_ip, message, raw) VALUES (%s,%s,%s,'x','x')"
+    now = datetime.now(timezone.utc).replace(second=0, microsecond=0)
+    old, new = (now - timedelta(minutes=5)).isoformat(), now.isoformat()
+
+    seed = connect()
+    with seed.cursor() as cur:
+        # A firewall (peer) reporting two attacker addresses, and an API source.
+        cur.execute(ins, (old, "203.0.113.1", "10.0.0.1"))
+        cur.execute(ins, (old, "203.0.113.2", "10.0.0.2"))
+        cur.execute(ins, (old, "sophos", ""))
+        cur.execute("SELECT source_ip FROM log_source_last_seen ORDER BY 1")
+        assert [r[0] for r in cur.fetchall()] == ["10.0.0.1", "10.0.0.2", "sophos"]
+    seed.commit()
+
+    # Two batched writers touch the same senders in opposite order.
+    a, b, outcome = connect(), connect(), {}
+    a.cursor().execute(ins, (new, "198.51.100.1", "10.0.0.1"))
+    b.cursor().execute(ins, (new, "198.51.100.2", "10.0.0.2"))
+
+    def second_half():
+        try:
+            a.cursor().execute(ins, (new, "198.51.100.1", "10.0.0.2"))
+            a.commit()
+            outcome["a"] = "ok"
+        except Exception as exc:  # noqa: BLE001
+            outcome["a"] = type(exc).__name__
+
+    t = threading.Thread(target=second_half)
+    t.start()
+    t.join(0.5)
+    b.cursor().execute(ins, (new, "198.51.100.2", "10.0.0.1"))
+    b.commit()
+    t.join(5)
+    assert outcome == {"a": "ok"}
+    with seed.cursor() as cur:
+        cur.execute("SELECT source_ip, last_seen FROM log_source_last_seen WHERE source_ip LIKE '10.%' ORDER BY 1")
+        assert [(r[0], r[1]) for r in cur.fetchall()] == [("10.0.0.1", now), ("10.0.0.2", now)]
+
+        # Pruning is bounded and removes only senders older than the window.
+        cur.execute("UPDATE log_source_last_seen SET last_seen = now() - interval '20 days' WHERE source_ip='sophos'")
+        cur.execute("SELECT public.minisiem_prune_log_sources(15)")
+        assert cur.fetchone()[0] == 1
+        cur.execute("SELECT count(*) FROM log_source_last_seen")
+        assert cur.fetchone()[0] == 2
+    seed.commit()
+    with seed.cursor() as cur:
+        with pytest.raises(psycopg2.Error):
+            cur.execute("SELECT public.minisiem_prune_log_sources(3)")
+    seed.rollback()
+    for c in (a, b, seed):
+        c.close()
+
+
+def test_source_summary_rekeys_an_older_source_ip_summary(pg_cfg):
+    from datetime import datetime, timedelta, timezone
+    import storage_stats
+
+    db.initialize(pg_cfg)
+    now = datetime.now(timezone.utc)
+    conn = db.connect(pg_cfg)
+    try:
+        conn.execute("INSERT INTO logs(received_at,source_ip,peer_ip,message) VALUES (?,?,?,?)",
+                     ((now - timedelta(days=4)).isoformat(), "203.0.113.9", "10.0.0.7", "old"))
+        # The previous release keyed rows by source_ip and set no marker.
+        conn.execute("DELETE FROM log_source_last_seen")
+        conn.execute("INSERT INTO log_source_last_seen VALUES ('203.0.113.9', now() - interval '4 days')")
+        conn.execute("COMMENT ON TABLE log_source_last_seen IS NULL")
+        conn.commit()
+        for statement in storage_stats.postgres_schema_statements():
+            conn.execute(statement)
+        conn.commit()
+        assert storage_stats.silent_sources(conn, (now - timedelta(days=14)).isoformat(),
+                                            (now - timedelta(days=3)).isoformat()) == (1, ["10.0.0.7"])
+    finally:
+        conn.close()
+
+
+def test_playbook_scan_pages_and_all_history_steps_on_postgres(pg_cfg, monkeypatch):
+    from datetime import datetime, timedelta, timezone
+    import contextlib
+    import io
+    from werkzeug.datastructures import MultiDict
+    import correlations
+    import dashboard
+    from listener import Storage, parse_syslog
+
+    db.initialize(pg_cfg)
+    now = datetime.now(timezone.utc)
+    with contextlib.redirect_stdout(io.StringIO()):
+        storage = Storage(db_config=pg_cfg)
+        for i, days in enumerate([0, 0, 0, 3, 3, 40, 400]):
+            ev = parse_syslog(f"<38>Nov 14 10:00:00 web01 sshd[1]: Failed password for root from 203.0.113.{i} port 22",
+                              "10.0.0.5")
+            ev["received_at"] = (now - timedelta(days=days, minutes=i)).isoformat()
+            ev["device_timestamp"] = ""
+            storage.insert_log(ev, fields={"act": "deny"})
+        storage.conn.commit()
+        storage.close()
+
+    conn = db.connect(pg_cfg)
+    try:
+        monkeypatch.setattr(correlations, "PAGE_ROWS", 2)
+        out = correlations.run_correlation(conn, {"type": "threshold", "pattern": "failed password",
+                                                  "group_by": "hostname", "threshold": 1,
+                                                  "window_minutes": 5 * 1440})
+        assert out["coverage"]["complete"] and out["coverage"]["scanned"] == 5
+        assert out["groups"][0]["count"] == 5
+        out = correlations.run_correlation(conn, {"type": "threshold", "pattern": "failed password",
+                                                  "group_by": "hostname", "threshold": 1,
+                                                  "window_minutes": 5 * 1440}, scan_limit=3)
+        assert not out["coverage"]["complete"] and out["groups"][0]["count"] == 3
+    finally:
+        conn.close()
+
+    monkeypatch.setattr(dashboard, "DB_CONFIG", pg_cfg)
+    cols = "id, received_at, source_ip, message"
+    with dashboard.app.test_request_context("/"):
+        stepped = dashboard._query_logs_extracted(MultiDict([("f_act", "deny"), ("scope", "all")]), 4, cols)
+        unbounded = dashboard._query_logs_window(MultiDict([("f_act", "deny"), ("scope", "all")]), 4, cols)
+        assert [r["id"] for r in stepped] == [r["id"] for r in unbounded] and len(stepped) == 4
+        everything = dashboard._query_logs_extracted(MultiDict([("f_act", "deny"), ("scope", "all")]), 50, cols)
+        assert len(everything) == 7

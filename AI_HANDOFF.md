@@ -1,5 +1,42 @@
 # AI Handover Prompt - mini-SIEM
 
+## Review fixes: source summary, playbooks, all-history search — 2026-11-14 (cloud session)
+
+Review of 7569f69/9c50762 found one defect in the new source summary and
+three older gaps. Fixed:
+
+- Source-summary trigger could deadlock two batched writers (reproduced on
+  PostgreSQL 16: one batch cancelled). It now skips sender rows another
+  transaction holds (SKIP LOCKED) and inserts first sightings under an
+  advisory try-lock. Same reproduction now commits both.
+- Silent sources are keyed by the sending device (`peer_ip`, else
+  `source_ip`) on PostgreSQL and SQLite. Owner setup re-keys an older summary
+  once (table comment marker). Daily partition maintenance prunes senders
+  older than 15 days via SECURITY DEFINER `minisiem_prune_log_sources`,
+  EXECUTE granted to maintenance only; both privilege checkers verify it.
+  The upgrade tool now always re-applies the idempotent summary setup.
+  Migration marker 45.
+- Playbooks read only the oldest 50,000 events of a window and showed the
+  rest as clean. They now page through the window (keyset), keep bounded
+  evidence per finding with exact counts, share one scan across all
+  playbooks in a report, and report coverage. Limits: 500,000 events from
+  the page, 10,000,000 for scheduled reports; beyond that the newest events
+  are read and the result says "Partial". Resolved identities no longer
+  overwrite raw columns (stored in `_resolved`).
+- All-history newest-first searches on PostgreSQL try 1, 7, 30 and 365 days
+  before searching everything (`HISTORY_STEP_HOURS`); exact by ordering.
+- POSTGRES_SEARCH.md: migration 44 frees no disk space until a full rewrite.
+
+Validation: full suite same 38 pre-existing failures; new tests
+tests/test_playbook_scan.py (7) and step tests in
+tests/test_postgres_contains_guard.py (3); PostgreSQL 16 integration
+14 PASS (3 new: sender keying, no deadlock, pruning bounds, re-key, paging
+and step results equal to the unbounded search; prune grant per role).
+No load benchmark.
+
+Next: single-pass scan time at 1M events/day is unmeasured (a scheduled
+weekly report reads up to 10M events); measure on the target server.
+
 ## PostgreSQL search and evidence storage — 2026-11-13
 
 - Owner migration 44 removes verified duplicate message/raw columns from

@@ -158,9 +158,10 @@ def _upgrade_existing_owner_schema(cfg: dict):
 
         # The event-storage upgrade uses the safe timestamp parser when copying
         # historical device timestamps. Install it before transforming rows.
-        if 43 not in applied:
-            for index, statement in enumerate(stats_schema(), start=1):
-                _execute_upgrade_sql(conn, stage=f"log-source-summary-{index}", statement=statement)
+        # Always applied (idempotent): later releases replace the trigger
+        # function, add the prune function and re-key the summary once.
+        for index, statement in enumerate(stats_schema(), start=1):
+            _execute_upgrade_sql(conn, stage=f"log-source-summary-{index}", statement=statement)
         statements = list(postgres_schema_statements())
         for index, statement in enumerate(statements, start=1):
             _execute_upgrade_sql(

@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Latest implementation: 2026-11-13 PostgreSQL search and evidence storage. See the dated
+Latest implementation: 2026-11-14 review fixes (source summary, playbooks, all-history search). See the dated
 entry at the end and POSTGRES_SEARCH.md; older slice statuses are historical
 where explicitly superseded. Owner handles Git synchronization manually.
 
@@ -979,3 +979,18 @@ Status: READY FOR OWNER REVIEW.
   during the historical load. Production-scale measurements remain pending.
 - Focused regression: 99 PASS. Checked fresh setup, retryable owner migration,
   original evidence after archive MOVE, long/literal filters and role boundaries.
+
+## 2026-11-14 — Review fixes: source summary, playbooks, all-history search
+
+Status: READY FOR OWNER REVIEW.
+
+- Source-summary trigger no longer waits on other writers (SKIP LOCKED plus an
+  advisory try-lock for first sightings); batched writers cannot deadlock.
+- Silent sources are keyed by the sending device; the summary is re-keyed once
+  on owner setup and pruned daily by the maintenance role (migration marker 45,
+  refresh split-role grants).
+- Playbooks page through their whole window, share one scan per report and
+  report partial coverage instead of silently reading the oldest 50,000 events.
+- All-history newest-first PostgreSQL searches widen 1/7/30/365 days first.
+- Validation: same 38 pre-existing failures; PostgreSQL 16 integration 14 PASS.
+

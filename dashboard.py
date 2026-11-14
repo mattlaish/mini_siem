@@ -1188,7 +1188,41 @@ def _extraction_args(args):
     return fields, filters, sort, direction
 
 
+# All-history searches (PostgreSQL, newest first) look back in widening steps.
+# Matches in [now - step, newest] come first in the result order, so a step
+# that fills the page holds exactly the page an unbounded search would return,
+# while each step only reads the partitions it covers.
+HISTORY_STEP_HOURS = (24, 24 * 7, 24 * 30, 24 * 365)
+
+
+def _history_steps(args, select_sort_default):
+    """Return the 'from' values to try for an all-history newest-first search."""
+    from datetime import datetime, timedelta, timezone
+    if _db_config().get("backend") != "postgres":
+        return []
+    if args.get("from") or args.get("to") or args.get("ids") or not select_sort_default:
+        return []
+    if not hasattr(args, "copy"):
+        return []
+    now = datetime.now(timezone.utc)
+    return [(now - timedelta(hours=h)).isoformat() for h in HISTORY_STEP_HOURS]
+
+
 def _query_logs_extracted(args, limit, select_cols, sort_cap=100000, offset=0):
+    """Search logs; all-history PostgreSQL searches widen in time steps."""
+    sort = (args.get("sort") or "").strip()
+    default_order = not sort.startswith("x_") and sort not in {
+        "received_at", "source_ip", "severity", "hostname", "app_name", "id"}
+    for since in _history_steps(args, default_order):
+        stepped = args.copy()
+        stepped["from"] = since
+        rows = _query_logs_window(stepped, limit, select_cols, sort_cap, offset)
+        if len(rows) >= limit:
+            return rows
+    return _query_logs_window(args, limit, select_cols, sort_cap, offset)
+
+
+def _query_logs_window(args, limit, select_cols, sort_cap=100000, offset=0):
     """Query logs with extracted-field support via the indexed log_fields
     table (materialized at ingest). Field filters become indexed JOINs;
     sorting fetches (id, value) pairs from the index (capped at sort_cap)
@@ -1208,9 +1242,8 @@ def _query_logs_extracted(args, limit, select_cols, sort_cap=100000, offset=0):
         if search_backend == "postgres_v2" and args.get("ids"):
             ids = [int(i) for i in args["ids"].split(",") if i.strip().isdigit()][:500]
             if ids:
-                rows = conn.execute(
-                    "SELECT DISTINCT projection_time FROM logs WHERE id IN (" + placeholders(len(ids)) + ")", ids,
-                ).fetchall()
+                id_sql = "SELECT DISTINCT projection_time FROM logs WHERE id IN (" + placeholders(len(ids)) + ")"
+                rows = conn.execute(id_sql, ids).fetchall()   # placeholders only
                 if all(row["projection_time"] is not None for row in rows):
                     id_event_times = [row["projection_time"] for row in rows]
         base_sql, base_params = _build_log_query(

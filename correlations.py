@@ -28,7 +28,14 @@ from sql_helpers import placeholders
 
 import severity as severity_mod
 
-FETCH_LIMIT = 50000  # safety cap on rows pulled into memory per query
+# Rows are read in pages of PAGE_ROWS. A check run from the page reads at most
+# INTERACTIVE_SCAN_LIMIT events (the newest ones in the window); scheduled
+# reports read up to SCHEDULED_SCAN_LIMIT. Results carry "coverage" saying
+# which part of the window was read, so a partial run is never shown as clean.
+PAGE_ROWS = 5000
+INTERACTIVE_SCAN_LIMIT = 500_000
+SCHEDULED_SCAN_LIMIT = 10_000_000
+MAX_GROUP_IDS = 1000      # evidence IDs kept per finding; counts stay exact
 
 USER_PATTERNS = [
     re.compile(r"Account Name:\s*\|?\s*([^\s|]+)", re.IGNORECASE),
@@ -134,10 +141,13 @@ def _resolve_identity(conn, rows, group_by, aliases):
         found[r["log_id"]] = r["value"]
     for r in needs_fallback:
         if r["id"] in found:
-            r[group_by] = found[r["id"]]
+            r.setdefault("_resolved", {})[group_by] = found[r["id"]]
 
 
 def _key_of(row: dict, group_by: str):
+    resolved = row.get("_resolved")
+    if resolved and group_by in resolved:
+        return resolved[group_by]
     if group_by == "user":
         return _extract_user(row["message"])
     return row.get(group_by) or None
@@ -150,32 +160,80 @@ def _parse_ts(iso: str):
         return None
 
 
-def _fetch_window(conn, since_iso: str, until_iso: str = None, severity: str = None,
-                   group_by: str = None):
+# ---------------------------------------------------------------------------
+# Window scan
+# ---------------------------------------------------------------------------
+# Rows are read oldest-first in pages, so memory holds one page plus what each
+# check keeps for its matches, not the whole window. If the window holds more
+# events than the scan limit, the NEWEST events are scanned and the result
+# says which part of the window it covers ("coverage"); nothing is dropped
+# silently.
+
+def _row_time(row):
+    t = row.get("_t")
+    if isinstance(t, datetime):
+        return t
+    return _parse_ts(str(t or row.get("received_at") or ""))
+
+
+def _iso(value):
+    return value.isoformat() if isinstance(value, datetime) else (str(value) if value is not None else None)
+
+
+def _scan_start(conn, since_iso, until_iso, scan_limit):
+    """Return (start, complete): where to begin so at most scan_limit events are read."""
     pg = getattr(conn, "backend", "sqlite") == "postgres"
-    relation = "security_event_logs" if pg else "logs"
-    time_col = "event_time" if pg else "received_at"
-    sql = (f"SELECT id, received_at, source_ip, hostname, app_name, severity, message "
-           f"FROM {relation} WHERE {time_col} >= " + ("?::timestamptz" if pg else "?"))
+    table, col = ("security_events", "event_time") if pg else ("logs", "received_at")
+    cast = "::timestamptz" if pg else ""
+    sql = "SELECT " + col + " AS t FROM " + table + " WHERE " + col + " >= ?" + cast
     params = [since_iso]
     if until_iso:
-        sql += " AND " + time_col + (" <= ?::timestamptz" if pg else " <= ?")
+        sql += " AND " + col + " <= ?" + cast
         params.append(until_iso)
-    if severity:
-        syns = severity_mod.synonyms_of(severity)
-        if not syns:
-            syns = [severity.lower()]
-        sql += f" AND LOWER(severity) IN ({','.join('?' * len(syns))})"
-        params.extend(syns)
-    sql += " ORDER BY " + time_col + " ASC LIMIT ?"
-    params.append(FETCH_LIMIT)
-    rows = [dict(r) for r in conn.execute(sql, params).fetchall()]
-    # Cross-source identity resolution — see _resolve_identity's docstring.
-    # Only source_ip/hostname/destination are column-based concepts; other
-    # group_by values (e.g. "user") are untouched here.
-    if group_by in ("source_ip", "hostname", "destination") and rows:
-        _resolve_identity(conn, rows, group_by, _get_aliases(conn))
-    return rows
+    sql += " ORDER BY " + col + " DESC LIMIT 2 OFFSET ?"
+    params.append(max(0, int(scan_limit) - 1))
+    rows = conn.execute(sql, params).fetchall()
+    if len(rows) < 2:
+        return since_iso, True
+    return _iso(rows[0]["t"]), False
+
+
+def _scan_window(conn, since_iso, until_iso, scan_limit, concepts, coverage):
+    """Yield rows of [since, until] oldest-first; fill ``coverage``."""
+    pg = getattr(conn, "backend", "sqlite") == "postgres"
+    relation = "security_event_logs" if pg else "logs"
+    col = "event_time" if pg else "received_at"
+    cast = "::timestamptz" if pg else ""
+    start, complete = _scan_start(conn, since_iso, until_iso, scan_limit)
+    coverage.update(since=since_iso, until=until_iso, scanned_from=start,
+                    complete=complete, scanned=0)
+    aliases = _get_aliases(conn) if concepts else {}
+    base = ("SELECT id, received_at, source_ip, hostname, destination, app_name, severity, message, "
+            + col + " AS _t FROM " + relation + " WHERE " + col + " >= ?" + cast)
+    bounds = [start]
+    if until_iso:
+        base += " AND " + col + " <= ?" + cast
+        bounds.append(until_iso)
+    last_t = last_id = None
+    while True:
+        sql, params = base, list(bounds)
+        if last_t is not None:
+            sql += " AND (" + col + " > ?" + cast + " OR (" + col + " = ?" + cast + " AND id > ?))"
+            params += [last_t, last_t, last_id]
+        sql += " ORDER BY " + col + ", id LIMIT ?"
+        params.append(PAGE_ROWS)
+        page = [dict(r) for r in conn.execute(sql, params).fetchall()]
+        if not page:
+            return
+        last_t, last_id = page[-1]["_t"], page[-1]["id"]
+        for concept in concepts:
+            _resolve_identity(conn, page, concept, aliases)
+        coverage["scanned"] += len(page)
+        for row in page:
+            row["_ts"] = _row_time(row)
+            yield row
+        if len(page) < PAGE_ROWS:
+            return
 
 
 def _matches(row: dict, regex):
@@ -187,9 +245,11 @@ def _hour_ok(row: dict, hours):
     wrap-around ranges like (22, 6) for off-hours."""
     if not hours:
         return True
-    ts = _parse_ts(row["received_at"])
+    ts = row.get("_ts") or _parse_ts(row["received_at"])
     if not ts:
         return False
+    if ts.tzinfo is not None:
+        ts = ts.astimezone(timezone.utc)
     h = ts.hour
     start, end = hours
     if start <= end:
@@ -204,170 +264,281 @@ def _sample(rows, n=3):
     ]
 
 
+class _Group:
+    """Exact count and time span; bounded evidence IDs and samples."""
+    __slots__ = ("count", "first", "last", "ids", "samples")
+
+    def __init__(self):
+        self.count, self.first, self.last, self.ids, self.samples = 0, None, None, [], []
+
+    def add(self, row):
+        self.count += 1
+        if self.first is None:
+            self.first = row["received_at"]
+        self.last = row["received_at"]
+        if len(self.ids) < MAX_GROUP_IDS:
+            self.ids.append(row["id"])
+        if len(self.samples) < 3:
+            self.samples.append(_sample([row], 1)[0])
+
+    def result(self, key):
+        out = {"key": key, "count": self.count, "first": self.first, "last": self.last,
+               "log_ids": list(self.ids), "sample": list(self.samples)}
+        if self.count > len(self.ids):
+            out["log_ids_truncated"] = True
+        return out
+
+
 # ---------------------------------------------------------------------------
-# Correlation implementations
+# Correlation implementations: each check consumes rows as they are scanned
 # ---------------------------------------------------------------------------
 
-def _run_threshold(conn, p):
-    regex = re.compile(p["pattern"], re.IGNORECASE)
-    rows = _fetch_window(conn, p["since"], p.get("until"), p.get("severity_filter"),
-                         group_by=p.get("group_by"))
-    hours = p.get("hours")
-    groups = defaultdict(list)
-    for r in rows:
-        if not _matches(r, regex) or not _hour_ok(r, hours):
-            continue
-        key = _key_of(r, p["group_by"])
+class _Check:
+    needs_baseline = False
+
+    def __init__(self, p):
+        self.p = p
+        self.group_by = p["group_by"]
+        self.regex = re.compile(p.get("pattern", "."), re.IGNORECASE)
+        sev = p.get("severity_filter")
+        self.severities = None
+        if sev:
+            self.severities = set(severity_mod.synonyms_of(sev) or [sev.lower()])
+
+    def wanted(self, row):
+        if self.severities is not None and str(row.get("severity") or "").lower() not in self.severities:
+            return False
+        return _matches(row, self.regex)
+
+
+class _Threshold(_Check):
+    def __init__(self, p):
+        super().__init__(p)
+        self.hours = p.get("hours")
+        self.groups = defaultdict(_Group)
+
+    def feed(self, row):
+        if not self.wanted(row) or not _hour_ok(row, self.hours):
+            return
+        key = _key_of(row, self.group_by)
         if key:
-            groups[key].append(r)
+            self.groups[key].add(row)
 
-    results = []
-    for key, hits in groups.items():
-        if len(hits) >= p["threshold"]:
-            results.append({
-                "key": key,
-                "count": len(hits),
-                "first": hits[0]["received_at"],
-                "last": hits[-1]["received_at"],
-                "log_ids": [h["id"] for h in hits],
-                "sample": _sample(hits),
-            })
-    results.sort(key=lambda x: -x["count"])
-    return results
+    def finish(self):
+        results = [g.result(k) for k, g in self.groups.items() if g.count >= self.p["threshold"]]
+        results.sort(key=lambda x: -x["count"])
+        return results
 
 
-def _run_sequence(conn, p):
-    re_a = re.compile(p["pattern"], re.IGNORECASE)
-    re_b = re.compile(p["pattern_b"], re.IGNORECASE)
-    min_a = p.get("min_a_count", 1)
-    max_gap = p.get("max_gap_seconds", 600)
-    rows = _fetch_window(conn, p["since"], p.get("until"), group_by=p.get("group_by"))
+class _Sequence(_Check):
+    def __init__(self, p):
+        super().__init__(p)
+        self.re_b = re.compile(p["pattern_b"], re.IGNORECASE)
+        self.min_a = p.get("min_a_count", 1)
+        self.gap = timedelta(seconds=p.get("max_gap_seconds", 600))
+        self.recent = defaultdict(list)       # key -> [(ts, id, sample)]
+        self.results = []
 
-    by_key = defaultdict(list)
-    for r in rows:
-        is_a, is_b = _matches(r, re_a), _matches(r, re_b)
+    def feed(self, row):
+        is_a, is_b = _matches(row, self.regex), _matches(row, self.re_b)
         if not (is_a or is_b):
-            continue
-        key = _key_of(r, p["group_by"])
-        if key:
-            by_key[key].append((r, is_a, is_b))
+            return
+        key = _key_of(row, self.group_by)
+        ts = row.get("_ts")
+        if not key or ts is None:
+            return
+        recent = self.recent[key]
+        if is_a:
+            recent.append((ts, row["id"], _sample([row], 1)[0]))
+            cutoff = ts - self.gap
+            while recent and recent[0][0] < cutoff:
+                recent.pop(0)
+        if is_b and recent:
+            cutoff = ts - self.gap
+            window_a = [x for x in recent if x[0] >= cutoff]
+            if len(window_a) >= self.min_a:
+                ids = [x[1] for x in window_a][:MAX_GROUP_IDS - 1] + [row["id"]]
+                result = {
+                    "key": key,
+                    "a_count": len(window_a),
+                    "b_time": row["received_at"],
+                    "gap_seconds": round((ts - window_a[0][0]).total_seconds(), 1),
+                    "log_ids": ids,
+                    "sample": [x[2] for x in window_a[:2]] + _sample([row], 1),
+                }
+                if len(window_a) + 1 > len(ids):
+                    result["log_ids_truncated"] = True
+                self.results.append(result)
+                self.recent[key] = []          # one alert per burst
 
-    results = []
-    for key, events in by_key.items():
-        recent_a = []  # (timestamp, row)
-        for r, is_a, is_b in events:
-            ts = _parse_ts(r["received_at"])
-            if ts is None:
-                continue
-            if is_a:
-                recent_a.append((ts, r))
-                cutoff = ts - timedelta(seconds=max_gap)
-                recent_a = [(t, x) for t, x in recent_a if t >= cutoff]
-            if is_b and recent_a:
-                cutoff = ts - timedelta(seconds=max_gap)
-                window_a = [(t, x) for t, x in recent_a if t >= cutoff]
-                if len(window_a) >= min_a:
-                    a_rows = [x for _, x in window_a]
-                    results.append({
-                        "key": key,
-                        "a_count": len(window_a),
-                        "b_time": r["received_at"],
-                        "gap_seconds": round((ts - window_a[0][0]).total_seconds(), 1),
-                        "log_ids": [x["id"] for x in a_rows] + [r["id"]],
-                        "sample": _sample(a_rows, 2) + _sample([r], 1),
-                    })
-                    recent_a = []  # one alert per burst
-    results.sort(key=lambda x: -x["a_count"])
-    return results
+    def finish(self):
+        self.results.sort(key=lambda x: -x["a_count"])
+        return self.results
 
 
-def _run_fanout(conn, p):
-    regex = re.compile(p["pattern"], re.IGNORECASE)
-    distinct_field = p["distinct_field"]
-    rows = _fetch_window(conn, p["since"], p.get("until"), group_by=p.get("group_by"))
-    groups = defaultdict(lambda: {"values": set(), "rows": []})
-    for r in rows:
-        if not _matches(r, regex):
-            continue
-        key = _key_of(r, p["group_by"])
-        val = _key_of(r, distinct_field) if distinct_field == "user" else r.get(distinct_field)
+class _Fanout(_Check):
+    def __init__(self, p):
+        super().__init__(p)
+        self.distinct_field = p["distinct_field"]
+        self.groups = defaultdict(lambda: (set(), _Group()))
+
+    def feed(self, row):
+        if not self.wanted(row):
+            return
+        key = _key_of(row, self.group_by)
+        field = self.distinct_field
+        val = _key_of(row, field) if field == "user" else row.get(field)
         if key and val:
-            groups[key]["values"].add(val)
-            groups[key]["rows"].append(r)
+            values, group = self.groups[key]
+            values.add(val)
+            group.add(row)
 
-    results = []
-    for key, g in groups.items():
-        if len(g["values"]) >= p["threshold"]:
-            results.append({
-                "key": key,
-                "distinct_count": len(g["values"]),
-                "distinct_values": sorted(g["values"])[:15],
-                "count": len(g["rows"]),
-                "first": g["rows"][0]["received_at"],
-                "last": g["rows"][-1]["received_at"],
-                "log_ids": [r["id"] for r in g["rows"]],
-                "sample": _sample(g["rows"]),
-            })
-    results.sort(key=lambda x: -x["distinct_count"])
-    return results
+    def finish(self):
+        results = []
+        for key, (values, group) in self.groups.items():
+            if len(values) >= self.p["threshold"]:
+                out = group.result(key)
+                out.update(distinct_count=len(values), distinct_values=sorted(values)[:15])
+                results.append(out)
+        results.sort(key=lambda x: -x["distinct_count"])
+        return results
 
 
-def _run_first_seen(conn, p):
-    regex = re.compile(p.get("pattern", "."), re.IGNORECASE)
-    since_dt = datetime.fromisoformat(p["since"])
-    baseline_since = (since_dt - timedelta(minutes=p.get("baseline_minutes", 7 * 24 * 60))).isoformat()
+class _FirstSeen(_Check):
+    needs_baseline = True
 
-    baseline_rows = _fetch_window(conn, baseline_since, p["since"], group_by=p.get("group_by"))
-    recent_rows = _fetch_window(conn, p["since"], p.get("until"), group_by=p.get("group_by"))
+    def __init__(self, p):
+        super().__init__(p)
+        since_dt = datetime.fromisoformat(p["since"])
+        self.baseline_since = (since_dt - timedelta(minutes=p.get("baseline_minutes", 7 * 24 * 60))).isoformat()
+        self.baseline = set()
+        self.groups = defaultdict(_Group)
 
-    baseline_keys = set()
-    for r in baseline_rows:
-        k = _key_of(r, p["group_by"])
-        if k:
-            baseline_keys.add(k)
+    def feed_baseline(self, row):
+        key = _key_of(row, self.group_by)
+        if key:
+            self.baseline.add(key)
 
-    new_groups = defaultdict(list)
-    for r in recent_rows:
-        if not _matches(r, regex):
-            continue
-        k = _key_of(r, p["group_by"])
-        if k and k not in baseline_keys:
-            new_groups[k].append(r)
+    def feed(self, row):
+        if not self.wanted(row):
+            return
+        key = _key_of(row, self.group_by)
+        if key and key not in self.baseline:
+            self.groups[key].add(row)
 
-    results = []
-    for key, hits in new_groups.items():
-        results.append({
-            "key": key,
-            "count": len(hits),
-            "first": hits[0]["received_at"],
-            "last": hits[-1]["received_at"],
-            "log_ids": [h["id"] for h in hits],
-            "sample": _sample(hits),
-        })
-    results.sort(key=lambda x: -x["count"])
-    return results
+    def finish(self):
+        results = [g.result(k) for k, g in self.groups.items()]
+        results.sort(key=lambda x: -x["count"])
+        return results
 
 
 CORRELATION_TYPES = {
-    "threshold": _run_threshold,
-    "sequence": _run_sequence,
-    "fanout": _run_fanout,
-    "first_seen": _run_first_seen,
+    "threshold": _Threshold,
+    "sequence": _Sequence,
+    "fanout": _Fanout,
+    "first_seen": _FirstSeen,
 }
 
 
-def run_correlation(conn, params: dict) -> dict:
-    """Entry point. params must include: type, since (ISO), group_by,
-    plus the type-specific fields documented at the top of this file."""
+def _prepare(params, now=None):
     ctype = params.get("type")
     if ctype not in CORRELATION_TYPES:
         raise ValueError(f"Unknown correlation type: {ctype}")
     if "since" not in params:
         window = int(params.get("window_minutes", 60))
-        params["since"] = (datetime.now(timezone.utc) - timedelta(minutes=window)).isoformat()
-    results = CORRELATION_TYPES[ctype](conn, params)
-    return {"type": ctype, "params_used": {k: v for k, v in params.items() if k != "conn"},
-            "group_count": len(results), "groups": results}
+        now = now or datetime.now(timezone.utc)
+        params["since"] = (now - timedelta(minutes=window)).isoformat()
+    return CORRELATION_TYPES[ctype](params)
+
+
+def _concepts(checks):
+    return sorted({c.group_by for c in checks} & {"source_ip", "hostname", "destination"})
+
+
+def run_checks(conn, checks, since, until, scan_limit):
+    """Feed every check from ONE scan of [since, until] (plus baseline scans).
+
+    Returns {id(check): {"coverage": {...}, "error": str|None}}. A check that
+    fails is reported and dropped; the others continue.
+    """
+    status = {id(c): {"coverage": None, "error": None} for c in checks}
+    live = list(checks)
+
+    def feed(targets, rows, method):
+        for row in rows:
+            for check in list(targets):
+                try:
+                    getattr(check, method)(row)
+                except Exception as exc:  # noqa: BLE001 - isolate one bad check
+                    status[id(check)]["error"] = f"{type(exc).__name__}: {exc}"
+                    targets.remove(check)
+                    if check in live:
+                        live.remove(check)
+
+    baselines = defaultdict(list)
+    for check in checks:
+        if check.needs_baseline:
+            baselines[check.baseline_since].append(check)
+    for baseline_since, targets in baselines.items():
+        cov = {}
+        feed(list(targets), _scan_window(conn, baseline_since, since, scan_limit, _concepts(targets), cov),
+             "feed_baseline")
+        for check in targets:
+            status[id(check)]["baseline_coverage"] = cov
+    cov = {}
+    if live:
+        feed(live, _scan_window(conn, since, until, scan_limit, _concepts(live), cov), "feed")
+    for check in checks:
+        entry = status[id(check)]
+        entry["coverage"] = dict(cov)
+        base = entry.pop("baseline_coverage", None)
+        if base is not None:
+            entry["coverage"]["baseline_complete"] = base.get("complete", True)
+            entry["coverage"]["complete"] = entry["coverage"].get("complete", True) and base.get("complete", True)
+    return status
+
+
+def run_correlation(conn, params: dict, scan_limit: int = None) -> dict:
+    """Entry point. params must include: type, since (ISO), group_by,
+    plus the type-specific fields documented at the top of this file."""
+    check = _prepare(params)
+    state = run_checks(conn, [check], params["since"], params.get("until"),
+                       scan_limit or INTERACTIVE_SCAN_LIMIT)[id(check)]
+    if state["error"]:
+        raise RuntimeError(state["error"])
+    results = check.finish()
+    return {"type": params["type"], "params_used": {k: v for k, v in params.items() if k != "conn"},
+            "group_count": len(results), "groups": results, "coverage": state["coverage"]}
+
+
+def run_playbook_set(conn, playbooks, window_minutes, scan_limit):
+    """Run several playbooks over the same window with one shared scan.
+
+    Returns one entry per playbook: {"result": run_correlation-shaped dict}
+    or {"error": "..."}.
+    """
+    now = datetime.now(timezone.utc)
+    since = (now - timedelta(minutes=window_minutes)).isoformat()
+    prepared, out = [], {}
+    for pb in playbooks:
+        params = dict(pb["params"])
+        params["window_minutes"] = window_minutes
+        params["since"] = since
+        try:
+            prepared.append((pb, params, _prepare(params, now)))
+        except Exception as exc:  # noqa: BLE001
+            out[pb["id"]] = {"error": f"{type(exc).__name__}: {exc}"}
+    status = run_checks(conn, [c for _, _, c in prepared], since, None, scan_limit)
+    for pb, params, check in prepared:
+        state = status[id(check)]
+        if state["error"]:
+            out[pb["id"]] = {"error": state["error"], "coverage": state["coverage"]}
+            continue
+        results = check.finish()
+        out[pb["id"]] = {"result": {"type": params["type"], "params_used": params,
+                                    "group_count": len(results), "groups": results,
+                                    "coverage": state["coverage"]}}
+    return out
 
 
 # ---------------------------------------------------------------------------

@@ -51,7 +51,8 @@ def inspect(config_path: Path, cred_path: Path, identity: str):
                     AND has_table_privilege(current_user,'public.log_source_last_seen','INSERT')
                     AND has_table_privilege(current_user,'public.log_source_last_seen','UPDATE')) AS can_access_source_summary,
                    has_table_privilege(current_user,'public.log_source_last_seen','DELETE,TRUNCATE') AS can_remove_source_summary,
-                   has_function_privilege(current_user,'public.minisiem_ensure_security_event_partitions(timestamptz,integer)','EXECUTE') AS can_manage_event_partitions
+                   has_function_privilege(current_user,'public.minisiem_ensure_security_event_partitions(timestamptz,integer)','EXECUTE') AS can_manage_event_partitions,
+                   has_function_privilege(current_user,'public.minisiem_prune_log_sources(integer)','EXECUTE') AS can_prune_source_summary
             """
         ).fetchone()
         trigger = conn.execute(
@@ -95,6 +96,7 @@ def inspect(config_path: Path, cred_path: Path, identity: str):
             and result["can_access_source_summary"]
             and not result["can_remove_source_summary"]
             and bool(result["can_manage_event_partitions"]) == expected_partition_manage
+            and bool(result["can_prune_source_summary"]) == expected_partition_manage
             and result["guard_triggers"] == 2
         )
         return result

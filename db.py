@@ -850,6 +850,9 @@ def _migrations():
         "SELECT 1",
         # PostgreSQL owner setup installs the compact event and field indexes.
         "SELECT 1",
+        # PostgreSQL owner setup keys the source summary by sending device,
+        # installs the non-blocking trigger and the maintenance prune function.
+        "SELECT 1",
     ]
 
 

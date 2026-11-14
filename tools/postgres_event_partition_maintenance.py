@@ -7,7 +7,9 @@ runtime schema readiness, then calls the owner-defined SECURITY DEFINER
 ``minisiem_ensure_security_event_partitions`` function whose argument is
 bounded to 1..24 months by the function itself.
 
-No partition deletion/retention is performed here.  Evidence retention remains
+It also removes senders older than 15 days from the silent-source summary
+through the bounded ``minisiem_prune_log_sources`` function. No partition
+deletion/retention is performed here.  Evidence retention remains
 an explicit archive/retention workflow rather than a hidden timer side effect.
 """
 
@@ -25,6 +27,11 @@ if str(ROOT) not in sys.path:
 import db
 
 
+# Senders not seen for this many days leave the silent-source summary; the
+# dashboard lists senders silent for 3 days within a 14-day baseline.
+SOURCE_SUMMARY_DAYS = 15
+
+
 def maintain(config_path: Path, credentials_path: Path, months: int) -> dict:
     if months < 1 or months > 24:
         raise ValueError("months must be between 1 and 24")
@@ -39,13 +46,16 @@ def maintain(config_path: Path, credentials_path: Path, months: int) -> dict:
     try:
         row = conn.execute(
             "SELECT current_user AS role, "
-            "public.minisiem_ensure_security_event_partitions(now(), ?) AS created",
-            (months,),
+            "public.minisiem_ensure_security_event_partitions(now(), ?) AS created, "
+            "public.minisiem_prune_log_sources(?) AS pruned",
+            (months, SOURCE_SUMMARY_DAYS),
         ).fetchone()
         conn.commit()
         role = row["role"] if isinstance(row, dict) else row[0]
         created = int(row["created"] if isinstance(row, dict) else row[1])
-        return {"ok": True, "role": role, "months": months, "created": created}
+        pruned = int(row["pruned"] if isinstance(row, dict) else row[2])
+        return {"ok": True, "role": role, "months": months, "created": created,
+                "pruned_sources": pruned}
     except Exception:
         conn.rollback()
         raise
@@ -66,7 +76,8 @@ def main() -> int:
     else:
         print(
             "Event Storage partition maintenance: PASS "
-            f"role={result['role']} months={result['months']} created={result['created']}"
+            f"role={result['role']} months={result['months']} created={result['created']} "
+            f"pruned_sources={result['pruned_sources']}"
         )
     return 0
 

@@ -291,8 +291,11 @@ function renderResults(data, playbook) {
     html += `<p class="muted"><strong>${esc(playbook.name)}</strong> — ${esc(playbook.description)}</p>`;
   }
 
+  html += coverageNote(data.coverage);
   if (!data.groups || data.groups.length === 0) {
-    html += '<div class="empty">No matches in this window. That\'s a fine outcome — it means this pattern wasn\'t observed.</div>';
+    html += (data.coverage && data.coverage.complete === false)
+      ? '<div class="empty">No matches in the part of the window that was read. Older events in the window were not checked.</div>'
+      : '<div class="empty">No matches in this window. That\'s a fine outcome — it means this pattern wasn\'t observed.</div>';
     setResults(html, `type: ${data.type} · 0 hits`);
     return;
   }
@@ -323,6 +326,15 @@ function renderResults(data, playbook) {
   setResults(html, `type: ${data.type} · ${data.group_count} matching group(s)`);
 }
 
+// A check reads at most a fixed number of the newest events in its window.
+function coverageNote(cov) {
+  if (!cov || cov.complete !== false) return '';
+  const read = Number(cov.scanned || 0).toLocaleString();
+  const base = cov.baseline_complete === false ? ' The comparison period before it was also only partly read.' : '';
+  return `<div class="response-steps" style="border-color:var(--warn);background:var(--warn-soft);"><strong>Partial result:</strong> `
+    + `the window holds more events than one run reads, so only the newest ${read} events were checked, `
+    + `from ${esc(short(cov.scanned_from))} UTC. Choose a shorter window to check all of it.${base}</div>`;
+}
 function short(iso) { return iso ? String(iso).replace('T', ' ').slice(0, 19) : '—'; }
 function mono(v) { return `<span class="mono-cell">${esc(v)}</span>`; }
 function row(cells) { return `<tr>${cells.map(c => `<td>${c}</td>`).join('')}</tr>`; }
@@ -332,7 +344,9 @@ function tableWrap(headers, rows) {
 function evidence(g) {
   const samples = (g.sample || []).map(s => `<div class="sample">#${s.id} ${esc(short(s.received_at))} — ${esc(s.message)}</div>`).join('');
   const link = `/?ids=${(g.log_ids || []).slice(0, 200).join(',')}`;
-  return `<details><summary>${(g.log_ids || []).length} event(s) — view samples</summary>${samples}
+  const total = g.count || (g.log_ids || []).length;
+  const kept = g.log_ids_truncated ? ` (first ${(g.log_ids || []).length} linked)` : '';
+  return `<details><summary>${total} event(s)${kept} — view samples</summary>${samples}
     <div style="margin-top:6px"><a href="${link}" target="_blank" style="font-size:11.5px">Open all in log view →</a></div></details>`;
 }
 
@@ -364,13 +378,15 @@ async function viewReport(id){
   const hits = (d.results||[]).filter(r=>r.group_count>0);
   const clean = (d.results||[]).filter(r=>!r.group_count && !r.error);
   v.style.display='block';
+  const partial = (d.results||[]).map(r=>r.coverage).find(c=>c && c.complete===false);
   v.innerHTML = '<h3 style="font-size:14px;margin:0 0 8px;">Report #'+d.id+' — '+esc(d.summary)+'</h3>'
+    + coverageNote(partial)
     + (hits.length ? hits.map(r =>
         '<div style="border:1px solid var(--warn);border-radius:8px;padding:12px;margin-bottom:10px;background:var(--warn-soft);">'
         + '<strong>'+esc(r.name)+'</strong> <span class="muted">('+esc(r.category)+' · '+r.group_count+' group(s))</span>'
         + '<div style="font-size:12px;margin-top:6px;">'+ (r.groups||[]).slice(0,5).map(g=>'<div class="mono">'+esc(g.key||'')+' — '+ (g.count||g.first_count||'') +' event(s)</div>').join('') +'</div>'
         + (r.response_steps && r.response_steps.length ? '<details style="margin-top:6px;"><summary style="font-size:12px;cursor:pointer;">Response steps</summary><ol style="font-size:12px;margin:6px 0 0;">'+r.response_steps.map(s=>'<li>'+esc(s)+'</li>').join('')+'</ol></details>' : '')
-        + '</div>').join('') : '<p class="muted">No findings in this window.</p>')
+        + '</div>').join('') : '<p class="muted">'+(partial ? 'No findings in the part of the window that was read.' : 'No findings in this window.')+'</p>')
     + '<p class="muted" style="font-size:11.5px;">'+clean.length+' playbook(s) came back clean.</p>';
   v.scrollIntoView({behavior:'smooth'});
 }

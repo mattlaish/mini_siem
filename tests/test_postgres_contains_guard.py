@@ -96,3 +96,46 @@ def test_prefix_filters_stay_joined_on_the_guarded_page(monkeypatch):
     _run(monkeypatch, conn, [("f_host", "web*"), ("f_url", "*login*")])
     page = conn.calls[1][0]
     assert "JOIN log_fields f0" in page and "JOIN log_fields f1" not in page
+
+
+def _pg_config(monkeypatch):
+    monkeypatch.setattr(dashboard, "_db_config", lambda: {"backend": "postgres"})
+
+
+class StepConn(FakeConn):
+    """Answers each search with the rows found since its 'from' bound."""
+
+    def __init__(self, found_by_step):
+        super().__init__(None, [], [])
+        self.found_by_step = list(found_by_step)
+
+    def execute(self, sql, params=()):
+        if "LIMIT ? OFFSET ?" in sql and "strpos(" not in sql and self.found_by_step:
+            self.calls.append((sql, list(params)))
+            return Result(self.found_by_step.pop(0))
+        return super().execute(sql, params)
+
+
+def test_all_history_search_stops_at_the_first_full_step(monkeypatch):
+    _pg_config(monkeypatch)
+    conn = StepConn([_rows(1), _rows(3)])                     # 24 h: 1 match, 7 days: full page
+    rows = _run(monkeypatch, conn, [("f_act", "deny"), ("scope", "all")])
+    assert len(rows) == 3 and len(conn.calls) == 2
+    assert all("l.event_time >= ?::timestamptz" in sql for sql, _ in conn.calls)
+
+
+def test_all_history_search_ends_unbounded(monkeypatch):
+    _pg_config(monkeypatch)
+    steps = len(dashboard.HISTORY_STEP_HOURS)
+    conn = StepConn([[]] * steps + [_rows(2)])
+    rows = _run(monkeypatch, conn, [("f_act", "deny"), ("scope", "all")])
+    assert len(rows) == 2 and len(conn.calls) == steps + 1
+    assert "l.event_time >= ?::timestamptz" not in conn.calls[-1][0]
+
+
+def test_steps_skip_bounded_sorted_and_id_searches(monkeypatch):
+    _pg_config(monkeypatch)
+    for args in ([("f_act", "deny"), ("from", "2026-11-01T00:00:00Z")],
+                 [("f_act", "deny"), ("sort", "source_ip")],
+                 [("f_act", "deny"), ("ids", "1,2")]):
+        assert dashboard._history_steps(MultiDict(args), not any(k == "sort" for k, _ in args)) == []

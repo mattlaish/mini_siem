@@ -70,32 +70,45 @@ def _http(url, method="GET", headers=None, body=None, timeout=15, max_bytes=2000
 # ==========================================================================
 
 def run_playbook_report(conn, window_days: int = 7, trigger: str = "manual"):
-    """Run every playbook over the window; save and return the report."""
-    from correlations import PLAYBOOKS, run_correlation
+    """Run every playbook over the window; save and return the report.
 
+    All playbooks share one paged scan of the window. Scheduled reports may
+    read up to correlations.SCHEDULED_SCAN_LIMIT events, a report started from
+    the page up to INTERACTIVE_SCAN_LIMIT. When the window holds more, the
+    newest events are read and the summary says which part was covered.
+    """
+    from correlations import (INTERACTIVE_SCAN_LIMIT, PLAYBOOKS, SCHEDULED_SCAN_LIMIT,
+                              run_playbook_set)
+
+    scan_limit = SCHEDULED_SCAN_LIMIT if trigger in ("weekly", "monthly") else INTERACTIVE_SCAN_LIMIT
+    outcome = run_playbook_set(conn, PLAYBOOKS, window_days * 1440, scan_limit)
     results = []
     findings = 0
+    coverage = None
     for pb in PLAYBOOKS:
-        params = dict(pb["params"])
-        params["window_minutes"] = window_days * 1440
-        try:
-            r = run_correlation(conn, params)
-            hit = r.get("group_count", 0)
-        except Exception as exc:
-            r = {"error": f"{type(exc).__name__}: {exc}"}
-            hit = 0
+        entry = outcome.get(pb["id"]) or {"error": "not run"}
+        r = entry.get("result") or {"error": entry.get("error")}
+        hit = r.get("group_count", 0) if not entry.get("error") else 0
+        cov = r.get("coverage") or entry.get("coverage")
+        if cov and (coverage is None or not cov.get("complete", True)):
+            coverage = cov
         findings += hit
         results.append({
             "id": pb["id"], "name": pb["name"], "category": pb.get("category", ""),
             "severity": pb.get("severity", ""), "group_count": hit,
             "groups": r.get("groups", [])[:20],
             "response_steps": pb.get("response_steps", []) if hit else [],
-            "error": r.get("error"),
+            "error": entry.get("error"),
+            "coverage": cov,
         })
 
     hits = [r for r in results if r["group_count"]]
     summary = (f"{findings} finding group(s) across {len(hits)} of {len(results)} playbooks"
                if findings else f"Clean: 0 findings across {len(results)} playbooks")
+    if coverage and not coverage.get("complete", True):
+        summary = ("Partial — " + summary + f"; read the newest {coverage.get('scanned', 0):,} events, "
+                   f"from {str(coverage.get('scanned_from') or '')[:16].replace('T', ' ')} UTC, "
+                   f"not the whole {window_days}-day window")
     report_id = conn.insert_returning_id(
         """INSERT INTO reports (created_at, kind, trigger, window_days, summary, findings, results_json)
            VALUES (?,?,?,?,?,?,?)""",
@@ -104,7 +117,7 @@ def run_playbook_report(conn, window_days: int = 7, trigger: str = "manual"):
     conn.commit()
     return {"id": report_id, "created_at": _now(), "trigger": trigger,
             "window_days": window_days, "summary": summary,
-            "findings": findings, "results": results}
+            "findings": findings, "results": results, "coverage": coverage}
 
 
 def alerts_from_playbook_report(conn, report: dict) -> int:

@@ -8,7 +8,10 @@ remain unmeasured. SQLite keeps its storage layout and default Log Search scope.
 
 - The PostgreSQL log screen and paged Log Search API default to the last 24 hours.
   Explicit From/To values override the default. Use **All retained logs**
-  (`scope=all`) for an intentional wide search. Event-ID drilldowns remain
+  (`scope=all`) for an intentional wide search. A newest-first all-history
+  search first looks back 1 day, then 7, 30 and 365 days, and only then
+  searches everything; it stops at the first step that fills the page, which
+  returns exactly the page the unbounded search would. Event-ID drilldowns remain
   unrestricted by default time. Non-paged API and direct export callers keep
   their old scope unless they request `scope=recent`.
 - Paged responses with an implicit range include `window.from` and `window.to`.
@@ -84,6 +87,11 @@ compares the original text against the projection, builds partition-local
 full-text indexes from search terms, and removes the verified duplicate
 projection columns. It stops if it detects mismatched or missing evidence.
 Plan a maintenance window for the comparison, row updates and index builds.
+The migration frees no disk space by itself: its row update writes a new
+version of every projection row, and dropped columns stay in the table files.
+Expect the projection table to grow until a full rewrite (`VACUUM FULL` or
+pg_repack, both need their own maintenance window). Fresh installations are
+unaffected.
 The raw log table remains the evidence authority and supports time-based
 archive and AI lookup. New ID lookups use the stored partition key. Legacy
 IDs without a key continue to work through the previous lookup path.
@@ -104,11 +112,19 @@ events remain in their current partitions.
   statistics. It can lag ingest and shows as pending while the table has data
   but has no usable estimate. The first-use prompt checks whether any logs exist.
   SQLite continues to report an exact total.
-- The PostgreSQL silent-source list reads a summary of each source's latest
-  receipt time. The source is the same `logs.source_ip` used by the previous
-  query. The insert trigger updates the summary in the log transaction and
-  stores receipt times at minute precision. Archive operations do not rewind
-  the last observed receipt time.
+- The silent-source list shows devices that sent logs within the last 14
+  days but nothing for 3 days. A device is the sender address (`peer_ip`), or
+  `source_ip` for API/HTTP sources without one; `source_ip` alone is often
+  the client or attacker named in the message. PostgreSQL reads a summary of
+  each sender's latest receipt time, updated by an insert trigger in the log
+  transaction at minute precision. The trigger never waits on another writer:
+  a sender row another transaction is updating is skipped and recorded by the
+  sender's next event, so batched writers cannot deadlock on it. Archive
+  operations do not rewind the last observed receipt time.
+- Daily partition maintenance also removes senders not seen for 15 days
+  through `minisiem_prune_log_sources`, which only the maintenance role may
+  call. Owner setup re-keys a summary built by an earlier release (by
+  `source_ip`) from the last 14 days of logs, once.
 - `postgres.dashboard_statement_timeout_ms` in database config defaults to
   `30000` and accepts `1000` through `60000`. It limits each SQL statement in an
   interactive Dashboard request. The UI suggests narrowing the search after a
@@ -121,6 +137,18 @@ events remain in their current partitions.
   the split-role grant refresh before restarting. The first backfill reads the
   recent raw logs once. Fresh installations get the summary and grants during
   setup. Raw evidence and retention remain intact.
+
+## Playbooks and reports
+
+- Playbook checks read their window oldest-first in pages of 5,000 events and
+  keep only what each finding needs (exact counts, up to 1,000 evidence IDs
+  and 3 samples per finding). A report feeds all playbooks from one scan of
+  the window instead of one scan per playbook.
+- A check run from the Correlate page, or a report started there, reads at
+  most 500,000 events; scheduled reports read up to 10,000,000. When a window
+  holds more, the newest events are read and the result, report summary and
+  page say "Partial" with the time the scan started from. Earlier releases
+  read only the oldest 50,000 events and reported the rest as clean.
 
 ## Optional future benchmark
 

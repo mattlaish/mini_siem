@@ -380,6 +380,13 @@ def _apply_grants(raw, *, runtime_role, ingest_role, dashboard_role, maintenance
             cur.execute(sql.SQL("REVOKE ALL ON FUNCTION {} FROM {}").format(partition_fn, role))
         cur.execute(sql.SQL("GRANT EXECUTE ON FUNCTION {} TO {}").format(partition_fn, maintenance))
 
+        # Removing old senders from the source summary is maintenance-only and
+        # goes through the bounded SECURITY DEFINER function.
+        prune_fn = sql.SQL("public.minisiem_prune_log_sources(INTEGER)")
+        for role in (runtime, ingest, dashboard, maintenance):
+            cur.execute(sql.SQL("REVOKE ALL ON FUNCTION {} FROM {}").format(prune_fn, role))
+        cur.execute(sql.SQL("GRANT EXECUTE ON FUNCTION {} TO {}").format(prune_fn, maintenance))
+
         # Runtime services may inspect, but never alter, the migration ledger.
         cur.execute(sql.SQL(
             "REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLE public.schema_migrations FROM {}; "
@@ -514,6 +521,7 @@ def _apply_grants(raw, *, runtime_role, ingest_role, dashboard_role, maintenance
         cur.execute("REVOKE ALL ON TABLE public.identities FROM PUBLIC")
         cur.execute("REVOKE ALL ON TABLE public.log_source_last_seen FROM PUBLIC")
         cur.execute("REVOKE ALL ON FUNCTION public.minisiem_ensure_security_event_partitions(TIMESTAMPTZ, INTEGER) FROM PUBLIC")
+        cur.execute("REVOKE ALL ON FUNCTION public.minisiem_prune_log_sources(INTEGER) FROM PUBLIC")
         raw.commit()
         return passwords
     except Exception:
@@ -562,7 +570,8 @@ def _verify_login(base_cfg: dict, cred_path: Path, identity: str):
                     AND has_table_privilege(current_user,'public.log_source_last_seen','INSERT')
                     AND has_table_privilege(current_user,'public.log_source_last_seen','UPDATE')) AS can_access_source_summary,
                    has_table_privilege(current_user,'public.log_source_last_seen','DELETE,TRUNCATE') AS can_remove_source_summary,
-                   has_function_privilege(current_user,'public.minisiem_ensure_security_event_partitions(timestamptz,integer)','EXECUTE') AS can_manage_event_partitions
+                   has_function_privilege(current_user,'public.minisiem_ensure_security_event_partitions(timestamptz,integer)','EXECUTE') AS can_manage_event_partitions,
+                   has_function_privilege(current_user,'public.minisiem_prune_log_sources(integer)','EXECUTE') AS can_prune_source_summary
             """
         ).fetchone()
         data = dict(row)
@@ -595,6 +604,8 @@ def _verify_login(base_cfg: dict, cred_path: Path, identity: str):
             raise RuntimeError(f"{identity} source summary privilege mismatch: {data}")
         if bool(data["can_manage_event_partitions"]) != (identity == "maintenance"):
             raise RuntimeError(f"{identity} partition-maintenance privilege mismatch: {data}")
+        if bool(data["can_prune_source_summary"]) != (identity == "maintenance"):
+            raise RuntimeError(f"{identity} source-summary pruning privilege mismatch: {data}")
         dbmod.ensure_runtime_ready(cfg)
         return data
     finally:
