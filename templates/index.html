@@ -177,12 +177,13 @@
 <script>
 async function loadStats() {
   const d = await MS.read('Overview statistics','/api/stats',undefined,()=>loadStats());
-  document.getElementById('statLogs').textContent = d.total_logs;
+  document.getElementById('statLogs').textContent = d.total_logs == null ? '—'
+    : (d.total_logs_estimated && d.total_logs > 0 ? '≈ ' : '') + Number(d.total_logs).toLocaleString();
   document.getElementById('statAlerts').textContent = d.total_alerts;
   // First-run checklist: only while nothing has ever been received.
   const lp = d.listen_ports || [514];
   const fr = document.getElementById('firstRun');
-  fr.hidden = d.total_logs > 0;
+  fr.hidden = d.has_logs ?? (d.total_logs > 0);
   if (!fr.hidden) {
     const host = window.location.hostname;
     document.getElementById('frTarget').textContent = host + ' port' + (lp.length > 1 ? 's ' : ' ') + lp.join(', ');
@@ -576,7 +577,7 @@ function renderFieldChips() {
   bar.innerHTML = '<span class="muted" style="font-size:11px;align-self:center;">field filters:</span>' + opToggle
     + fieldChips.map((c, i) =>
         `<span style="display:inline-flex;align-items:center;gap:6px;background:var(--accent-soft);color:var(--accent);font-size:12px;font-family:var(--mono);padding:3px 8px;border-radius:6px;">`
-        + `${_esc(c.field)}=${_esc(c.value)}`
+        + `${_esc(c.field)}${c.literal && c.negate ? ' ≠ ' : '='}${_esc(c.value)}`
         + `<span class="chip-del" data-i="${i}" style="cursor:pointer;font-weight:700;" title="Remove">×</span></span>`).join('');
   bar.querySelectorAll('.chip-del').forEach(el => el.addEventListener('click', () => {
     fieldChips.splice(parseInt(el.dataset.i), 1);
@@ -617,21 +618,26 @@ function addFieldChip(raw) {
   raw = String(raw || '').trim();
   const m = raw.match(/^([A-Za-z][A-Za-z0-9_.\-]{0,40})\s*=\s*(.+)$/);
   if (!m) { return false; }
-  const field = m[1].toLowerCase(), value = m[2].trim();
-  if (!fieldChips.some(c => c.field === field && c.value === value)) {
+  setFieldChip({field: m[1].toLowerCase(), value: m[2].trim()});
+  return true;
+}
+
+function setFieldChip(chip, refresh = true) {
+  const {field, value, literal, negate} = chip;
+  if (!fieldChips.some(c => c.field === field && c.value === value &&
+      c.literal === literal && c.negate === negate)) {
     // A search holds one condition per field, so a second chip for the same
     // field replaces the first instead of being shown but silently ignored.
     const prev = fieldChips.findIndex(c => c.field === field);
     if (prev >= 0) {
       MS.toast(`Replaced ${field}=${fieldChips[prev].value} with ${field}=${value}. Each field can have one filter.`, 'info');
-      fieldChips.splice(prev, 1, {field, value});
+      fieldChips.splice(prev, 1, chip);
     } else {
-      fieldChips.push({field, value});
+      fieldChips.push(chip);
     }
     renderFieldChips();
-    loadLogs();
+    if (refresh) loadLogs();
   }
-  return true;
 }
 
 // Top values: the most common values of one extracted field in the selected
@@ -664,16 +670,20 @@ async function loadTopValues() {
   if (!values.length) { note.textContent = `No values for ${field} in ${range}.`; return; }
   note.textContent = `${values.length >= 200 ? 'Top 200' : values.length} value${values.length === 1 ? '' : 's'} of ${field} in ${range}. Other filters are not applied.`;
   const max = Math.max(...values.map(v => Number(v.count) || 0), 1);
-  list.innerHTML = '<table style="border-collapse:collapse;width:100%;max-width:720px;">' + values.slice(0, 50).map(v => {
-    const val = _esc(v.value), pct = Math.max(1, Math.round(100 * (Number(v.count) || 0) / max));
+  list.innerHTML = '<table style="border-collapse:collapse;width:100%;max-width:720px;">' + values.slice(0, 50).map((v, i) => {
+    const val = _esc(v.value.slice(0, 240) + (v.value.length > 240 ? '…' : ''));
+    const pct = Math.max(1, Math.round(100 * (Number(v.count) || 0) / max));
     return `<tr><td style="padding:2px 8px 2px 0;font-family:var(--mono);word-break:break-all;">`
-      + `<a href="#" class="top-pick" data-value="${val}" title="Filter by ${_esc(field)}=${val}">${val}</a></td>`
+      + `<a href="#" class="top-pick" data-index="${i}" title="Filter by this value">${val}</a></td>`
       + `<td style="padding:2px 8px;width:40%;"><div style="height:8px;border-radius:4px;background:var(--accent);opacity:.55;width:${pct}%;"></div></td>`
       + `<td style="padding:2px 8px;text-align:right;white-space:nowrap;">${Number(v.count).toLocaleString()}</td>`
-      + `<td style="padding:2px 0;"><a href="#" class="top-not muted" data-value="${val}" title="Exclude ${_esc(field)}=${val}">not</a></td></tr>`;
+      + `<td style="padding:2px 0;"><a href="#" class="top-not muted" data-index="${i}" title="Exclude this value">not</a></td></tr>`;
   }).join('') + '</table>' + (values.length > 50 ? `<div class="muted" style="margin-top:4px;">Showing the 50 most common of ${values.length}.</div>` : '');
-  list.querySelectorAll('.top-pick').forEach(a => a.addEventListener('click', e => { e.preventDefault(); addFieldChip(`${field}=${a.dataset.value}`); }));
-  list.querySelectorAll('.top-not').forEach(a => a.addEventListener('click', e => { e.preventDefault(); addFieldChip(`${field}=!${a.dataset.value}`); }));
+  list.querySelectorAll('.top-pick, .top-not').forEach(a => a.addEventListener('click', e => {
+    e.preventDefault();
+    // Read JSON directly so HTML attribute normalization cannot alter newlines.
+    setFieldChip({field, value: values[Number(a.dataset.index)].value, literal: true, negate: a.classList.contains('top-not')});
+  }));
 }
 
 // Columns are shared by everyone; read-only viewers keep their changes for this page only.
@@ -705,10 +715,7 @@ async function addXColumn(name, value) {
   // `action` on a row showing action=accept adds the column AND filters to accept
   if (value !== undefined && value !== null && String(value).length) {
     const field = name.toLowerCase(), val = String(value).trim();
-    if (!fieldChips.some(c => c.field === field && c.value === val)) {
-      fieldChips.push({field, value: val});
-      renderFieldChips();
-    }
+    setFieldChip({field, value: val}, false);
   } else if (alreadyCol) {
     flashColumn(name);
   }
@@ -805,7 +812,7 @@ function currentFilterParams() {
     if (inp.value.trim()) params.set('f_' + inp.dataset.col, inp.value.trim());
   });
   // inline field=value chips (same f_<field> mechanism)
-  fieldChips.forEach(c => params.set('f_' + c.field, c.value));
+  fieldChips.forEach(c => params.set((c.literal ? (c.negate ? 'fne_' : 'feq_') : 'f_') + c.field, c.value));
   if (fieldChips.length > 1 && fieldChipOp === 'or') params.set('fc_op', 'or');
   // sort: extracted-field sort and base-column sort are mutually exclusive
   if (xSort) { params.set('sort', xSort); params.set('dir', xDir); }
@@ -871,7 +878,10 @@ function _syncUrl() {
   const filters = currentFilterParams();
   for (const k of ['src_port','dst_port']) if (filters.has(k)) u.set(k, filters.get(k));
   if (filters.get('scope') === 'all') u.set('scope', 'all');
-  fieldChips.forEach(c => u.append('f', c.field + '=' + c.value));
+  fieldChips.forEach(c => {
+    if (c.literal) u.set((c.negate ? 'fne_' : 'feq_') + c.field, c.value);
+    else u.append('f', c.field + '=' + c.value);
+  });
   if (fieldChips.length > 1 && fieldChipOp === 'or') u.set('op', 'or');
   if (xSort) { u.set('sort', xSort); u.set('dir', xDir); } else if (baseSort) { u.set('sort', baseSort); u.set('dir', baseDir); }
   if (urlIds && ![...u.keys()].length) u.set('ids', urlIds);
@@ -892,6 +902,11 @@ function _restoreFromUrl() {
     const i = raw.indexOf('=');
     if (i > 0) fieldChips.push({field: raw.slice(0, i).toLowerCase(), value: raw.slice(i + 1)});
   });
+  for (const [key, value] of u) {
+    if (key.startsWith('feq_') || key.startsWith('fne_')) {
+      fieldChips.push({field: key.slice(4), value, literal: true, negate: key.startsWith('fne_')});
+    }
+  }
   if (u.get('op') === 'or') fieldChipOp = 'or';
   const sort = u.get('sort');
   if (sort) { if (sort.startsWith('x_')) { xSort = sort; xDir = u.get('dir') || 'asc'; } else { baseSort = sort; baseDir = u.get('dir') || 'desc'; } }

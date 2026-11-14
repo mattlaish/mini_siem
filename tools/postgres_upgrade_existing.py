@@ -27,6 +27,7 @@ import db
 from tools import postgres_event_storage_v2 as esv2
 from tools import postgres_privilege_boundary as boundary
 from event_storage_v2 import postgres_schema_statements
+from storage_stats import postgres_schema_statements as stats_schema
 
 CREDENTIAL_FILES = {
     "listener": "db-listener-credentials.json",
@@ -155,6 +156,11 @@ def _upgrade_existing_owner_schema(cfg: dict):
                 pass
             raise RuntimeError(f"normalized-log-fields failed: {exc}") from exc
 
+        # The event-storage upgrade uses the safe timestamp parser when copying
+        # historical device timestamps. Install it before transforming rows.
+        if 43 not in applied:
+            for index, statement in enumerate(stats_schema(), start=1):
+                _execute_upgrade_sql(conn, stage=f"log-source-summary-{index}", statement=statement)
         statements = list(postgres_schema_statements())
         for index, statement in enumerate(statements, start=1):
             _execute_upgrade_sql(

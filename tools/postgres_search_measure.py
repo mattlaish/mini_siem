@@ -234,8 +234,10 @@ def page_url_to_api(raw):
     """A pasted Log Search page URL (or API query string) as API filters."""
     query = urlsplit(raw).query if "?" in raw or "://" in raw else raw
     out = {}
-    for key, value in parse_qsl(query, keep_blank_values=False):
+    for key, value in parse_qsl(query, keep_blank_values=True):
         if key in ("page", "limit", "offset", "snapshot"):
+            continue
+        if not value and not key.startswith(("feq_", "fne_")):
             continue
         if key == "f" and "=" in value:
             field, _, needle = value.partition("=")
@@ -382,7 +384,8 @@ def main(argv=None):
     ap.add_argument("--end", help="end of the measured 24 h window (ISO time, default now)")
     ap.add_argument("--hours", type=int, default=24, help="window length (default 24)")
     ap.add_argument("--repeats", type=int, default=3, help="timed runs per search (default 3)")
-    ap.add_argument("--timeout-seconds", type=int, default=60, help="per-statement limit (default 60)")
+    ap.add_argument("--timeout-seconds", type=int, choices=range(1, 61), default=60,
+                    metavar="1–60", help="per-statement limit (default 60)")
     ap.add_argument("--search", action="append", default=[], help="a Log Search URL or query string to measure too")
     ap.add_argument("--skip-all-history", action="store_true", help="leave out the all-history searches")
     ap.add_argument("--out", type=Path, required=True, help="JSON output (must not exist)")
@@ -406,6 +409,7 @@ def main(argv=None):
     start = end - timedelta(hours=args.hours)
 
     import dashboard                    # its own connections inherit the read-only PGOPTIONS
+    cfg["postgres"]["dashboard_statement_timeout_ms"] = args.timeout_seconds * 1000
     dashboard.DB_CONFIG = cfg
     client = dashboard.app.test_client()
     conn = db.connect(cfg)

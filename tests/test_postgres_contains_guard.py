@@ -34,7 +34,7 @@ class FakeConn:
             return Result([])                                  # display values for the page
         self.calls.append((sql, params))
         if "LIMIT 1 OFFSET" in sql:
-            return Result([] if self.cutoff is None else [{"event_time": self.cutoff}])
+            return Result([] if self.cutoff is None else [{"event_time": self.cutoff, "id": 55}])
         if "strpos(" in sql:
             return Result(self.guarded)
         return Result(self.indexed)
@@ -61,10 +61,10 @@ def test_full_page_from_recent_events_skips_the_indexed_query(monkeypatch):
     rows = _run(monkeypatch, conn, [("f_url", "*login*"), ("f_act", "deny"), ("from", "2026-11-08T00:00:00Z")])
     assert [r["id"] for r in rows] == [1000, 999, 998]
     page = conn.calls[1][0]
-    assert "strpos(fc.value_norm, ?) > 0" in page and "l.event_time >= ?" in page
+    assert "strpos(fc.value_norm, ?) > 0" in page and "(l.event_time, l.id) >= (?, ?)" in page
     assert "JOIN log_fields f0" not in page                     # no trigram join on the guarded page
     assert "search_fields @>" in page                           # exact filters still apply
-    assert conn.calls[1][1][-3:] == [CUT, 3, 0]
+    assert conn.calls[1][1][-4:] == [CUT, 55, 3, 0]
     assert not any("JOIN log_fields f0" in sql for sql, _ in conn.calls)
 
 

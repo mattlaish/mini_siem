@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Latest implementation: 2026-11-06 PostgreSQL search and storage. See the dated
+Latest implementation: 2026-11-13 PostgreSQL search and evidence storage. See the dated
 entry at the end and POSTGRES_SEARCH.md; older slice statuses are historical
 where explicitly superseded. Owner handles Git synchronization manually.
 
@@ -940,3 +940,42 @@ at the owner's request. No Git, tests, database startup or schema execution.
   migration marker 42 and refreshed PostgreSQL grants before runtime.
 - Synchronized README, AI handoff, Event Storage v2 and POSTGRES_SEARCH.md.
   Historical connector return artifact is unchanged and was not rebuilt.
+
+## 2026-11-13 — PostgreSQL dashboard and ingest costs
+
+Status: READY FOR OWNER REVIEW.
+
+- Home and System Health use a PostgreSQL estimate for the overall log count
+  and a source summary for silent sources. Migration 43 backfills the summary
+  from recent logs and maintains it transactionally on new inserts, coalescing
+  observations to one stored timestamp per source per minute.
+- Ingest and re-index write typed event context without upserting assets or
+  identities. Existing entity rows and references stay available. Refresh the
+  split-role grants as part of the owner upgrade before restarting services.
+- PostgreSQL interactive dashboard statements default to a 30-second timeout.
+  AI Chat searches the last 24 hours of evidence on PostgreSQL and SQLite.
+- Focused regression: 94 PASS, including disposable PostgreSQL 16 and SQLite.
+  Throughput and search latency at production scale are unmeasured.
+- The follow-up below addresses the remaining search and storage items.
+
+## 2026-11-13 — PostgreSQL search and evidence storage
+
+Status: READY FOR OWNER REVIEW.
+
+- Migration 44 replaces duplicate projection text with indexed search terms
+  after comparing it to the authoritative `logs` rows. Keep the raw evidence
+  table and its time-based archive workflow. Remove nine redundant or unused
+  projection indexes. New evidence IDs look up their event partition directly.
+- Route exact OR/exclusions through normalized JSONB, preserve the historical
+  field fallback, and send Top values selections as literal filters. Keep up
+  to 16,384 characters for command and script fields and bound PostgreSQL's
+  field index keys independently of the stored text.
+- Clamp future device times and clocks over 30 days behind to receipt time
+  for new projections and legacy backfill. Keep the original and parsed
+  timestamp. Existing projection partitions are preserved.
+- PostgreSQL 16 benchmark used 10,000 recent plus 40,000 historical synthetic
+  events. All 11 search result lists agreed. OR/exclusion p50 14.4 → 8.3 ms,
+  sampled storage 192.5 → 155.7 MiB, and serial batch ingest 471 → 700 events/s
+  during the historical load. Production-scale measurements remain pending.
+- Focused regression: 99 PASS. Checked fresh setup, retryable owner migration,
+  original evidence after archive MOVE, long/literal filters and role boundaries.

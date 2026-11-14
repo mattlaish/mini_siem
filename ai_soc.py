@@ -1128,28 +1128,35 @@ def _keywords(question: str):
 
 
 def gather_chat_context(conn, question: str):
+    from datetime import datetime, timedelta, timezone
+    now = datetime.now(timezone.utc)
+    bounds = ((now - timedelta(hours=24)).isoformat(), now.isoformat())
     kws = _keywords(question)
-    matches, seen = [], set()
-    for kw in kws:
-        rows = conn.execute(
-            """SELECT id, received_at, source_ip, hostname, app_name, severity, message
-               FROM logs WHERE message LIKE ? OR source_ip LIKE ? OR hostname LIKE ?
-               ORDER BY id DESC LIMIT 15""",
-            (f"%{kw}%", f"%{kw}%", f"%{kw}%")).fetchall()
-        for r in rows:
-            if r["id"] not in seen:
-                seen.add(r["id"]); matches.append(r)
+    matches = []
+    if kws:
+        predicate = "(message LIKE ? ESCAPE '!' OR source_ip LIKE ? ESCAPE '!' OR hostname LIKE ? ESCAPE '!')"
+        literals = []
+        for kw in kws:
+            literal = "%" + kw.replace("!", "!!").replace("%", "!%").replace("_", "!_") + "%"
+            literals.extend([literal] * 3)
+        sql = ("""SELECT id, received_at, source_ip, hostname, app_name, severity, message
+                    FROM logs WHERE received_at >= ? AND received_at <= ? AND ("""
+               + " OR ".join([predicate] * len(kws))
+               + ") ORDER BY received_at DESC, id DESC LIMIT ?")
+        matches = conn.execute(sql, (*bounds, *literals, MAX_CHAT_MATCHES)).fetchall()
     # if nothing matched keywords, fall back to most recent events
     if not matches:
         matches = conn.execute(
             """SELECT id, received_at, source_ip, hostname, app_name, severity, message
-               FROM logs ORDER BY id DESC LIMIT ?""", (MAX_CHAT_MATCHES,)).fetchall()
+               FROM logs WHERE received_at >= ? AND received_at <= ?
+               ORDER BY received_at DESC, id DESC LIMIT ?""", (*bounds, MAX_CHAT_MATCHES)).fetchall()
     matches = matches[:MAX_CHAT_MATCHES]
 
     recent_alerts = conn.execute(
-        "SELECT created_at, rule_name, severity, source_ip, description FROM alerts ORDER BY id DESC LIMIT 10"
+        """SELECT created_at, rule_name, severity, source_ip, description FROM alerts
+           WHERE created_at >= ? AND created_at <= ? ORDER BY id DESC LIMIT 10""", bounds
     ).fetchall()
-    return {"matches": matches, "recent_alerts": recent_alerts, "keywords": kws}
+    return {"matches": matches, "recent_alerts": recent_alerts, "keywords": kws, "window_hours": 24}
 
 
 # --------------------------------------------------------------------------
@@ -1343,7 +1350,7 @@ def run_progressive_triage(conn, alert_id: int, llm, *, max_tokens=900,
     }
 
 def build_chat_messages(ctx: dict, question: str, history=None, system_prompt: str = None):
-    lines = ["=== RELEVANT LOG EVENTS ==="]
+    lines = ["=== RELEVANT LOG EVENTS (LAST 24 HOURS, BY RECEIPT TIME) ==="]
     lines += [_fmt_event(r) for r in ctx["matches"]] or ["(no matching events)"]
     if ctx["recent_alerts"]:
         lines += ["", "=== RECENT ALERTS ==="]

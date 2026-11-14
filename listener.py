@@ -698,6 +698,30 @@ class Storage:
             self._pending = 0
             self._last_commit = time.time()
 
+    def _append_log(self, event, fields):
+        from event_storage_v2 import append_projection, projection_time
+        from normalize import write_fields
+
+        pg = self.conn.backend == "postgres"
+        event_time = projection_time(event) if pg else None
+        columns = ("received_at, source_ip, peer_ip, format, priority, facility, severity, "
+                   "device_timestamp, hostname, destination, app_name, proc_id, msg_id, message, raw")
+        params = (
+            event["received_at"], event["source_ip"], event.get("peer_ip", ""),
+            event["format"], event["priority"], event["facility"], event["severity"],
+            event["device_timestamp"], event["hostname"], event.get("destination", ""),
+            event["app_name"], event["proc_id"], event["msg_id"], event["message"], event["raw"],
+        )
+        values = ",".join(["?"] * len(params))
+        if pg:
+            columns += ", projection_time"
+            values += ",?::timestamptz"
+            params += (event_time,)
+        log_id = int(self.conn.insert_returning_id(f"INSERT INTO logs ({columns}) VALUES ({values})", params))
+        write_fields(self.conn, log_id, fields or {}, event_time)
+        append_projection(self.conn, log_id, event, fields or {}, event_time=event_time, search_ready=True)
+        return log_id
+
     def insert_log(self, event: dict, fields=None) -> int:
         """Append raw evidence plus the PostgreSQL typed projection atomically.
 
@@ -708,27 +732,9 @@ class Storage:
         """
         with self.lock:
             try:
-                new_id = self.conn.insert_returning_id(
-                    """INSERT INTO logs
-                       (received_at, source_ip, peer_ip, format, priority, facility, severity,
-                        device_timestamp, hostname, destination, app_name, proc_id, msg_id, message, raw)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                    (
-                        event["received_at"], event["source_ip"], event.get("peer_ip", ""),
-                        event["format"], event["priority"], event["facility"], event["severity"],
-                        event["device_timestamp"], event["hostname"], event.get("destination", ""),
-                        event["app_name"], event["proc_id"], event["msg_id"], event["message"], event["raw"],
-                    ),
-                )
-                from event_storage_v2 import append_projection, projection_time
-                event_time = projection_time(event) if self.conn.backend == "postgres" else None
-                if fields:
-                    from normalize import write_fields
-                    write_fields(self.conn, int(new_id), fields, event_time)
-                append_projection(self.conn, int(new_id), event, fields or {},
-                                  event_time=event_time, search_ready=True)
+                new_id = self._append_log(event, fields)
                 self._maybe_commit_locked()
-                return int(new_id)
+                return new_id
             except Exception:
                 self.rollback_locked()
                 raise
@@ -745,25 +751,7 @@ class Storage:
         with self.lock:
             try:
                 for event, fields in items:
-                    log_id = self.conn.insert_returning_id(
-                        """INSERT INTO logs
-                           (received_at, source_ip, peer_ip, format, priority, facility, severity,
-                            device_timestamp, hostname, destination, app_name, proc_id, msg_id, message, raw)
-                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                        (
-                            event["received_at"], event["source_ip"], event.get("peer_ip", ""),
-                            event["format"], event["priority"], event["facility"], event["severity"],
-                            event["device_timestamp"], event["hostname"], event.get("destination", ""),
-                            event["app_name"], event["proc_id"], event["msg_id"], event["message"], event["raw"],
-                        ),
-                    )
-                    ids.append(int(log_id))
-                    from normalize import write_fields
-                    from event_storage_v2 import append_projection, projection_time
-                    event_time = projection_time(event) if self.conn.backend == "postgres" else None
-                    write_fields(self.conn, int(log_id), fields or {}, event_time)
-                    append_projection(self.conn, int(log_id), event, fields or {},
-                                      event_time=event_time, search_ready=True)
+                    ids.append(self._append_log(event, fields))
                 self.conn.commit()
                 self._pending = 0
                 self._last_commit = time.time()

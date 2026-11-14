@@ -34,7 +34,7 @@ def test_alert_base_schema_and_migrations_include_workflow(tmp_path):
     assert {"workflow_status","workflow_assignee","workflow_updated_at","workflow_updated_by","workflow_resolution_note"} <= cols
     assert conn.execute("SELECT COUNT(*) c FROM alert_workflow_events").fetchone()["c"] == 0
     conn.close()
-    assert len(db._migrations()) == 42
+    assert len(db._migrations()) == 44
 
 
 def test_dashboard_exposes_alert_workflow_api_and_ui_contract():

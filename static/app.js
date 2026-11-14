@@ -282,6 +282,7 @@
     if (status === 403) return Object.prototype.hasOwnProperty.call(SETTING_ERRORS, reason) ? SETTING_ERRORS[reason] : 'Your role does not allow this. Ask an administrator.';
     if (status === 404) return reason && reason !== 'not found' ? MS.settingError(reason) : 'This item no longer exists. Refresh the page.';
     if (status === 429) return 'Too many requests. Wait a moment and try again.';
+    if (status === 504 && d && d.code === 'database_query_timeout') return reason;
     if (status >= 500) return 'The server could not complete the request. Try again; if it keeps failing, check System Health.';
     if (reason) return MS.settingError(reason);
     return status >= 200 && status < 300 ? 'The server sent an unexpected response.' : 'The request could not be completed. Try again.';

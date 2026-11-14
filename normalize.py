@@ -82,10 +82,19 @@ def load_patterns_from_conn(conn) -> list:
     return []
 
 
+LONG_TEXT_FIELDS = frozenset({
+    "process.command_line", "process.parent.command_line", "script.text",
+    "commandline", "command_line", "parentcommandline", "scriptblocktext",
+})
+LONG_TEXT_LIMIT = 16384
+
+
 def normalized_field_rows(fields):
     for key, value in fields.items():
-        text = str(value)[:300]
-        yield str(key)[:60], text, text.casefold()
+        name = str(key)[:60]
+        limit = LONG_TEXT_LIMIT if name.casefold() in LONG_TEXT_FIELDS else 300
+        text = str(value)[:limit]
+        yield name, text, text.casefold()
 
 
 def write_fields(conn, log_id: int, fields: dict, event_time=None):

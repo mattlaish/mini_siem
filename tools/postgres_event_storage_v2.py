@@ -22,7 +22,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import db
-from event_storage_v2 import append_projection
+from event_storage_v2 import append_projection, projection_time
 
 OWNER_PASSWORD_ENV = "MINISIEM_PG_OWNER_PASSWORD"
 OWNER_USER_ENV = "MINISIEM_PG_OWNER_USER"
@@ -96,14 +96,8 @@ def _precreate_historical_partitions(conn, batch_size=5000):
             break
         for row in rows:
             last = int(row["id"])
-            for candidate in (row["device_timestamp"], row["received_at"]):
-                try:
-                    dt = datetime.fromisoformat(str(candidate or "").replace("Z", "+00:00"))
-                    if dt.tzinfo is not None:
-                        months.add((dt.year, dt.month))
-                        break
-                except ValueError:
-                    continue
+            dt = datetime.fromisoformat(projection_time(row))
+            months.add((dt.year, dt.month))
     for year, month in sorted(months):
         start = f"{year:04d}-{month:02d}-01T00:00:00+00:00"
         conn.execute(
@@ -170,10 +164,6 @@ def qualify(conn):
             "src_ip_time": (
                 "EXPLAIN (FORMAT TEXT) SELECT id FROM security_events WHERE src_ip=?::inet AND event_time>=?::timestamptz ORDER BY event_time DESC LIMIT 100",
                 (samples["src"], samples["event_time"]),
-            ),
-            "event_type_time": (
-                "EXPLAIN (FORMAT TEXT) SELECT id FROM security_events WHERE event_type IS NOT NULL AND event_time>=?::timestamptz ORDER BY event_time DESC LIMIT 100",
-                (samples["event_time"],),
             ),
         }
         for name, (sql, params) in plans.items():

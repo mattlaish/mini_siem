@@ -15,6 +15,7 @@ Usage:
 
 import argparse
 import ipaddress
+import json
 import re
 import threading
 import time
@@ -258,9 +259,26 @@ def get_conn():
         return dbmod.connect(_db_config())
     conn = g.get("_minisiem_db_conn")
     if conn is None:
-        conn = dbmod.connect(_db_config())
+        conn = dbmod.connect_dashboard(_db_config())
         g._minisiem_db_conn = conn
     return _RequestConnectionProxy(conn)
+
+
+def _database_query_timeout(exc):
+    app.logger.info("Dashboard database query timed out: %s", request.endpoint)
+    return jsonify(code="database_query_timeout",
+                   error="The database query took too long. Narrow the time range or filters and try again."), 504
+
+
+def _register_postgres_timeout_handler():
+    try:
+        from psycopg2.errors import QueryCanceled
+    except ImportError:
+        return
+    app.register_error_handler(QueryCanceled, _database_query_timeout)
+
+
+_register_postgres_timeout_handler()
 
 
 @app.teardown_appcontext
@@ -866,10 +884,13 @@ def _field_value_predicate(alias, mode, needle, backend="sqlite"):
     needle = str(needle).casefold()
     if mode == "exact":
         if str(backend).startswith("postgres"):
-            return f"{col} = ?", [needle]
+            return f"md5({col}) = md5(?) AND {col} = ?", [needle, needle]
         return f"{col} = ? COLLATE NOCASE", [needle]
     pattern = _like_escape(needle) + "%" if mode == "prefix" else "%" + _like_escape(needle) + "%"
     if str(backend).startswith("postgres"):
+        if mode == "prefix":
+            prefix = _like_escape(needle[:300]) + "%"
+            return f"left({col},300) LIKE ? ESCAPE '\\' AND {col} LIKE ? ESCAPE '\\'", [prefix, pattern]
         return f"{col} LIKE ? ESCAPE '\\'", [pattern]
     return f"{col} LIKE ? COLLATE NOCASE ESCAPE '\\'", [pattern]
 
@@ -911,17 +932,14 @@ def _concept_match_mode(concept, term):
 def _base_match_clause(column, concept, mode, needle, backend="sqlite_like"):
     pg = str(backend).startswith("postgres")
     if pg and mode == "cidr":
-        # PostgreSQL cidr rejects host bits ("10.1.2.3/24"); search the network.
-        needle = str(ipaddress.ip_network(needle, strict=False))
+        network = ipaddress.ip_network(needle, strict=False)
+        native = "l.src_ip" if concept == "source" else "l.dst_ip"
+        return f"{native} BETWEEN ?::inet AND ?::inet", [str(network.network_address), str(network.broadcast_address)]
     if pg and concept == "source":
-        if mode == "cidr":
-            return "l.src_ip <<= ?::cidr", [needle]
         if mode == "exact":
             return "l.src_ip = ?::inet", [needle]
     if pg and concept == "destination" and mode == "exact_ip":
         return "l.dst_ip = ?::inet", [needle]
-    if pg and concept == "destination" and mode == "cidr":
-        return "l.dst_ip <<= ?::cidr", [needle]
     if mode in ("exact", "exact_ip"):
         if pg:
             return f"lower({column}) = ?", [needle.casefold()]
@@ -980,7 +998,7 @@ def _concept_filter_terms(raw):
     return out
 
 
-def _build_log_query(args, select_cols, search_backend=None):
+def _build_log_query(args, select_cols, search_backend=None, *, id_event_times=None):
     """Shared index-friendly WHERE builder for SQLite and PostgreSQL v2."""
     if search_backend is None:
         try:
@@ -1005,6 +1023,15 @@ def _build_log_query(args, select_cols, search_backend=None):
         if id_list:
             clauses.append(f"l.id IN ({','.join('?' * len(id_list))})")
             params.extend(id_list)
+            if pg:
+                # Runtime partition pruning for new evidence, using the raw PK
+                # to fetch the partition key once. Legacy rows fall through.
+                if id_event_times is not None:
+                    if id_event_times:
+                        clauses.append("l.event_time IN (" + ",".join(["?::timestamptz"] * len(id_event_times)) + ")")
+                        params.extend(id_event_times)
+                    else:
+                        clauses.append("1=0")
 
     snapshot = args.get("_snapshot_id")
     if snapshot is not None and str(snapshot).isdigit():
@@ -1021,7 +1048,7 @@ def _build_log_query(args, select_cols, search_backend=None):
                 needle = (term[2:] if term.startswith("!=") else term[1:]).strip() if neg else term
                 tok = _postgres_tsquery_token(needle)
                 if tok:
-                    expr = "to_tsvector('simple',COALESCE(l.message,'')) @@ to_tsquery('simple',?)"
+                    expr = "l.message_terms @@ to_tsquery('simple',?)"
                     clauses.append("NOT (" + expr + ")" if neg else expr)
                     params.append(tok)
         elif search_backend == "sqlite_fts5":
@@ -1136,6 +1163,14 @@ def _extraction_args(args):
     fields = [c.strip() for c in (args.get("fields") or "").split(",") if c.strip()][:8]
     filters = {}
     for k, v in args.items():
+        if k.startswith("feq_") or k.startswith("fne_"):
+            # Literal chips preserve punctuation, whitespace and newlines.
+            name = k[4:].strip()
+            if name:
+                filters[name] = {"needle": v.casefold(), "negate": k.startswith("fne_"), "mode": "exact"}
+                if name not in fields:
+                    fields.append(name)
+            continue
         if k.startswith("f_") and v.strip():
             name = k[2:].strip()
             if name:
@@ -1145,7 +1180,7 @@ def _extraction_args(args):
                 if val.startswith("!=") or val.startswith("!"):
                     negate = True
                     val = val[2:].strip() if val.startswith("!=") else val[1:].strip()
-                filters[name] = {"needle": val.lower(), "negate": negate}
+                filters[name] = {"needle": val, "negate": negate}
                 if name not in fields:
                     fields.append(name)
     sort = (args.get("sort") or "").strip()
@@ -1168,8 +1203,19 @@ def _query_logs_extracted(args, limit, select_cols, sort_cap=100000, offset=0):
     else:
         search_backend = "sqlite_fts5" if dbmod.fts5_available(conn) else "sqlite_like"
     relation = "security_event_logs" if search_backend == "postgres_v2" else "logs"
-    base_sql, base_params = _build_log_query(args, select_cols, search_backend=search_backend)
     try:
+        id_event_times = None
+        if search_backend == "postgres_v2" and args.get("ids"):
+            ids = [int(i) for i in args["ids"].split(",") if i.strip().isdigit()][:500]
+            if ids:
+                rows = conn.execute(
+                    "SELECT DISTINCT projection_time FROM logs WHERE id IN (" + placeholders(len(ids)) + ")", ids,
+                ).fetchall()
+                if all(row["projection_time"] is not None for row in rows):
+                    id_event_times = [row["projection_time"] for row in rows]
+        base_sql, base_params = _build_log_query(
+            args, select_cols, search_backend=search_backend, id_event_times=id_event_times,
+        )
         if not needs:
             limited_sql = base_sql + " LIMIT ? OFFSET ?"
             rows = [dict(r) for r in conn.execute(
@@ -1195,6 +1241,7 @@ def _query_logs_extracted(args, limit, select_cols, sort_cap=100000, offset=0):
         pg = search_backend == "postgres_v2"
         exact = {}
         legacy_exact, legacy_params = [], []
+        indexed_or, indexed_or_params = [], []
         # PostgreSQL "contains" (*text*) filters: also kept as row probes so a
         # newest-first page can be answered from recent events (see below).
         plain_joins, plain_join_params = [], []
@@ -1212,15 +1259,46 @@ def _query_logs_extracted(args, limit, select_cols, sort_cap=100000, offset=0):
             return (f" AND (({alias}.event_time=l.event_time{bound}) "
                     f"OR {alias}.event_time='-infinity'::timestamptz)"), times
 
+        def exact_match(payload, fallback, fallback_params, exclude=False):
+            # GIN can identify positive matches. Exclusion can instead test
+            # containment on candidate rows, keeping newest-first LIMIT useful
+            # even when the excluded value occurs in most of the window.
+            matched = " OR ".join("l.search_fields @> ?::jsonb" for _ in payload)
+            ready = [json.dumps(value, ensure_ascii=False) for value in payload]
+            params = ready + fallback_params
+            if exclude:
+                return f"NOT COALESCE(({matched}), ({fallback}))", params
+            return f"(({matched}) OR (l.search_fields IS NULL AND ({fallback})))", params
+
         for name, spec in filters.items():
             # tolerate the older shape (plain string) as an include filter
             if isinstance(spec, dict):
                 needle, negate = spec.get("needle", ""), spec.get("negate", False)
             else:
                 needle, negate = spec, False
+            spec2 = (spec if isinstance(spec, dict) and spec.get("mode") == "exact"
+                     else _parse_field_filter(name, needle, "query"))
+            if pg and spec2["mode"] == "exact":
+                value = spec2["needle"]
+                pred, pp = _field_value_predicate("fe", "exact", value, backend=search_backend)
+                # The legacy fallback belongs to the old projection only.
+                bounds, times = _field_lookup_window(args, True)
+                fallback = f"l.id IN (SELECT fe.log_id FROM log_fields fe WHERE fe.field=? AND {pred}{bounds})"
+                legacy_values = [name] + pp + times
+                if negate:
+                    sql_filter, params_filter = exact_match([{name: [value]}], fallback, legacy_values, exclude=True)
+                    extra_where.append(sql_filter)
+                    extra_params.extend(params_filter)
+                elif or_mode:
+                    indexed_or.append({name: [value]})
+                    indexed_or_params.append((fallback, legacy_values))
+                else:
+                    exact[name] = [value]
+                    legacy_exact.append(fallback)
+                    legacy_params.extend(legacy_values)
+                continue
             if negate:
                 # EXCLUDE: no row for this field matching the value.
-                spec2 = _parse_field_filter(name, needle, "query")
                 pred, pred_params = _field_value_predicate("fx", spec2["mode"], spec2["needle"], backend=search_backend)
                 temporal, times = field_time("fx")
                 extra_where.append(
@@ -1228,7 +1306,6 @@ def _query_logs_extracted(args, limit, select_cols, sort_cap=100000, offset=0):
                     + temporal + " AND fx.field = ? AND " + pred + ")")
                 extra_params.extend(times + [name] + pred_params)
             else:
-                spec2 = _parse_field_filter(name, needle, "query")
                 if or_mode:
                     # kept in a SEPARATE accumulator (not extra_params) because
                     # this clause is only appended to extra_where AFTER the
@@ -1246,13 +1323,6 @@ def _query_logs_extracted(args, limit, select_cols, sort_cap=100000, offset=0):
                         "EXISTS (SELECT 1 FROM log_fields fo WHERE fo.log_id = l.id "
                         + temporal + " AND fo.field = ? AND " + pred + ")")
                     or_group_params.extend(times + [name] + pred_params)
-                elif pg and spec2["mode"] == "exact":
-                    exact[name] = [spec2["needle"]]
-                    temporal, times = field_time("fe")
-                    legacy_exact.append(
-                        "EXISTS (SELECT 1 FROM log_fields fe WHERE fe.log_id=l.id"
-                        + temporal + " AND fe.field=? AND fe.value_norm=?)")
-                    legacy_params.extend(times + [name, spec2["needle"]])
                 else:
                     alias = f"f{ji}"
                     temporal, times = field_time(alias)
@@ -1275,10 +1345,15 @@ def _query_logs_extracted(args, limit, select_cols, sort_cap=100000, offset=0):
                         plain_join_params.extend(times + [name] + pred_params)
                     ji += 1
         if exact:
-            import json
-            extra_where.append("(l.search_fields @> ?::jsonb OR (l.search_fields IS NULL AND "
-                               + " AND ".join(legacy_exact) + "))")
-            extra_params.extend([json.dumps(exact, ensure_ascii=False)] + legacy_params)
+            sql_filter, params_filter = exact_match([exact], " AND ".join(legacy_exact), legacy_params)
+            extra_where.append(sql_filter)
+            extra_params.extend(params_filter)
+        if indexed_or:
+            fallback = " OR ".join(sql for sql, _ in indexed_or_params)
+            fallback_params = [value for _, values in indexed_or_params for value in values]
+            sql_filter, params_filter = exact_match(indexed_or, fallback, fallback_params)
+            or_group.append(sql_filter)
+            or_group_params.extend(params_filter)
         if or_group:
             # single positive filter behaves the same whether "AND" or "OR"
             # is selected, so this only changes behavior with 2+ chips.
@@ -1331,6 +1406,9 @@ def _query_logs_extracted(args, limit, select_cols, sort_cap=100000, offset=0):
             fetch_sql = "SELECT " + cols + f" FROM {relation} l WHERE l.id IN (" + ph + ")"
             fetch_params = list(page_ids)
             if pg:
+                if id_event_times:
+                    fetch_sql += " AND l.event_time IN (" + ",".join(["?::timestamptz"] * len(id_event_times)) + ")"
+                    fetch_params.extend(id_event_times)
                 for arg, op in (("from", ">="), ("to", "<=")):
                     if args.get(arg):
                         fetch_sql += f" AND l.event_time {op} ?::timestamptz"
@@ -1408,14 +1486,14 @@ def _contains_recent_page(conn, relation, cols, where_part, base_params,
     if offset + limit > recent:
         return None
     where = f" WHERE {where_part}" if where_part else ""
-    cut_sql = (f"SELECT l.event_time FROM {relation} l{where}"
+    cut_sql = (f"SELECT l.event_time, l.id FROM {relation} l{where}"
                " ORDER BY l.event_time DESC, l.id DESC LIMIT 1 OFFSET ?")
     cut = conn.execute(cut_sql, list(base_params if where_part else []) + [recent - 1]).fetchone()
     clauses = ([where_part] if where_part else []) + list(extra_where) + list(probes)
     params = list(plain_join_params) + (list(base_params) if where_part else []) + list(extra_params) + list(probe_params)
     if cut is not None:
-        clauses.append("l.event_time >= ?")
-        params.append(cut["event_time"])
+        clauses.append("(l.event_time, l.id) >= (?, ?)")
+        params.extend([cut["event_time"], cut["id"]])
     page_sql = (f"SELECT {cols} FROM {relation} l " + " ".join(plain_joins)
                 + " WHERE " + " AND ".join(clauses)
                 + " ORDER BY l.event_time DESC, l.id DESC LIMIT ? OFFSET ?")
@@ -1956,6 +2034,7 @@ def api_stats():
     """Dashboard stats that answer 'what needs me, what's missing' rather
     than 'what's most frequent'."""
     from datetime import datetime, timezone, timedelta
+    from storage_stats import log_total, silent_sources
     now = datetime.now(timezone.utc)
     day_ago = (now - timedelta(hours=24)).isoformat()
     # A source is "silent" only after 3 days of nothing — long enough to
@@ -1966,7 +2045,7 @@ def api_stats():
     baseline_start = (now - timedelta(days=14)).isoformat()
 
     conn = get_conn()
-    total_logs = conn.execute("SELECT COUNT(*) c FROM logs").fetchone()["c"]
+    total_logs, approximate, has_logs = log_total(conn)
     total_alerts = conn.execute("SELECT COUNT(*) c FROM alerts").fetchone()["c"]
 
     # Actionable alerts: warning and above (warning/error/critical/alert/
@@ -1991,26 +2070,23 @@ def api_stats():
         (day_ago,)).fetchone()["c"]
 
     # 2. Silent sources: logged in the past 14 days but nothing for 3 days
-    silent = [r["source_ip"] for r in conn.execute(
-        """SELECT DISTINCT source_ip FROM logs
-           WHERE received_at >= ? AND received_at < ?
-             AND source_ip IS NOT NULL AND source_ip != ''
-             AND source_ip NOT IN (
-                 SELECT DISTINCT source_ip FROM logs WHERE received_at >= ?)
-           LIMIT 50""",
-        (baseline_start, silence_cutoff, silence_cutoff)).fetchall()]
+    silent_count, silent = silent_sources(conn, baseline_start, silence_cutoff)
 
     # 3. IOC matches in the last 24h
     try:
         ioc_hits = conn.execute(
             "SELECT COUNT(*) c FROM ioc_matches WHERE matched_at >= ?",
             (day_ago,)).fetchone()["c"]
-    except Exception:
+    except Exception as exc:
+        if dbmod.is_statement_timeout(exc):
+            raise
         ioc_hits = 0
 
     conn.close()
     return jsonify({
         "total_logs": total_logs,
+        "total_logs_estimated": approximate,
+        "has_logs": has_logs,
         "listen_ports": _listen_ports_configured(),
         "total_alerts": total_alerts,
         "alerts_breakdown": {
@@ -2021,7 +2097,7 @@ def api_stats():
             "warning": sev_counts.get("warning", 0),
         },
         "needs_attention": {"high_24h": high, "untriaged": untriaged},
-        "silent_sources": {"count": len(silent), "sources": silent[:10],
+        "silent_sources": {"count": silent_count, "sources": silent,
                            "silence_days": 3, "baseline_days": 14},
         "ioc_hits_24h": ioc_hits,
     })

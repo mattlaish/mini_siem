@@ -266,4 +266,5 @@ def api_ai_chat():
     conn = _svc.get_conn(); ctx = ai_soc.gather_chat_context(conn, question); cfg = _svc.get_ai_config(); messages = ai_soc.build_chat_messages(ctx, question, history, system_prompt=cfg.get("ai_system_prompt"))
     try: answer = _svc.llm_from_config().chat(messages, max_tokens=int(cfg.get("ai_max_tokens", "900") or 900))
     except Exception as exc: return jsonify({"error": f"LLM call failed: {type(exc).__name__}: {exc}"}), 502
-    return jsonify({"answer": answer, "context_summary": {"matched_events": len(ctx["matches"]), "keywords": ctx["keywords"]}})
+    return jsonify({"answer": answer, "context_summary": {"matched_events": len(ctx["matches"]),
+                    "keywords": ctx["keywords"], "window_hours": ctx["window_hours"]}})

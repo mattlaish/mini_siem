@@ -97,10 +97,10 @@ def main():
             ("source CIDR + time", "SELECT id FROM security_events WHERE app_name=%s AND src_ip <<= %s::cidr AND event_time >= %s ORDER BY event_time DESC LIMIT 200", (tag,"10.20.1.0/24",min_at)),
             ("host prefix + time", "SELECT id FROM security_events WHERE app_name=%s AND lower(hostname) LIKE %s AND event_time >= %s ORDER BY event_time DESC LIMIT 200", (tag,"ws-001%",min_at)),
             ("destination prefix + time", "SELECT id FROM security_events WHERE app_name=%s AND lower(destination) LIKE %s AND event_time >= %s ORDER BY event_time DESC LIMIT 200", (tag,"srv-01%",min_at)),
-            ("message FTS / GIN", "SELECT id FROM security_events WHERE app_name=%s AND to_tsvector('simple',COALESCE(message,'')) @@ to_tsquery('simple',%s)", (tag,"phase5needle:*")),
+            ("message FTS / GIN", "SELECT id FROM security_events WHERE app_name=%s AND message_terms @@ to_tsquery('simple',%s)", (tag,"phase5needle:*")),
             ("field exact", "SELECT e.legacy_log_id FROM security_events e JOIN log_fields f ON f.log_id=e.legacy_log_id WHERE e.app_name=%s AND f.field='event_id' AND f.value_norm=%s", (tag,"4625")),
             ("field prefix", "SELECT e.legacy_log_id FROM security_events e JOIN log_fields f ON f.log_id=e.legacy_log_id WHERE e.app_name=%s AND f.field='user' AND f.value_norm LIKE %s", (tag,"user12%")),
-            ("asset context join", "SELECT c.id FROM security_event_context c WHERE c.app_name=%s AND c.asset_id IS NOT NULL AND c.event_time >= %s ORDER BY c.event_time DESC LIMIT 200", (tag,min_at)),
+            ("typed source context", "SELECT c.id FROM security_event_logs c WHERE c.app_name=%s AND c.peer_ip_native IS NOT NULL AND c.event_time >= %s ORDER BY c.event_time DESC LIMIT 200", (tag,min_at)),
         ]
         for label, sql, params in checks:
             results["plans"].append(_plan(cur,label,sql,params))

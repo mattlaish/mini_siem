@@ -45,6 +45,12 @@ def inspect(config_path: Path, cred_path: Path, identity: str):
                    has_table_privilege(current_user,'public.security_events','DELETE') AS can_delete_security_events,
                    has_table_privilege(current_user,'public.assets','INSERT') AS can_insert_assets,
                    has_table_privilege(current_user,'public.assets','UPDATE') AS can_update_assets,
+                   has_table_privilege(current_user,'public.identities','INSERT') AS can_insert_identities,
+                   has_any_column_privilege(current_user,'public.identities','UPDATE') AS can_update_identities,
+                   (has_table_privilege(current_user,'public.log_source_last_seen','SELECT')
+                    AND has_table_privilege(current_user,'public.log_source_last_seen','INSERT')
+                    AND has_table_privilege(current_user,'public.log_source_last_seen','UPDATE')) AS can_access_source_summary,
+                   has_table_privilege(current_user,'public.log_source_last_seen','DELETE,TRUNCATE') AS can_remove_source_summary,
                    has_function_privilege(current_user,'public.minisiem_ensure_security_event_partitions(timestamptz,integer)','EXECUTE') AS can_manage_event_partitions
             """
         ).fetchone()
@@ -66,7 +72,6 @@ def inspect(config_path: Path, cred_path: Path, identity: str):
         expected_archive_write = identity == "maintenance"
         expected_event_insert = identity == "listener"
         expected_event_delete = identity == "maintenance"
-        expected_entity_observe = identity == "listener"
         expected_partition_manage = identity == "maintenance"
         result["ok"] = bool(
             result["can_select"]
@@ -83,8 +88,12 @@ def inspect(config_path: Path, cred_path: Path, identity: str):
             and result["can_read_security_events"]
             and bool(result["can_insert_security_events"]) == expected_event_insert
             and bool(result["can_delete_security_events"]) == expected_event_delete
-            and bool(result["can_insert_assets"]) == expected_entity_observe
-            and bool(result["can_update_assets"]) == expected_entity_observe
+            and not result["can_insert_assets"]
+            and not result["can_update_assets"]
+            and not result["can_insert_identities"]
+            and not result["can_update_identities"]
+            and result["can_access_source_summary"]
+            and not result["can_remove_source_summary"]
             and bool(result["can_manage_event_partitions"]) == expected_partition_manage
             and result["guard_triggers"] == 2
         )

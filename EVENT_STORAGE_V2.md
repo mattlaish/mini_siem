@@ -1,11 +1,10 @@
 # PostgreSQL Event Storage v2
 
-Status: `IMPLEMENTED_TESTING_DEFERRED`
+Status: owner review after PostgreSQL 16 integration tests and a synthetic benchmark.
 
 This document is the canonical data-model reference for the PostgreSQL Event
-Storage v2 slice.  It describes implemented source behavior.  Live PostgreSQL
-migration, planner, privilege, restart, and sustained-performance qualification
-remain deferred for this revision at the owner's request.
+Storage v2 slice. Production migration timing and sustained-performance
+qualification remain open.
 
 ## Storage planes
 
@@ -24,13 +23,14 @@ transaction rather than silently creating divergent evidence/query truth.
 
 `security_events` uses PostgreSQL-native types for the common SIEM dimensions:
 
-- `event_time`, `ingested_at`: `TIMESTAMPTZ`;
+- `event_time`, `ingested_at`, `device_event_time`: `TIMESTAMPTZ`;
 - `src_ip`, `dst_ip`, `peer_ip`: `INET`;
 - `src_port`, `dst_port`: integer;
 - `severity`: small integer plus preserved text severity;
 - normalized/dynamic vendor fields: `JSONB`;
 - `asset_id`, `identity_id`: relational observation references;
-- `message` and `raw_event`: preserved text evidence/query context.
+- `message_terms`: indexed full-text search terms. Original text is read from
+  the evidence table by ID.
 
 The primary key includes event time because the parent table is range
 partitioned: `(event_time, id)`.
@@ -65,7 +65,7 @@ The PostgreSQL Web search path reads `security_event_logs` and uses bounded,
 index-friendly semantics:
 
 - full IP -> `INET =`;
-- CIDR -> `INET <<= CIDR`;
+- CIDR -> inclusive native INET bounds;
 - source/destination port or inclusive range -> typed integer comparison;
 - hostname/destination bare text -> escaped prefix lookup;
 - `*text*` -> explicit contains lookup only;
@@ -73,27 +73,31 @@ index-friendly semantics:
 - dynamic normalized field -> exact by default, trailing `*` for prefix,
   wrapped `*...*` for explicit contains.
 
-The parent defines entity/time indexes for source/destination/peer IP,
-asset/identity, event type, user, vendor/product, and event code, plus
-hostname/destination prefix indexes. `search_fields` contains normalized
-field/value arrays for combined exact AND filters via GIN `jsonb_path_ops`;
-original `fields` remains unchanged. Message search has a text-search GIN index.
-There is no time BRIN index. Prefix/contains/OR/exclusion and legacy fallback
-retain field-table lookups. See [PostgreSQL search and layout](POSTGRES_SEARCH.md)
+The parent indexes source and destination IP, ports, hostname and destination
+prefixes, and text search terms. `search_fields` contains normalized
+field/value arrays for exact AND, OR and exclusion filters. Positive
+containment predicates can use GIN `jsonb_path_ops`. Prefix, contains and
+legacy fallback still use the field table. See [PostgreSQL search and layout](POSTGRES_SEARCH.md)
 for owner setup, benchmark instructions and coverage limits.
 
 ## Relational foundation
 
-The slice implements minimal observational `assets` and `identities` tables and
-a read-only `security_event_context` view joining typed events to those tables.
-Asset primary IP observation prefers `peer_ip` (the log sender) rather than
-`source_ip`, because source IP can represent an attacker or other event actor.
+`assets`, `identities` and the read-only `security_event_context` view retain
+existing entity records and links. New ingest and re-index populate typed
+event context without writing these entity tables. New events leave entity
+references empty. The typed `peer_ip` still identifies the sender, and
+`src_ip` and `user_name` continue to record the event's source and user.
 
 This is only the relational foundation.  Phase 13.4 Entity Context &
 Intelligence remains `PLANNED`; there is not yet a full CMDB, AD identity graph,
 vulnerability model, risk engine, or analyst entity workspace.
 
 ## Archive behavior
+
+PostgreSQL keeps original `message` and `raw` only in `logs`. The typed
+projection stores full-text search terms and the compatibility view fetches
+the original payload by evidence ID. Owner migration 44 verifies matching
+evidence before removing the duplicate text columns.
 
 Archive MOVE first removes the verified hot `security_events` projection by
 `legacy_log_id`, then removes normalized/raw hot rows according to the existing

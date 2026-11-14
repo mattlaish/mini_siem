@@ -180,12 +180,12 @@ def _count_since(conn, iso_cutoff):
 
 
 def siem_metrics(conn, db_config):
+    from storage_stats import log_total
     now = datetime.now(timezone.utc)
     min_cut = (now - timedelta(minutes=1)).isoformat()
     hour_cut = (now - timedelta(hours=1)).isoformat()
 
-    total = conn.execute("SELECT COUNT(*) AS c FROM logs").fetchone()
-    total = total["c"] if isinstance(total, dict) else total[0]
+    total, approximate, _ = log_total(conn)
     alerts = conn.execute("SELECT COUNT(*) AS c FROM alerts").fetchone()
     alerts = alerts["c"] if isinstance(alerts, dict) else alerts[0]
 
@@ -204,12 +204,16 @@ def siem_metrics(conn, db_config):
         try:
             row = conn.execute("SELECT pg_database_size(current_database()) AS s").fetchone()
             db_size = row["s"] if isinstance(row, dict) else row[0]
-        except Exception:
+        except Exception as exc:
+            from db import is_statement_timeout
+            if is_statement_timeout(exc):
+                raise
             db_size = None
 
     return {
         "backend": backend,
         "total_logs": total,
+        "total_logs_estimated": approximate,
         "total_alerts": alerts,
         "events_last_min": last_min,
         "events_last_hour": last_hour,

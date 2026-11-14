@@ -47,8 +47,7 @@ def test_postgres_event_storage_v2_schema_contract():
     assert "src_ip INET" in ddl and "dst_ip INET" in ddl
     assert "fields JSONB" in ddl
     for idx in (
-        "idx_se_src_ip_time", "idx_se_dst_ip_time", "idx_se_asset_time",
-        "idx_se_identity_time", "idx_se_type_time",
+        "idx_se_src_ip_time", "idx_se_dst_ip_time", "idx_se_message_terms_gin",
     ):
         assert idx in ddl
     # Index the normalized companion, not the original JSON; no time BRIN.
@@ -64,7 +63,7 @@ def test_postgres_event_storage_v2_schema_contract():
 
 def test_postgres_runtime_requires_v2_tables_and_migration_ledger_advances():
     assert {"security_events", "assets", "identities"}.issubset(set(db.RUNTIME_REQUIRED_TABLES))
-    assert len(db._migrations()) == 42
+    assert len(db._migrations()) == 44
 
 
 def test_projection_normalization_uses_native_values_and_preserves_raw():
@@ -129,8 +128,8 @@ def test_postgres_query_semantics_use_native_ip_time_and_prefix_indexes():
         "l.id,l.source_ip",
         search_backend="postgres_v2",
     )
-    assert "l.src_ip <<= ?::cidr" in sql2
-    assert "10.1.2.0/24" in params2
+    assert "l.src_ip BETWEEN ?::inet AND ?::inet" in sql2
+    assert params2 == ["10.1.2.0", "10.1.2.255"]
 
 
 def test_archive_privilege_and_phase4_paths_are_v2_aware():

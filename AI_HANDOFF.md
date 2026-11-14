@@ -1,5 +1,56 @@
 # AI Handover Prompt - mini-SIEM
 
+## PostgreSQL search and evidence storage — 2026-11-13
+
+- Owner migration 44 removes verified duplicate message/raw columns from
+  `security_events`. The `logs` table retains original evidence, stable IDs,
+  and time-based archive support. The partitioned event table stores a
+  `tsvector` with a GIN index. The compatibility view reads raw text by ID.
+  Migration checks every old projection against its raw log and stops on
+  missing or different evidence. Take a backup and use the owner upgrade
+  with services stopped, followed by the standard grant refresh.
+- Nine event indexes retired. CIDR searches use the existing native INET
+  B-tree range. New log IDs carry the event partition key. Historical IDs
+  without that key retain the previous lookup path.
+- Exact OR and exclusions use normalized JSONB containment. Legacy rows use
+  a field-index fallback. Top values actions use literal exact filters and
+  preserve special characters across links and exports. Command and script
+  fields now index up to 16,384 characters. Re-index retained logs to recover
+  text previously truncated in their field index.
+- Future device timestamps and timestamps more than 30 days behind receipt
+  use receipt time for partition routing on new events. Original and parsed
+  device times are retained. Existing event partition placement stays intact.
+- Same 50,000-event PostgreSQL 16 fixture returned identical ordered IDs
+  across the 11 benchmark queries. With history loaded, OR/exclusion p50
+  was 14.4 → 8.3 ms and measured table/index footprint was 192.5 → 155.7 MiB.
+  Production performance at 1 million events per day remains unmeasured.
+- Validation: 99 focused checks passed, including migration rollback on
+  conflicting evidence, PostgreSQL archive MOVE, literal and long field
+  searches, privilege checks and SQLite workflows.
+
+## PostgreSQL dashboard and ingest costs — 2026-11-13
+
+- Home and System Health use PostgreSQL's estimated log total. The UI shows
+  when the estimate is pending, and first-use guidance checks for a real row.
+  The silent-source list reads `log_source_last_seen`. An insert trigger groups
+  writes by source and advances the receipt timestamp at minute granularity in
+  the same transaction as the raw logs, including bulk inserts. SQLite keeps
+  its existing exact totals and silent-source query.
+- Ingest and re-index retain the event's typed IP and user fields. They no
+  longer upsert `assets` or `identities`. Existing rows and references are
+  preserved, and split runtime roles no longer have entity write grants.
+- PostgreSQL interactive dashboard connections have a 30-second per-statement
+  limit by default. AI Chat selects log and alert evidence from the latest 24
+  hours on both backends. Log Search still offers explicit older ranges.
+- Owner migration 43 adds the trigger and initializes the source summary from
+  the previous 14 days. Refresh split-role grants before restarting existing
+  installations. See POSTGRES_SEARCH.md for the timeout setting and limits.
+- Focused validation: 94 passed, including isolated PostgreSQL 16 migration,
+  rollback, split-role writes and timeout recovery. No load benchmark or
+  production validation. The historical return ZIP was kept as delivered.
+
+The follow-up search and evidence-storage slice is recorded above.
+
 ## Contains guard, DEFAULT-partition alert, Top values — 2026-11-09 (cloud session)
 
 The three small items agreed after the 1M events/day estimate:
@@ -28,9 +79,8 @@ unguarded paths return identical pages; DEFAULT alert raised once, cleared
 when rows moved back; browser check of the panel (counts, filter, exclude,
 expanded-row link, no JS errors). No scale benchmarks run (owner's request).
 
-Still open from the estimate: asset/identity upsert churn and multi-event
-deadlock risk (event_storage_v2.py `_observe_asset`/`_observe_identity`),
-OR+exclusion cost, all-history prefix/contains guards.
+Still open from this session: OR+exclusion cost and all-history prefix/contains
+guards. The November 13 slice removed asset/identity upserts.
 
 ## Production search measurement tool — 2026-11-08 (cloud session)
 

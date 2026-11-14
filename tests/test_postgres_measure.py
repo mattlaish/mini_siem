@@ -29,7 +29,7 @@ def test_every_connection_is_read_only(monkeypatch):
 
 def test_cidr_with_host_bits_searches_the_network():
     sql, params = dashboard._base_match_clause("l.source_ip", "source", "cidr", "10.1.2.3/24", backend="postgres_v2")
-    assert sql == "l.src_ip <<= ?::cidr" and params == ["10.1.2.0/24"]   # PostgreSQL cidr rejects host bits
+    assert sql == "l.src_ip BETWEEN ?::inet AND ?::inet" and params == ["10.1.2.0", "10.1.2.255"]
     sql, params = dashboard._base_match_clause("l.destination", "destination", "cidr", "2001:db8::1/64",
                                                backend="postgres_v2")
-    assert params == ["2001:db8::/64"]
+    assert params == ["2001:db8::", "2001:db8::ffff:ffff:ffff:ffff"]

@@ -163,9 +163,14 @@ def build_diagnostics(health_snapshot: dict, postgres_status: dict | None = None
     components.append(_component("syslog_socket", syslog_status, syslog_reason,
                                  "Check host receive buffers and sender/network path." if syslog_status == "WARNING" else ""))
 
-    storage_count = int(siem.get("total_logs") or 0)
+    storage_count = siem.get("total_logs")
+    if storage_count is None:
+        storage_reason = "Stored event estimate is not available yet."
+    else:
+        qualifier = "approximately " if siem.get("total_logs_estimated") and storage_count else ""
+        storage_reason = f"Stored events={qualifier}{storage_count}."
     components.append(_component("storage", "HEALTHY" if db_state == "READY" else "UNKNOWN",
-                                 f"Stored events={storage_count}." if db_state == "READY" else "Storage health follows database readiness."))
+                                 storage_reason if db_state == "READY" else "Storage health follows database readiness."))
 
     by_name = {c["name"]: c for c in components}
     dependencies = [

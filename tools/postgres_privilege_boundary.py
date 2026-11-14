@@ -36,7 +36,7 @@ OWNER_PASSWORD_ENV = "MINISIEM_PG_OWNER_PASSWORD"
 LOG_INSERT_COLUMNS = (
     "received_at", "source_ip", "peer_ip", "format", "priority", "facility",
     "severity", "device_timestamp", "hostname", "destination", "app_name",
-    "proc_id", "msg_id", "message", "raw",
+    "proc_id", "msg_id", "message", "raw", "projection_time",
 )
 
 
@@ -80,7 +80,7 @@ def _assert_roles_do_not_own_protected_tables(cur, roles):
           JOIN pg_namespace n ON n.oid=c.relnamespace
           JOIN pg_roles r ON r.oid=c.relowner
          WHERE n.nspname='public' AND c.relname IN (
-             'logs','schema_migrations','ai_usage_audit','security_events','assets','identities',
+             'logs','schema_migrations','ai_usage_audit','security_events','assets','identities','log_source_last_seen',
              'dashboard_reader_tokens','dashboard_export_counters','dashboard_export_records',
              'dashboard_export_snapshots','dashboard_export_snapshot_records')
         """
@@ -341,13 +341,14 @@ def _apply_grants(raw, *, runtime_role, ingest_role, dashboard_role, maintenance
                 cur.execute(sql.SQL(
                     "REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLE {} FROM {}"
                 ).format(table, role))
+                cur.execute(sql.SQL("REVOKE UPDATE (identity_id) ON TABLE {} FROM {}").format(table, role))
             cur.execute(sql.SQL("GRANT SELECT ON TABLE {} TO {}").format(table, runtime))
 
         cur.execute(sql.SQL(
             "GRANT INSERT ON TABLE public.security_events TO {}"
         ).format(ingest))
         cur.execute(sql.SQL(
-            "GRANT UPDATE (fields,search_fields,user_name,identity_id,src_port,dst_port,event_type,event_code,vendor,product) "
+            "GRANT UPDATE (fields,search_fields,user_name,src_port,dst_port,event_type,event_code,vendor,product) "
             "ON TABLE public.security_events TO {}"
         ).format(ingest))
         cur.execute(sql.SQL(
@@ -361,7 +362,16 @@ def _apply_grants(raw, *, runtime_role, ingest_role, dashboard_role, maintenance
                     "REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLE {} FROM {}"
                 ).format(table, role))
             cur.execute(sql.SQL("GRANT SELECT ON TABLE {} TO {}").format(table, runtime))
-            cur.execute(sql.SQL("GRANT INSERT, UPDATE ON TABLE {} TO {}").format(table, ingest))
+
+        # INSERT on logs is already shared across these components. The
+        # invoker trigger needs only summary read/append/update, not deletion.
+        for role in (runtime, ingest, dashboard, maintenance):
+            cur.execute(sql.SQL(
+                "REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLE public.log_source_last_seen FROM {}"
+            ).format(role))
+        cur.execute(sql.SQL(
+            "GRANT SELECT, INSERT, UPDATE ON TABLE public.log_source_last_seen TO {}"
+        ).format(runtime))
 
         partition_fn = sql.SQL(
             "public.minisiem_ensure_security_event_partitions(TIMESTAMPTZ, INTEGER)"
@@ -502,6 +512,7 @@ def _apply_grants(raw, *, runtime_role, ingest_role, dashboard_role, maintenance
         cur.execute("REVOKE ALL ON TABLE public.security_events FROM PUBLIC")
         cur.execute("REVOKE ALL ON TABLE public.assets FROM PUBLIC")
         cur.execute("REVOKE ALL ON TABLE public.identities FROM PUBLIC")
+        cur.execute("REVOKE ALL ON TABLE public.log_source_last_seen FROM PUBLIC")
         cur.execute("REVOKE ALL ON FUNCTION public.minisiem_ensure_security_event_partitions(TIMESTAMPTZ, INTEGER) FROM PUBLIC")
         raw.commit()
         return passwords
@@ -545,6 +556,12 @@ def _verify_login(base_cfg: dict, cred_path: Path, identity: str):
                    has_table_privilege(current_user,'public.security_events','DELETE') AS can_delete_events_v2,
                    has_table_privilege(current_user,'public.assets','INSERT') AS can_insert_assets,
                    has_table_privilege(current_user,'public.identities','INSERT') AS can_insert_identities,
+                   has_table_privilege(current_user,'public.assets','UPDATE') AS can_update_assets,
+                   has_any_column_privilege(current_user,'public.identities','UPDATE') AS can_update_identities,
+                   (has_table_privilege(current_user,'public.log_source_last_seen','SELECT')
+                    AND has_table_privilege(current_user,'public.log_source_last_seen','INSERT')
+                    AND has_table_privilege(current_user,'public.log_source_last_seen','UPDATE')) AS can_access_source_summary,
+                   has_table_privilege(current_user,'public.log_source_last_seen','DELETE,TRUNCATE') AS can_remove_source_summary,
                    has_function_privilege(current_user,'public.minisiem_ensure_security_event_partitions(timestamptz,integer)','EXECUTE') AS can_manage_event_partitions
             """
         ).fetchone()
@@ -571,8 +588,11 @@ def _verify_login(base_cfg: dict, cred_path: Path, identity: str):
             raise RuntimeError(f"{identity} Event Storage v2 INSERT privilege mismatch: {data}")
         if bool(data["can_delete_events_v2"]) != (identity == "maintenance"):
             raise RuntimeError(f"{identity} Event Storage v2 DELETE privilege mismatch: {data}")
-        if bool(data["can_insert_assets"]) != (identity == "listener") or bool(data["can_insert_identities"]) != (identity == "listener"):
+        if any(data[k] for k in ("can_insert_assets", "can_insert_identities",
+                                "can_update_assets", "can_update_identities")):
             raise RuntimeError(f"{identity} entity-observation privilege mismatch: {data}")
+        if not data["can_access_source_summary"] or data["can_remove_source_summary"]:
+            raise RuntimeError(f"{identity} source summary privilege mismatch: {data}")
         if bool(data["can_manage_event_partitions"]) != (identity == "maintenance"):
             raise RuntimeError(f"{identity} partition-maintenance privilege mismatch: {data}")
         dbmod.ensure_runtime_ready(cfg)

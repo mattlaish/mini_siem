@@ -1,18 +1,19 @@
 {
-  "artifact": "mini_siem-local-postgres-search-2026-11-06",
+  "artifact": "mini_siem-local-postgres-search-evidence-2026-11-13",
   "artifact_kind": "Current source inventory; no new delivery archive",
-  "generated_at_utc": "2026-11-06T08:20:20.800512+00:00",
-  "parent": "artifact-manifest-sha256:5f2c2dd0aa24ae80dde63542f8601629a68e8207fd7d107dff7d45eb265006ca",
-  "status": "IMPLEMENTED_TESTING_DEFERRED_BY_OWNER",
+  "generated_at_utc": "2026-11-13T14:10:38.737045+00:00",
+  "parent": "artifact-manifest-sha256:613e03140cc33bd4da7c4c1a8e0ea2c38fca6ca5032064a78993b29cb2c30ac6",
+  "status": "READY_FOR_OWNER_REVIEW",
   "scope": [
-    "PostgreSQL time-bounded search, normalized exact search and typed filters",
-    "Batched fields, matched fresh partition layouts and overflow monitoring",
-    "Optional synthetic benchmark tooling; no measured result"
+    "PostgreSQL search routing, long field indexes and literal filters",
+    "Clock skew handling and time-aware log ID lookups",
+    "Remove redundant event indexes and verified duplicate text from event partitions"
   ],
   "validation": {
     "python_static_syntax_review": true,
-    "tests": "NOT_RUN_OWNER_REQUEST",
-    "postgres_benchmark": "NOT_RUN_OWNER_REQUEST",
+    "tests": "99_FOCUSED_TESTS_PASSED",
+    "postgres_16_synthetic_benchmark": "50000_EVENTS_11_ORDERED_RESULT_LISTS_MATCH",
+    "production_scale_benchmark": "NOT_RUN",
     "git_operations": "NONE",
     "production_state_changes": "NONE"
   },
@@ -36,7 +37,7 @@
     }
   },
   "manifest_hash_scope": "Listed current safe application source/docs and seven return tools; excludes this manifest, historical source/fixtures/ZIP, credentials/runtime state and caches/Git",
-  "file_count_excluding_manifest": 413,
+  "file_count_excluding_manifest": 420,
   "files": [
     {
       "path": ".github/workflows/test.yml",
@@ -50,8 +51,8 @@
     },
     {
       "path": "AGENTS.md",
-      "size": 922,
-      "sha256": "fa5ad8205ac1eb8d39f2685c749f24227f23aa12fe7f630288a39b7065d197f3"
+      "size": 1013,
+      "sha256": "3d64c9f4ce7b550c1fc80d747a2859bebe2f3b6fc174cccf4331f53a7564c252"
     },
     {
       "path": "ai_config_store.py",
@@ -60,8 +61,8 @@
     },
     {
       "path": "AI_HANDOFF.md",
-      "size": 36816,
-      "sha256": "93d752593d92ebdfe960ec5460eedf3888fe40ab99cd9a7ad0054cc599906c84"
+      "size": 44759,
+      "sha256": "d8ad9411ab6c08ab6be7b8e8263a71a8f5f41679534157957216eb096994368d"
     },
     {
       "path": "AI_HANDOVER.md",
@@ -75,8 +76,8 @@
     },
     {
       "path": "ai_soc.py",
-      "size": 61430,
-      "sha256": "62674a96f6dd423f97f2a626ac4a60e8ce040a4d0864fab209f527a2af70e37e"
+      "size": 62032,
+      "sha256": "78cb6c3c481a63d5250e1ee945c2d338d4c92c773657d1ff7840836241ab7372"
     },
     {
       "path": "ai_usage.py",
@@ -155,8 +156,8 @@
     },
     {
       "path": "dashboard.py",
-      "size": 152951,
-      "sha256": "6a912d22fca8042f52ea9ac86ad2214102f96c79244964d4743e0509bfa1aac9"
+      "size": 162129,
+      "sha256": "cdd9c79e422f1b45b1ff58e1c02eaee93c8401b74f8b6b39c2286136898df6de"
     },
     {
       "path": "db-config.example.json",
@@ -170,8 +171,8 @@
     },
     {
       "path": "db.py",
-      "size": 62725,
-      "sha256": "053e0d922fdaf331ad08f6570a824968be35bd19493bbf688b9db9596a9aa6b7"
+      "size": 64594,
+      "sha256": "ded0f9f818ebf47806388d93c0b7a02c1613e8e3a006e02b0e659459c8ecbcc2"
     },
     {
       "path": "DEPLOYMENT.md",
@@ -440,13 +441,13 @@
     },
     {
       "path": "EVENT_STORAGE_V2.md",
-      "size": 5960,
-      "sha256": "6afec33b8680a1d80e60e42d256c4cc2f511414ddb1297ab3e947912762a3490"
+      "size": 6149,
+      "sha256": "a452fca64b0f62e66c4189c9130eef278cc72b727542dbe34b693e279241a3ed"
     },
     {
       "path": "event_storage_v2.py",
-      "size": 20933,
-      "sha256": "e6534f71cef42cd7b2add8e8c3c775b2986495742de3923e92adf2b55b40aa3a"
+      "size": 20966,
+      "sha256": "58699b0571b3b6512de4de43909f79555dae376c63dae5b2636bdd58e76f4eea"
     },
     {
       "path": "evidence/P5_SOURCE_VALIDATION_2026-09-23.json",
@@ -545,8 +546,8 @@
     },
     {
       "path": "health.py",
-      "size": 9136,
-      "sha256": "239b8dd45048c62ee4f6d23cdb867ccb8d0f8844260ffe9b6bc03a5e148124a3"
+      "size": 9250,
+      "sha256": "ec585fff100332a74d12c89559c40b66180766187a4d171e6fad7d18289e4d00"
     },
     {
       "path": "install-service.sh",
@@ -665,8 +666,8 @@
     },
     {
       "path": "listener.py",
-      "size": 56829,
-      "sha256": "970148d4946fc1dfc24e99fe043d2e6422784aab5877f5dde9392b641a9a5422"
+      "size": 55553,
+      "sha256": "b50fb4fff18c6c71e3e063c187f4d44b469171719e1acbb6590396695e90e371"
     },
     {
       "path": "maintenance.py",
@@ -675,8 +676,8 @@
     },
     {
       "path": "normalize.py",
-      "size": 11861,
-      "sha256": "37f612cb48a73ecc52caa43a91a74d74c593c010915c4b34549ddd943f556948"
+      "size": 12194,
+      "sha256": "9f89b24a11d8b68020b147b2c171c84fd9714124cdb30564c65603c8dd1cb68f"
     },
     {
       "path": "OPENAI_INTEGRATION_QUALIFICATION_2026-09-18.json",
@@ -690,8 +691,8 @@
     },
     {
       "path": "operational_diagnostics.py",
-      "size": 18073,
-      "sha256": "e7f9cce072bdc544a6815758a0d7461080a1597f1026eb3abd2bbb1c2363f123"
+      "size": 18324,
+      "sha256": "facb402a4e8ba4bfbe66fafcc3cb6df1414455708b22bff8fa17bdc99f5953b5"
     },
     {
       "path": "operational_hardening/audit_events.py",
@@ -760,8 +761,8 @@
     },
     {
       "path": "patch.md",
-      "size": 48532,
-      "sha256": "fa104b04231874e344090e4e439feae6b9a8810557ef0fb6f999fa50aa041112"
+      "size": 50899,
+      "sha256": "0e53ed67305258c08d11b548d9df7bf0b1173ffe5126f9a5e0a97000108b4d6b"
     },
     {
       "path": "performance_runtime_v2/benchmark_runner.py",
@@ -970,8 +971,8 @@
     },
     {
       "path": "README.md",
-      "size": 52433,
-      "sha256": "4057c72d6cc6dc87623a54a12a796626dafdaf63d64a3d1915b0d4e5f2ceab12"
+      "size": 52606,
+      "sha256": "f17e96b4935471504ba0ef326d94058eda83029cec786b26ceeb30a36c98f177"
     },
     {
       "path": "RELEASE_BASELINE_STATUS.md",
@@ -1315,8 +1316,8 @@
     },
     {
       "path": "static/app.js",
-      "size": 25792,
-      "sha256": "fa56eeb032f3a842773ed06a9309e96f675ca0ddf182760fffaf44711c869b26"
+      "size": 25936,
+      "sha256": "877ad5b149f72cf370ff0531030740af3b3d9696283758ae22c37bdd405ab9c8"
     },
     {
       "path": "static/csrf.js",
@@ -1340,8 +1341,8 @@
     },
     {
       "path": "templates/ai.html",
-      "size": 26805,
-      "sha256": "893205b4c5a603614b3c8844d6796d4eb9149c5718def504cb3a4fdac05b08c2"
+      "size": 26832,
+      "sha256": "ee8e3412350c0473e967f82275f73cf9323fee6c2132812e61f8b17551edc8da"
     },
     {
       "path": "templates/alerts.html",
@@ -1375,8 +1376,8 @@
     },
     {
       "path": "templates/health.html",
-      "size": 29160,
-      "sha256": "4b69fa4d33effc9fe60f5e61f884a7077b052524a8c1472d78f316c5dfddb056"
+      "size": 29272,
+      "sha256": "4e8ae778cf0b8ca3a48e7f85ae4a511285d95a2ba7eecb01a6f8b0ff0cafd2a4"
     },
     {
       "path": "templates/help.html",
@@ -1385,8 +1386,8 @@
     },
     {
       "path": "templates/index.html",
-      "size": 66583,
-      "sha256": "356d66967b3ddd965da4be06ed37939fbc1eda0239baca1189bb47a6ad540f98"
+      "size": 72953,
+      "sha256": "44ed8dce9081517e0353b182d03414627cdc20ba92c41c64ae15dc977cac6253"
     },
     {
       "path": "templates/login.html",
@@ -1456,7 +1457,7 @@
     {
       "path": "tests/test_alert_lifecycle.py",
       "size": 2409,
-      "sha256": "3c0d24ca8ae154f74ce5b037e6e02075e3afd202b257a24f9b5d846ca5e6cc3e"
+      "sha256": "808a19cce54c3ce9498620b66bdb1e1676160933c1fe020c958685aabee564fa"
     },
     {
       "path": "tests/test_backup_restore_readiness.py",
@@ -1500,8 +1501,8 @@
     },
     {
       "path": "tests/test_event_storage_v2.py",
-      "size": 6703,
-      "sha256": "0ddd50ea5adff9cc0f598bd8f378028c13904975d9eec25be5c2a1ce6aceb62d"
+      "size": 6687,
+      "sha256": "b86b9b3b2229cea46c9e5d0518386768b120b0d92315a2cf0b3f5dc60e62bf59"
     },
     {
       "path": "tests/test_evidence_archive_phase6.py",
@@ -1605,8 +1606,8 @@
     },
     {
       "path": "tests/test_postgres_integration.py",
-      "size": 8126,
-      "sha256": "5e3bfabb28d06a3350235957ef353e1a3f76082a3381cb9ed25722fb4feb206f"
+      "size": 19964,
+      "sha256": "119cf883c3bb1cf2373a2daeade8efffd324bb068c24b4a08a33e498c79fd43c"
     },
     {
       "path": "tests/test_postgres_legacy_split_migration.py",
@@ -1750,8 +1751,8 @@
     },
     {
       "path": "tools/postgres_event_storage_v2.py",
-      "size": 8023,
-      "sha256": "1fe57cf7a27cbd08d3136f9361254e1f35b82bdb730fb8a74019c4e0b540fd1c"
+      "size": 7503,
+      "sha256": "4ba851b0798a8c6d23fc3ade8d97aba2af5709ee33f4e54640f62894fcc5b157"
     },
     {
       "path": "tools/postgres_legacy_split_migration.py",
@@ -1760,8 +1761,8 @@
     },
     {
       "path": "tools/postgres_phase4_validation.py",
-      "size": 6736,
-      "sha256": "5a540e0e6fdc7dc927d6c5ccb0a30356103e3cd59a6474d3b562553b2dc274c9"
+      "size": 6712,
+      "sha256": "dd7a17168cf4306550558bd37fc4b6daef5fcda5b441891edaf9d078552d0f66"
     },
     {
       "path": "tools/postgres_phase5_validation.py",
@@ -1770,18 +1771,18 @@
     },
     {
       "path": "tools/postgres_privilege_boundary.py",
-      "size": 33895,
-      "sha256": "8bad759da34b47bd64c608cb06872306925ed465fa3b5b148e9e2f069f98332c"
+      "size": 35397,
+      "sha256": "121a484eb5c09b3bb40230072eba43234a1273bef4214802d1337e5b3a04c222"
     },
     {
       "path": "tools/postgres_privilege_check.py",
-      "size": 6155,
-      "sha256": "1ec422d94f7f2f235e35d20c6bd001423b42d74cbf84a7ccb4944a90f3ad9e5a"
+      "size": 6922,
+      "sha256": "90123c8aab657c2cbc273b756a7e89e6ceac3a1c752d19af26eaed0fdce07c27"
     },
     {
       "path": "tools/postgres_upgrade_existing.py",
-      "size": 11584,
-      "sha256": "7f190cd59d49200f696cacbb28d454d198596ea10a306249afbd0432ddf4605e"
+      "size": 12013,
+      "sha256": "fa34910bb481203a85e5389b80fb38a054442d0410da707f7682cdd1bdd5ccea"
     },
     {
       "path": "tools/postgres-migration-preflight.py",
@@ -1840,8 +1841,8 @@
     },
     {
       "path": "web_blueprints/ai.py",
-      "size": 13725,
-      "sha256": "526fdd9bed82a8d7cb51e9acb7d0422bcce752fc9c9c3607afab37379e81682c"
+      "size": 13782,
+      "sha256": "de9910182c4a92fa56b53f17fbe41703cdf44cfdcdd7c68bd0753153678251df"
     },
     {
       "path": "web_blueprints/db_health.py",
@@ -1925,8 +1926,8 @@
     },
     {
       "path": "workers.py",
-      "size": 22649,
-      "sha256": "46dd1c75305e7887dd9defad7adf781ece33d6efa2b204bcff0c2284fddb4240"
+      "size": 27701,
+      "sha256": "5fea330e06dd2fac061851df0f98697f0a63f0bb7e1b016e739db21a64300c73"
     },
     {
       "path": "RECOVERY_2026-10-27.md",
@@ -1960,8 +1961,8 @@
     },
     {
       "path": "tests/test_security_ui_runtime.py",
-      "size": 3791,
-      "sha256": "896433b857e2bf4848755efb8b50354d9dbb5383fd57f6e981c34853c26d6865"
+      "size": 3992,
+      "sha256": "2e2d0b8565024b6bb0d730f45fa0d9e6ab7a95036a89ea722e07300d4e5d772f"
     },
     {
       "path": "tests/test_triage_and_near_miss.py",
@@ -2065,8 +2066,8 @@
     },
     {
       "path": "POSTGRES_SEARCH.md",
-      "size": 4736,
-      "sha256": "ddf2a4f8b0314eb2f17cc580b0fa5be1af71a8b6458fad0c27561b0750dd5b3c"
+      "size": 10225,
+      "sha256": "5d0bdb4723dfd33046e744c8a99db769025b2c5926066815c6a13be72d9eb41e"
     },
     {
       "path": "capacity.py",
@@ -2102,6 +2103,41 @@
       "path": "tools/postgres_search_benchmark.py",
       "size": 8838,
       "sha256": "e77f71ce1d8d14bffc10df1124728f7cc94142feebf5f13319ad0a5c3bb25bf6"
+    },
+    {
+      "path": "storage_stats.py",
+      "size": 5049,
+      "sha256": "1fc93953abcc0cbe5cc1f5a47622a7f9aafc2e5768b7a71c40e764b94b4dfac4"
+    },
+    {
+      "path": "tests/test_postgres_contains_guard.py",
+      "size": 3994,
+      "sha256": "9b17db77266c113c4743878a759160c4bb5dba6e4953a243b393c61c73ce4213"
+    },
+    {
+      "path": "tests/test_postgres_measure.py",
+      "size": 1721,
+      "sha256": "62c8cc53e97de2810e43edf8b0ab9137fd267321d83576ff5e22a17314a567e8"
+    },
+    {
+      "path": "tests/test_postgres_search_upgrade.py",
+      "size": 1777,
+      "sha256": "dc80bf958c0a4ff51615a297f9759c00aa0ee322cb955df7068c17e896d43095"
+    },
+    {
+      "path": "tests/test_storage_cost_controls.py",
+      "size": 1278,
+      "sha256": "f1bce7399d1924a0f3005c49e3aec0da64890df98e6a23792c7693b70cefb8de"
+    },
+    {
+      "path": "tests/test_storage_default_partition.py",
+      "size": 3756,
+      "sha256": "0e0bcf37f7ce6d9b4599b8c462536be480546edcaa17803410affdf27501458b"
+    },
+    {
+      "path": "tools/postgres_search_measure.py",
+      "size": 25329,
+      "sha256": "6ba6aa6bfa4a51b288f2261bd518a2a15d34a6af4a27f0a4db7ac30e6fa9e0e7"
     }
   ]
 }

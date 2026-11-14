@@ -1,8 +1,8 @@
 # PostgreSQL search and layout — 2026-11-06
 
-Status: **implemented in source, not exercised against PostgreSQL or benchmarked**.
-No speedup, partition winner, live install or sustained ingest rate is claimed.
-SQLite keeps its existing schema, writes, and default search scope.
+The PostgreSQL dashboard and ingest changes below were tested on an isolated
+PostgreSQL 16 instance. Sustained ingest rate and production search latency
+remain unmeasured. SQLite keeps its storage layout and default Log Search scope.
 
 ## Search behavior
 
@@ -20,10 +20,15 @@ SQLite keeps its existing schema, writes, and default search scope.
   Common valid IP/port aliases are resolved on ingest; transport sender identity
   remains separate. Custom aliases and conflicting text matches retain fallback.
 - Multiple positive exact AND filters use one containment predicate against
-  `search_fields`, built using the same case-folding/truncation as the field
-  table. Original `fields`, `message` and raw evidence are not rewritten.
-  Rows without that normalized projection use the legacy field table.
-  Prefix, substring, OR, exclusion and extracted-field sorting use that table.
+  `search_fields`. Exact OR uses per-value containment predicates. Exclusion
+  applies containment to the candidate rows, including rows where the
+  field is absent. PostgreSQL may use GIN for positive predicates when
+  selective. Rows without a normalized projection use the legacy field index.
+  Prefix, substring and extracted-field sorting continue to use the field table.
+- Indexed command lines and script blocks retain up to 16,384 characters.
+  Other fields retain their 300-character indexed limit. PostgreSQL uses a
+  bounded prefix key and a digest with an exact value recheck. Re-index older
+  retained logs to recover the longer fields from their original evidence.
 - Field prefix indexes and a partial trigram index cover `query` and `url`
   contains searches. Other fields still support contains without that index.
 - Newest-first pages with `*text*` (contains) field filters first check the
@@ -39,7 +44,9 @@ SQLite keeps its existing schema, writes, and default search scope.
   more expensive. Use bounded scopes unless investigating across history.
   Log Search shows it as **Top values** (toolbar button, or "top values" next
   to a field in an expanded event); clicking a value filters by it, "not"
-  excludes it. SQLite answers the same request from its field table.
+  excludes it. Both actions compare the selected value literally, including
+  leading exclamation marks and trailing asterisks. SQLite answers the same
+  request from its field table.
 
 ## Fresh PostgreSQL installation
 
@@ -68,6 +75,52 @@ partitions", rule `storage_default_partition`) when they first appear; it
 checks every 10 minutes and alerts again only after the partitions were empty. Review time coverage and bad/late/future event timestamps; overlapping
 rows must be moved into the right partition before it can be attached. No data is
 automatically deleted or moved by this warning.
+
+## PostgreSQL evidence and index upgrade
+
+For an existing database, stop ingest and Dashboard, take a backup, and run the
+owner upgrade before refreshing split-role grants and restarting. Migration 44
+compares the original text against the projection, builds partition-local
+full-text indexes from search terms, and removes the verified duplicate
+projection columns. It stops if it detects mismatched or missing evidence.
+Plan a maintenance window for the comparison, row updates and index builds.
+The raw log table remains the evidence authority and supports time-based
+archive and AI lookup. New ID lookups use the stored partition key. Legacy
+IDs without a key continue to work through the previous lookup path.
+
+Nine event indexes were removed from the fresh and upgrade layouts. Native IP
+B-trees support CIDR bounds, and typed ports, time, full text and normalized
+JSONB retain their search indexes. PostgreSQL may choose another plan for a
+broad filter. A loaded-system baseline is still needed for production planning.
+
+For new events, a device clock ahead of receipt or more than 30 days behind
+uses receipt time as the searchable event time. Both the original device
+timestamp and the parsed device time are available in the event view. Existing
+events remain in their current partitions.
+
+## Dashboard statistics and query limits
+
+- Home and System Health display an estimated PostgreSQL log total from table
+  statistics. It can lag ingest and shows as pending while the table has data
+  but has no usable estimate. The first-use prompt checks whether any logs exist.
+  SQLite continues to report an exact total.
+- The PostgreSQL silent-source list reads a summary of each source's latest
+  receipt time. The source is the same `logs.source_ip` used by the previous
+  query. The insert trigger updates the summary in the log transaction and
+  stores receipt times at minute precision. Archive operations do not rewind
+  the last observed receipt time.
+- `postgres.dashboard_statement_timeout_ms` in database config defaults to
+  `30000` and accepts `1000` through `60000`. It limits each SQL statement in an
+  interactive Dashboard request. The UI suggests narrowing the search after a
+  query timeout. Ingest, schema maintenance and background work use their
+  existing database connections.
+- AI Chat selects log and alert evidence from the latest 24 hours on both
+  backends. Use Log Search and an explicit time range for older evidence.
+- For an existing PostgreSQL installation, run the documented owner upgrade
+  so migration 43 creates the summary and backfills the prior 14 days. Apply
+  the split-role grant refresh before restarting. The first backfill reads the
+  recent raw logs once. Fresh installations get the summary and grants during
+  setup. Raw evidence and retention remain intact.
 
 ## Optional future benchmark
 

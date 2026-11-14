@@ -69,7 +69,7 @@ RUNTIME_REQUIRED_TABLES = (
     "logs", "alerts", "forwarders", "source_profiles", "app_config",
     "api_pollers", "users", "iocs", "ioc_matches", "reports", "ioc_feeds",
     "audit_log", "log_fields", "api_keys", "schema_migrations", "ai_usage_audit",
-    "runtime_stats", "archive_segments", "archive_occurrence_catalog",
+    "runtime_stats", "archive_segments", "archive_occurrence_catalog", "log_source_last_seen",
     "security_events", "assets", "identities",
     "dashboard_reader_tokens", "dashboard_export_counters",
     "dashboard_export_records", "dashboard_export_snapshots",
@@ -587,18 +587,14 @@ def _schema_statements(backend: str):
         )""",
     ]
     if backend == "postgres":
+        from storage_stats import postgres_schema_statements as stats_schema
+        stmts.extend(stats_schema())
         stmts.extend([
-            "ALTER TABLE log_fields ADD COLUMN IF NOT EXISTS event_time TIMESTAMPTZ NOT NULL DEFAULT '-infinity'",
             """DO $ddl$ BEGIN
                 IF EXISTS (SELECT 1 FROM pg_class WHERE oid='public.log_fields'::regclass AND relkind='p') THEN
                     CREATE TABLE IF NOT EXISTS public.log_fields_default PARTITION OF public.log_fields DEFAULT;
                 END IF;
             END $ddl$""",
-            "CREATE INDEX IF NOT EXISTS idx_lf_prefix ON log_fields(field, value_norm text_pattern_ops)",
-            "CREATE EXTENSION IF NOT EXISTS pg_trgm",
-            """CREATE INDEX IF NOT EXISTS idx_lf_dns_url_trgm
-               ON log_fields USING GIN(value_norm gin_trgm_ops)
-               WHERE field IN ('query','url')""",
         ])
         # PostgreSQL Event Storage v2 is an owner-created typed query projection.
         # The historical logs/log_fields tables remain the raw evidence plane.
@@ -687,7 +683,25 @@ _PG_POOLS = {}
 _PG_POOLS_LOCK = threading.Lock()
 
 
-def _postgres_pool(config: dict):
+def is_statement_timeout(exc):
+    return getattr(exc, "pgcode", None) == "57014"
+
+
+def connect_dashboard(config):
+    """Use a separate PostgreSQL pool for interactive queries, not owner work."""
+    if config.get("backend") != "postgres":
+        return connect(config)
+    options = config["postgres"]
+    try:
+        timeout = int(options.get("dashboard_statement_timeout_ms", 30000))
+    except (ValueError, TypeError):
+        raise ValueError("dashboard_statement_timeout_ms must be an integer") from None
+    if not 1000 <= timeout <= 60000:
+        raise ValueError("dashboard_statement_timeout_ms must be between 1000 and 60000")
+    return _connect_postgres(config, statement_timeout_ms=timeout)
+
+
+def _postgres_pool(config: dict, statement_timeout_ms=None):
     try:
         import psycopg2.extras
         from psycopg2.pool import ThreadedConnectionPool
@@ -701,7 +715,7 @@ def _postgres_pool(config: dict):
     minconn = max(1, int(p.get("pool_min", 1)))
     maxconn = max(minconn, int(p.get("pool_max", 10)))
     key = (p.get("host"), int(p.get("port", 5432)), p.get("dbname"),
-           p.get("user"), p.get("password"), minconn, maxconn)
+           p.get("user"), p.get("password"), minconn, maxconn, statement_timeout_ms)
 
     retries = int(p.get("connect_retries", 5))
     delay = float(p.get("connect_retry_delay", 2))
@@ -714,11 +728,17 @@ def _postgres_pool(config: dict):
 
         for attempt in range(1, retries + 1):
             try:
+                # Preserve startup options such as the measurement tool's
+                # read-only flag when setting the interactive timeout.
+                import os
+                options = (os.environ.get("PGOPTIONS", "") +
+                           f" -c statement_timeout={statement_timeout_ms}").strip() if statement_timeout_ms else None
                 pool = ThreadedConnectionPool(
                     minconn, maxconn, host=p["host"], port=p["port"],
                     dbname=p["dbname"], user=p["user"], password=p["password"],
                     connect_timeout=int(p.get("connect_timeout", 5)),
                     cursor_factory=psycopg2.extras.RealDictCursor,
+                    **({"options": options} if options is not None else {}),
                 )
                 _PG_POOLS[key] = pool
                 return pool
@@ -731,8 +751,9 @@ def _postgres_pool(config: dict):
     raise last_error
 
 
-def _connect_postgres(config: dict) -> Connection:
-    pool = _postgres_pool(config)
+def _connect_postgres(config: dict, statement_timeout_ms=None) -> Connection:
+    pool = (_postgres_pool(config) if statement_timeout_ms is None
+            else _postgres_pool(config, statement_timeout_ms))
     raw = pool.getconn()
 
     def release(connection):
@@ -825,6 +846,10 @@ def _migrations():
         # Owner initialization installs the PostgreSQL search projection/layout
         # above; this marker prevents older schemas from starting new runtimes.
         "SELECT 1",
+        # PostgreSQL owner setup also creates the source summary and trigger.
+        "SELECT 1",
+        # PostgreSQL owner setup installs the compact event and field indexes.
+        "SELECT 1",
     ]
 
 
@@ -889,7 +914,8 @@ def ensure_log_fields_normalized_schema(conn: Connection):
         if "value_norm" not in cols:
             _execute_schema_sql(conn, "ALTER TABLE log_fields ADD COLUMN value_norm TEXT")
     if conn.backend == "postgres":
-        _execute_schema_sql(conn, "CREATE INDEX IF NOT EXISTS idx_lf_field_value_norm ON log_fields(field, value_norm)")
+        for stmt in postgres_field_index_statements():
+            _execute_schema_sql(conn, stmt)
     else:
         # value_norm is stored case-folded and the field-filter queries compare
         # with `COLLATE NOCASE`; the index must be NOCASE too or SQLite cannot
@@ -902,6 +928,20 @@ def ensure_log_fields_normalized_schema(conn: Connection):
             _execute_schema_sql(conn, "DROP INDEX IF EXISTS idx_lf_field_value_norm")
             _execute_schema_sql(conn, "CREATE INDEX idx_lf_field_value_norm ON log_fields(field, value_norm COLLATE NOCASE)")
     conn.commit()
+
+
+def postgres_field_index_statements():
+    return [
+        "ALTER TABLE log_fields ADD COLUMN IF NOT EXISTS event_time TIMESTAMPTZ NOT NULL DEFAULT '-infinity'",
+        "CREATE INDEX IF NOT EXISTS idx_lf_exact_digest ON log_fields(field, md5(value_norm))",
+        "CREATE INDEX IF NOT EXISTS idx_lf_prefix_v2 ON log_fields(field, left(value_norm,300) text_pattern_ops)",
+        "CREATE EXTENSION IF NOT EXISTS pg_trgm",
+        """CREATE INDEX IF NOT EXISTS idx_lf_dns_url_trgm
+           ON log_fields USING GIN(value_norm gin_trgm_ops)
+           WHERE field IN ('query','url')""",
+        "DROP INDEX IF EXISTS idx_lf_field_value_norm",
+        "DROP INDEX IF EXISTS idx_lf_prefix",
+    ]
 
 
 def _ensure_performance_indexes(conn):

@@ -4,9 +4,12 @@
 
 New PostgreSQL installs use time-partitioned event and field tables, normalized
 exact-field search, typed IP/CIDR and port filters, and a recent-24-hour default
-in Log Search. Retention is unchanged. See [PostgreSQL search and layout](POSTGRES_SEARCH.md)
-for setup, month/week/day choices and the optional synthetic benchmark. This
-revision has not been run or benchmarked against PostgreSQL.
+in Log Search. Home and System Health use an estimated PostgreSQL log total.
+Interactive PostgreSQL statements default to 30 seconds, and AI Chat looks for
+evidence from the latest 24 hours. See [PostgreSQL search and layout](POSTGRES_SEARCH.md)
+for setup, migration 44 and the optional benchmark. PostgreSQL keeps one hot
+copy of the original event text. Production-scale performance
+remains unmeasured.
 
 ## Connector recovery completed — 2026-10-28
 

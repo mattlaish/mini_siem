@@ -186,7 +186,8 @@ async function load(){
     <div class="metric">${s.events_per_sec_1m ?? '—'} <span class="unit">ev/s</span></div>
     <div class="sub">${(s.events_last_min ?? 0).toLocaleString()} in last min · ${(s.events_last_hour ?? 0).toLocaleString()} in last hour</div></div>`);
   siem.push(kvCard('Stored', [
-    ['Total events', (s.total_logs ?? 0).toLocaleString()],
+    ['Total events', s.total_logs == null ? 'Estimate pending'
+      : (s.total_logs_estimated && s.total_logs > 0 ? '≈ ' : '') + Number(s.total_logs).toLocaleString()],
     ['Total alerts', (s.total_alerts ?? 0).toLocaleString()],
     ['Database type', s.backend || '—'],
     ['Database size', bytes(s.db_size_bytes)],

@@ -15,7 +15,7 @@ Runtime invariants:
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import ipaddress
 import json
 import re
@@ -47,10 +47,17 @@ DST_PORT_FIELDS = ("dst_port", "destination_port", "dport", "dpt")
 EVENT_CODE_FIELDS = ("event_code", "event_id", "eventid", "signature_id", "sid")
 EVENT_TYPE_FIELDS = ("event_type", "event_name", "action", "category", "type")
 
+RETIRED_EVENT_INDEXES = (
+    "idx_se_src_cidr", "idx_se_dst_cidr", "idx_se_peer_ip_time", "idx_se_asset_time",
+    "idx_se_identity_time", "idx_se_type_time", "idx_se_user_time",
+    "idx_se_vendor_product_time", "idx_se_code_time",
+)
+
 
 def postgres_schema_statements() -> list[str]:
     """Return idempotent owner-only PostgreSQL DDL for Event Storage v2."""
     return [
+        "ALTER TABLE logs ADD COLUMN IF NOT EXISTS projection_time TIMESTAMPTZ",
         """CREATE TABLE IF NOT EXISTS assets (
             id BIGSERIAL PRIMARY KEY,
             primary_ip INET UNIQUE,
@@ -89,12 +96,12 @@ def postgres_schema_statements() -> list[str]:
             priority INTEGER,
             facility TEXT,
             device_timestamp TEXT,
+            device_event_time TIMESTAMPTZ,
             destination TEXT,
             app_name TEXT,
             proc_id TEXT,
             msg_id TEXT,
-            message TEXT,
-            raw_event TEXT,
+            message_terms TSVECTOR,
             fields JSONB NOT NULL DEFAULT '{}'::jsonb,
             asset_id BIGINT REFERENCES assets(id),
             identity_id BIGINT REFERENCES identities(id),
@@ -103,25 +110,17 @@ def postgres_schema_statements() -> list[str]:
         """CREATE TABLE IF NOT EXISTS security_events_default
             PARTITION OF security_events DEFAULT""",
         "ALTER TABLE security_events ADD COLUMN IF NOT EXISTS search_fields JSONB",
+        "ALTER TABLE security_events ADD COLUMN IF NOT EXISTS device_event_time TIMESTAMPTZ",
+        "ALTER TABLE security_events ADD COLUMN IF NOT EXISTS message_terms TSVECTOR",
         "CREATE INDEX IF NOT EXISTS idx_se_search_fields_gin ON security_events USING GIN(search_fields jsonb_path_ops)",
         "CREATE INDEX IF NOT EXISTS idx_se_search_fields_pending ON security_events(event_time, legacy_log_id) WHERE search_fields IS NULL",
-        "CREATE INDEX IF NOT EXISTS idx_se_src_cidr ON security_events USING GIST(src_ip inet_ops)",
-        "CREATE INDEX IF NOT EXISTS idx_se_dst_cidr ON security_events USING GIST(dst_ip inet_ops)",
         "CREATE INDEX IF NOT EXISTS idx_se_src_port_time ON security_events(src_port,event_time DESC)",
         "CREATE INDEX IF NOT EXISTS idx_se_dst_port_time ON security_events(dst_port,event_time DESC)",
         "CREATE INDEX IF NOT EXISTS idx_se_legacy_log_id ON security_events(legacy_log_id)",
         "CREATE INDEX IF NOT EXISTS idx_se_src_ip_time ON security_events(src_ip, event_time DESC)",
         "CREATE INDEX IF NOT EXISTS idx_se_dst_ip_time ON security_events(dst_ip, event_time DESC)",
-        "CREATE INDEX IF NOT EXISTS idx_se_peer_ip_time ON security_events(peer_ip, event_time DESC)",
-        "CREATE INDEX IF NOT EXISTS idx_se_asset_time ON security_events(asset_id, event_time DESC)",
-        "CREATE INDEX IF NOT EXISTS idx_se_identity_time ON security_events(identity_id, event_time DESC)",
-        "CREATE INDEX IF NOT EXISTS idx_se_type_time ON security_events(event_type, event_time DESC)",
-        "CREATE INDEX IF NOT EXISTS idx_se_user_time ON security_events(lower(user_name), event_time DESC)",
-        "CREATE INDEX IF NOT EXISTS idx_se_vendor_product_time ON security_events(vendor, product, event_time DESC)",
-        "CREATE INDEX IF NOT EXISTS idx_se_code_time ON security_events(event_code, event_time DESC)",
         "CREATE INDEX IF NOT EXISTS idx_se_hostname_prefix_time ON security_events(lower(hostname) text_pattern_ops, event_time DESC)",
         "CREATE INDEX IF NOT EXISTS idx_se_destination_prefix_time ON security_events(lower(destination) text_pattern_ops, event_time DESC)",
-        "CREATE INDEX IF NOT EXISTS idx_se_message_fts_gin ON security_events USING GIN(to_tsvector('simple', COALESCE(message,'')))",
         """CREATE OR REPLACE VIEW security_event_logs AS
             SELECT legacy_log_id AS id,
                    event_time,
@@ -132,11 +131,34 @@ def postgres_schema_statements() -> list[str]:
                    format, priority, facility,
                    severity_text AS severity,
                    device_timestamp, hostname, destination, app_name,
-                   proc_id, msg_id, message, raw_event AS raw,
+                   proc_id, msg_id,
+                   COALESCE((SELECT l.message FROM logs l WHERE l.id=legacy_log_id),'') AS message,
+                   COALESCE((SELECT l.raw FROM logs l WHERE l.id=legacy_log_id),'') AS raw,
                    dst_ip::text AS destination_ip,
                    src_port, dst_port, user_name, vendor, product,
-                   event_type, event_code, asset_id, identity_id, fields, search_fields
+                   event_type, event_code, asset_id, identity_id, fields, search_fields,
+                   message_terms, device_event_time
               FROM security_events""",
+        """DO $ddl$ BEGIN
+            IF EXISTS (SELECT 1 FROM pg_attribute WHERE attrelid='public.security_events'::regclass
+                       AND attname='message' AND NOT attisdropped) THEN
+                IF EXISTS (
+                    SELECT 1 FROM public.security_events e
+                    LEFT JOIN public.logs l ON l.id=e.legacy_log_id
+                    WHERE l.id IS NULL OR COALESCE(e.message,'') <> COALESCE(l.message,'')
+                       OR COALESCE(e.raw_event,'') <> COALESCE(l.raw,'')
+                ) THEN
+                    RAISE EXCEPTION 'Event projection contains evidence missing from or different from logs';
+                END IF;
+                UPDATE public.security_events
+                   SET message_terms=to_tsvector('simple', COALESCE(message,'')),
+                       device_event_time=CASE WHEN device_timestamp ~ '[Tt ].*(Z|[+-][0-9]{2}:[0-9]{2})$'
+                           THEN public.minisiem_summary_timestamp(device_timestamp) END;
+                ALTER TABLE public.security_events DROP COLUMN message, DROP COLUMN raw_event;
+            END IF;
+        END $ddl$""",
+        "CREATE INDEX IF NOT EXISTS idx_se_message_terms_gin ON security_events USING GIN(message_terms)",
+        *(f"DROP INDEX IF EXISTS public.{name}" for name in RETIRED_EVENT_INDEXES),
         # e.* expands to the base view's columns, so a new security_events
         # column (search_fields) lands mid-list; CREATE OR REPLACE cannot do
         # that on an existing install. Rebuild it; grants are refreshed by
@@ -262,13 +284,23 @@ def _iso_time(value: Any) -> str | None:
         if dt.tzinfo is None:
             return None
         return dt.astimezone(timezone.utc).isoformat()
-    except ValueError:
+    except (ValueError, OverflowError):
         return None
 
 
+def _projection_times(event):
+    received = _iso_time(event.get("received_at")) or datetime.now(timezone.utc).isoformat()
+    device = _iso_time(event.get("device_timestamp"))
+    effective = received
+    if device:
+        skew = datetime.fromisoformat(device) - datetime.fromisoformat(received)
+        if timedelta(days=-30) <= skew <= timedelta(0):
+            effective = device
+    return effective, received, device
+
+
 def projection_time(event):
-    return (_iso_time(event.get("device_timestamp")) or _iso_time(event.get("received_at"))
-            or datetime.now(timezone.utc).isoformat())
+    return _projection_times(event)[0]
 
 
 def search_field_payload(fields):
@@ -287,8 +319,7 @@ def _first_ip(*candidates):
 
 def normalized_projection(event: dict, fields: dict | None = None) -> dict:
     fields = dict(fields or {})
-    received = _iso_time(event.get("received_at")) or datetime.now(timezone.utc).isoformat()
-    event_time = _iso_time(event.get("device_timestamp")) or received
+    event_time, received, device = _projection_times(event)
     source = _first_ip(*(_field(fields, (key,)) for key in ("src_ip", "src", "srcip", "source_ip", "endpoint_ip")),
                        event.get("source_ip"))
     destination = _first_ip(event.get("destination_ip"),
@@ -326,6 +357,7 @@ def normalized_projection(event: dict, fields: dict | None = None) -> dict:
         "priority": event.get("priority"),
         "facility": str(event.get("facility") or "") or None,
         "device_timestamp": str(event.get("device_timestamp") or "") or None,
+        "device_event_time": device,
         "destination": str(event.get("destination") or "") or None,
         "app_name": str(event.get("app_name") or "") or None,
         "proc_id": str(event.get("proc_id") or "") or None,
@@ -336,68 +368,33 @@ def normalized_projection(event: dict, fields: dict | None = None) -> dict:
     }
 
 
-def _observe_asset(conn, projection: dict) -> int | None:
-    # The network sender is the safest asset observation. source_ip may be an
-    # actor extracted from the event payload and must not be mistaken for the
-    # emitting asset.
-    ip = projection.get("peer_ip")
-    if not ip:
-        return None
-    row = conn.execute(
-        """INSERT INTO assets(primary_ip,hostname,first_seen,last_seen)
-           VALUES (?::inet, ?, ?::timestamptz, ?::timestamptz)
-           ON CONFLICT(primary_ip) DO UPDATE SET
-             hostname=COALESCE(NULLIF(excluded.hostname,''), assets.hostname),
-             last_seen=GREATEST(assets.last_seen, excluded.last_seen)
-           RETURNING id""",
-        (ip, projection.get("hostname"), projection["event_time"], projection["event_time"]),
-    ).fetchone()
-    return int(row["id"] if isinstance(row, dict) else row[0])
-
-
-def _observe_identity(conn, projection: dict) -> int | None:
-    user = str(projection.get("user_name") or "").strip()
-    if not user:
-        return None
-    key = user.casefold()
-    row = conn.execute(
-        """INSERT INTO identities(identity_key,user_name,first_seen,last_seen)
-           VALUES (?, ?, ?::timestamptz, ?::timestamptz)
-           ON CONFLICT(identity_key) DO UPDATE SET
-             user_name=excluded.user_name,
-             last_seen=GREATEST(identities.last_seen, excluded.last_seen)
-           RETURNING id""",
-        (key, user, projection["event_time"], projection["event_time"]),
-    ).fetchone()
-    return int(row["id"] if isinstance(row, dict) else row[0])
-
-
 def append_projection(conn, log_id: int, event: dict, fields: dict | None = None, *,
                       event_time=None, search_ready=False) -> int:
     """Append the typed projection for one raw log using the caller transaction.
 
     Returns 1 when inserted, 0 when an idempotent backfill finds an existing
     projection for the legacy evidence id.
+    Keep typed IP/user values, but do not write shared entity rows per event.
+    Existing entity links remain available on older projections.
     """
     if getattr(conn, "backend", "sqlite") != "postgres":
         return 0
     p = normalized_projection(event, fields)
-    asset_id = _observe_asset(conn, p)
-    identity_id = _observe_identity(conn, p)
     payload = json.dumps(p["fields"], ensure_ascii=False, sort_keys=True)
     sql = """INSERT INTO security_events(
                legacy_log_id,event_time,ingested_at,src_ip,dst_ip,peer_ip,src_port,dst_port,
                hostname,user_name,vendor,product,event_type,event_code,severity,severity_text,
-               format,priority,facility,device_timestamp,destination,app_name,proc_id,msg_id,
-               message,raw_event,fields,asset_id,identity_id,search_fields)
+               format,priority,facility,device_timestamp,device_event_time,destination,app_name,proc_id,msg_id,
+               message_terms,fields,search_fields)
            SELECT ?,?::timestamptz,?::timestamptz,?::inet,?::inet,?::inet,?,?,
-                  ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?::jsonb,?,?,?::jsonb"""
+                  ?,?,?,?,?,?,?,?,?,?,?,?,?::timestamptz,?,?,?,?,
+                  to_tsvector('simple',?),?::jsonb,?::jsonb"""
     params = (
             int(log_id), event_time or p["event_time"], p["ingested_at"], p["src_ip"], p["dst_ip"], p["peer_ip"],
             p["src_port"], p["dst_port"], p["hostname"], p["user_name"], p["vendor"], p["product"],
             p["event_type"], p["event_code"], p["severity"], p["severity_text"], p["format"],
-            p["priority"], p["facility"], p["device_timestamp"], p["destination"], p["app_name"],
-            p["proc_id"], p["msg_id"], p["message"], p["raw_event"], payload, asset_id, identity_id,
+            p["priority"], p["facility"], p["device_timestamp"], p["device_event_time"],
+            p["destination"], p["app_name"], p["proc_id"], p["msg_id"], p["message"], payload,
             search_field_payload(fields) if search_ready else None,
     )
     # The main path just allocated this raw evidence ID in this transaction.
@@ -414,12 +411,10 @@ def update_projection_fields(conn, log_id: int, event: dict, fields: dict, *, se
     if getattr(conn, "backend", "sqlite") != "postgres":
         return
     p = normalized_projection(event, fields)
-    identity_id = _observe_identity(conn, p)
     conn.execute(
         """UPDATE security_events
               SET fields=?::jsonb, search_fields=?::jsonb,
                   user_name=COALESCE(?, user_name),
-                  identity_id=COALESCE(?, identity_id),
                   src_port=COALESCE(?, src_port),
                   dst_port=COALESCE(?, dst_port),
                   event_type=COALESCE(?, event_type),
@@ -429,7 +424,7 @@ def update_projection_fields(conn, log_id: int, event: dict, fields: dict, *, se
             WHERE legacy_log_id=?""",
         (
             json.dumps(fields or {}, ensure_ascii=False, sort_keys=True),
-            search_field_payload(fields) if search_ready else None, p["user_name"], identity_id,
+            search_field_payload(fields) if search_ready else None, p["user_name"],
             p["src_port"], p["dst_port"], p["event_type"], p["event_code"], p["vendor"], p["product"],
             int(log_id),
         ),
